@@ -1,0 +1,33 @@
+[project]
+name = "jarvis-assist"
+version = "0.1.0"
+description = "A realtime, voice-driven personal assistant that wraps Claude as its brain."
+requires-python = ">=3.11"
+dependencies = [
+    # Brain
+    "claude-agent-sdk>=0.2.140",
+    # Web dashboard + event bus
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    # Config
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Voice stack — installed separately so the text path works without a mic.
+voice = [
+    "RealtimeSTT>=0.3.0",   # faster-whisper + VAD + wake word (ears)
+    "RealtimeTTS>=0.4.0",   # streaming text-to-speech (mouth)
+    "pynput>=1.7",          # global push-to-talk hotkey
+]
+
+[project.scripts]
+jarvis = "run:main"
+
+[tool.setuptools]
+py-modules = ["run"]
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]

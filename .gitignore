@@ -1,0 +1,27 @@
+# Secrets / local config
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv
+.venv/
+venv/
+
+# Jarvis runtime
+workspace/
+*.log
+
+# Models / caches
+.cache/
+models/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

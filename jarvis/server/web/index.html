@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jarvis</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="left">
+      <header class="brand">
+        <div class="orb" id="orb"></div>
+        <div>
+          <h1>JARVIS</h1>
+          <div class="status" id="status">connecting…</div>
+        </div>
+      </header>
+
+      <div class="transcript" id="transcript"></div>
+
+      <form class="composer" id="composer">
+        <input id="input" autocomplete="off" placeholder="Type, or say “hey jarvis”…" />
+        <button type="submit">Send</button>
+      </form>
+    </aside>
+
+    <main class="canvas-wrap">
+      <div class="canvas-head">CANVAS</div>
+      <iframe id="canvas" sandbox="allow-scripts" title="canvas"></iframe>
+      <div class="canvas-empty" id="canvasEmpty">Anything Jarvis shows you appears here.</div>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

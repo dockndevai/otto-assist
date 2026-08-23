@@ -1,0 +1,41 @@
+# Jarvis configuration. Everything here has a sensible default in jarvis/config.py;
+# edit to taste. Env vars (JARVIS_*) override these values.
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+brain:
+  # Model alias ("sonnet", "opus", "haiku") or a full model id.
+  # sonnet is a good default for snappy voice; switch to opus for hard tasks.
+  model: "sonnet"
+  # Permission handling for side-effectful tools (Write/Edit/Bash/etc.):
+  #   "ask"      -> Jarvis asks you (spoken or on-screen) before running them
+  #   "auto"     -> auto-approve everything (fastest, least safe)
+  permission: "ask"
+  # Working directory the agent operates in (files, shell). Relative to project root.
+  workspace: "workspace"
+
+voice:
+  # Master switches. Text path works with both off.
+  input_enabled: true    # microphone / wake word / push-to-talk
+  output_enabled: true   # speak responses
+
+  stt:
+    # faster-whisper model: tiny.en / base.en / small.en / medium.en / large-v3
+    model: "small.en"
+    language: "en"
+    # "oww" (openWakeWord, no key) or "pvporcupine" (needs PICOVOICE_ACCESS_KEY)
+    wakeword_backend: "oww"
+    wake_words: "hey jarvis"
+    wake_word_sensitivity: 0.6
+
+  tts:
+    # "system" (local macOS voice, no key) or "elevenlabs" (needs ELEVENLABS_API_KEY)
+    engine: "system"
+    # For elevenlabs: a voice id or name. Ignored by the system engine.
+    voice: ""
+
+  hotkey:
+    # Push-to-talk chord (pynput syntax). Hold to talk, release to send.
+    push_to_talk: "<cmd>+<shift>+j"
