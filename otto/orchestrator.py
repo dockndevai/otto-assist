@@ -22,8 +22,16 @@ _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 # Common speech-to-text mishearings of the "otto" trigger word.
 _WAKE_ALIASES = {
     "otto": {"otto", "auto", "oto", "ottos", "otho", "atto", "alto", "otter",
-             "ottoh", "audo", "auddo", "ado", "ottto", "hotto"},
+             "ottoh", "audo", "auddo", "ado", "ottto", "hotto", "otta", "auddo"},
 }
+_GREETINGS = {"hey", "hi", "ok", "okay", "yo", "hello", "hay"}
+
+
+def _norm_words(s: str) -> list[str]:
+    """Lowercase, split hyphens/slashes into words, drop other punctuation."""
+    s = re.sub(r"[-_/]+", " ", s.lower())
+    s = re.sub(r"[^a-z0-9 ]", "", s)
+    return s.split()
 
 
 def _levenshtein(a: str, b: str) -> int:
@@ -231,19 +239,23 @@ class Orchestrator:
     def _match_wake(self, text: str) -> tuple[bool, str]:
         """Does `text` start with the wake phrase (fuzzily)? -> (matched, command).
 
-        Speech-to-text often mishears the trigger word (e.g. "Otto" -> "Auto"), so we
-        match the trigger word by small edit distance / known aliases rather than exactly.
+        Speech-to-text mishears the trigger a lot ("Otto"->"Auto", "Hey Otto"->"Hiyoto",
+        "Otto open"->"auto-open"), so we normalize punctuation to spaces and match the
+        trigger word — or the whole fused phrase — by aliases / small edit distance.
         """
-        norm = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()
-        phrase = re.sub(r"[^a-z0-9 ]", "", self.settings.voice.stt.wake_words.lower()).split()
+        norm = _norm_words(text)
+        phrase = _norm_words(self.settings.voice.stt.wake_words)
         if not norm or not phrase:
             return False, ""
         trigger = phrase[-1]                          # e.g. "otto"
-        start = 1 if norm[0] in ("hey", "hi", "ok", "okay", "hey!") else 0
+        start = 1 if norm[0] in _GREETINGS else 0
         if start < len(norm) and _wordish(norm[start], trigger):
             return True, " ".join(norm[start + 1:])
-        # also accept the trigger as the very first word even without a greeting
-        if _wordish(norm[0], trigger):
+        if _wordish(norm[0], trigger):                # trigger first, no greeting
+            return True, " ".join(norm[1:])
+        # fused whole phrase, e.g. "Hey Otto" -> "hiyoto" vs "heyotto"
+        concat = "".join(phrase)
+        if len(concat) >= 6 and _levenshtein(norm[0], concat) <= 2:
             return True, " ".join(norm[1:])
         return False, ""
 
