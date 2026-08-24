@@ -93,6 +93,12 @@ class Ears:
             enable_realtime_transcription=False,
             on_recording_start=lambda: self._post(self._on_speech_start),
         )
+        # Prime Whisper with the wake word so it actually transcribes the name (small
+        # models otherwise drop "Otto" -> hear "auto"/"your"). Big reliability win for the
+        # software ("phrase") wake word.
+        if cfg.wakeword_backend == "phrase" and cfg.wake_words:
+            name = cfg.wake_words.strip().title()          # "Hey Otto"
+            params["initial_prompt"] = f"{name}. {name.split()[-1]}, "
         if self._on_recording_stop is not None:
             params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
 

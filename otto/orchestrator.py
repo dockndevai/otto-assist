@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
+import sys
 from typing import Any
 
 from .brain.agent import ClaudeBrain
@@ -225,6 +226,8 @@ class Orchestrator:
                 self.submit_user_input(text)
                 return
             matched, remainder = self._match_wake(text)
+            print(f"[otto] heard: {text!r} | matched={matched} cmd={remainder!r}",
+                  file=sys.stderr, flush=True)
             if not matched:
                 if self.state == "listening":
                     self._status("idle", "Ready")     # ignore ambient speech
@@ -309,6 +312,7 @@ class Orchestrator:
     # -- the turn ----------------------------------------------------------
     async def _handle_turn(self, text: str) -> None:
         async with self._turn_lock:
+            print(f"[otto] turn -> brain: {text!r}", file=sys.stderr, flush=True)
             self.bus.transcript("user", text, final=True)
             self._status("thinking", "Thinking…")
             self._speech_buf = ""
@@ -330,8 +334,11 @@ class Orchestrator:
                                 ev.get("error_text") or "The model returned an error.",
                             )
             except Exception as e:
+                print(f"[otto] turn error: {e!r}", file=sys.stderr, flush=True)
                 self.bus.notify("Error", str(e))
             finally:
+                print(f"[otto] turn done, reply len={len(assistant_text)}",
+                      file=sys.stderr, flush=True)
                 self._flush_speech()
                 if assistant_text.strip():
                     self.bus.transcript("assistant", assistant_text.strip(), final=True)
