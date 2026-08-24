@@ -81,6 +81,10 @@ class STTConfig(BaseModel):
     wakeword_backend: str = "phrase"
     wake_words: str = "hey otto"
     wake_word_sensitivity: float = 0.6
+    # For backend "oww": path to a custom openWakeWord model (.onnx/.tflite), e.g. a
+    # trained "hey otto". Empty = use openWakeWord's built-in phrases via `wake_words`.
+    oww_model_path: str = ""
+    oww_inference_framework: str = "onnx"   # "onnx" or "tflite" (match your model file)
 
 
 class TTSConfig(BaseModel):

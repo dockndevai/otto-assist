@@ -106,14 +106,22 @@ class Ears:
         # orchestrator match the phrase. Otherwise use a hardware wake-word gate.
         use_gate = bool(cfg.wake_words) and cfg.wakeword_backend != "phrase"
         if use_gate:
-            if cfg.wakeword_backend in ("pvporcupine", "porcupine", "pvp"):
-                _install_porcupine_custom_keyword_shim()
             params.update(
                 wakeword_backend=cfg.wakeword_backend,
                 wake_words=cfg.wake_words,
                 wake_words_sensitivity=cfg.wake_word_sensitivity,
                 on_wakeword_detected=lambda: self._post(self._on_wake),
             )
+            if cfg.wakeword_backend in ("pvporcupine", "porcupine", "pvp"):
+                _install_porcupine_custom_keyword_shim()
+            elif cfg.wakeword_backend in ("oww", "openwakeword") and cfg.oww_model_path:
+                # Custom trained openWakeWord model (e.g. "hey otto"): load it directly and
+                # match on its own name so only this model triggers.
+                from pathlib import Path
+                path = os.path.expanduser(cfg.oww_model_path)
+                params["openwakeword_model_paths"] = path
+                params["openwakeword_inference_framework"] = cfg.oww_inference_framework
+                params["wake_words"] = Path(path).stem
 
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
