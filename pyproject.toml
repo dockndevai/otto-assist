@@ -18,7 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 # Voice stack — installed separately so the text path works without a mic.
 voice = [
-    "RealtimeSTT>=0.3.0",   # faster-whisper + VAD + wake word (ears)
+    "RealtimeSTT>=0.3.0",   # VAD + wake word + streaming (ears)
+    "faster-whisper>=1.0",  # the actual Whisper transcription engine
     "RealtimeTTS>=0.4.0",   # streaming text-to-speech (mouth)
     "pynput>=1.7",          # global push-to-talk hotkey
 ]
