@@ -9,7 +9,9 @@ always-on loop) that plugs into the **Claude Code already installed on your Mac*
 you *talk* to it. Your MCP servers, subagents, skills, and `CLAUDE.md` — all of it, now by
 voice, on a live dashboard.
 
-![Otto dashboard — conversation with a chart rendered on the canvas](assets/dashboard.png)
+![Otto in action — talking to your Claude, with a chart rendered on the canvas](assets/otto-demo.gif)
+
+<sub>▶️ [Watch the demo (MP4)](assets/otto-demo.mp4) · the transcript, streamed replies, and the canvas are all live.</sub>
 
 </div>
 

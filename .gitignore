@@ -29,3 +29,4 @@ models/
 # Runtime conversation history
 history.jsonl
 *.jsonl
+rec/
