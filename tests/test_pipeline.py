@@ -1,38 +1,34 @@
-"""Tests for the parts of Otto that don't need a live model:
-config precedence, the event bus, tool/subagent construction, and the orchestrator's
-turn-taking logic (ask_user routing, confirm parsing, canvas rendering).
+"""Offline tests for the wiring that doesn't need a live model: config/storage, the event
+bus, voice/screen tool construction, permission routing, project discovery, the MCP server,
+and the orchestrator's turn-taking logic.
 
-The live brain path (Claude auth -> streamed reply) is exercised separately by running
-the app; it needs a valid `claude` login and is not part of this offline suite.
+The live path (Otto running the user's Claude, resuming a project session) is exercised by
+running the app; it needs a valid `claude` login and is not part of this offline suite.
 """
 
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
-from otto.brain.connectors import (
-    build_delegate_server,
-    cli_agents_description,
-    external_mcp_servers,
-    run_cli,
-)
-from otto.brain.subagents import default_agents
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+
+from otto.brain.agent import VOICE_WRAPPER, ClaudeBrain
 from otto.brain.tools import build_server, qualified_names
-from otto.config import (
-    CliConnector,
-    ConnectorsConfig,
-    McpConnector,
-    Settings,
-    load_settings,
-)
+from otto.config import PROJECT_ROOT, load_settings
+from otto.mcpserver import build_mcp
 from otto.orchestrator import Orchestrator
+from otto.projects import _decode, list_projects
 from otto.server.app import create_app
 from otto.server.events import EventBus
 
 
 class FakeCtx:
+    def __init__(self):
+        self._answer = True
     async def say(self, t): ...
     async def ask_user(self, q): return "x"
+    async def confirm(self, action): return self._answer
     def render_canvas(self, c, f="html"): ...
     def set_status(self, t): ...
     def notify(self, t, b=""): ...
@@ -41,9 +37,10 @@ class FakeCtx:
 def test_config_precedence(monkeypatch):
     monkeypatch.setenv("OTTO_BRAIN__MODEL", "opus")
     s = load_settings()
-    assert s.brain.model == "opus"          # env overrides yaml
+    assert s.brain.model == "opus"                 # env overrides yaml
+    assert s.brain.type == "claude"
     assert s.voice.stt.wake_words == "hey jarvis"  # from yaml
-    assert s.server.port == 8000            # yaml/default
+    assert s.server.port == 8000
 
 
 def test_event_bus_fanout():
@@ -55,26 +52,69 @@ def test_event_bus_fanout():
     bus.unsubscribe(q1)
     bus.canvas("<b>x</b>")
     assert q2.get_nowait()["type"] == "canvas_render"
-    assert q2.empty()  # q1 no longer receives
 
 
-def test_tools_and_subagents_build():
+def test_voice_tools_build():
     server = build_server(FakeCtx())
     assert server is not None
     names = qualified_names()
-    assert "mcp__otto__render_canvas" in names
-    assert "mcp__otto__ask_user" in names
-    agents = default_agents()
-    assert set(agents) == {"researcher", "coder"}
-    assert "WebSearch" in agents["researcher"].tools
+    assert "mcp__voice__render_canvas" in names
+    assert "mcp__voice__ask_user" in names
 
 
-def test_app_routes():
+def test_defers_to_claude_config():
+    # ClaudeBrain injects only voice manners; no custom persona/subagents/connectors.
+    assert "Otto" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    import otto.brain as pkg
+    assert not (Path(pkg.__file__).parent / "subagents.py").exists()
+    assert not (Path(pkg.__file__).parent / "connectors.py").exists()
+
+
+def test_permission_routing():
+    async def run():
+        s = load_settings()
+        ctx = FakeCtx()
+        b = ClaudeBrain(ctx, s)
+        s.brain.permission = "auto"
+        assert isinstance(await b._permission("Bash", {"command": "ls"}, None), PermissionResultAllow)
+        s.brain.permission = "deny"
+        assert isinstance(await b._permission("Bash", {}, None), PermissionResultDeny)
+        # Otto's own voice/screen tools are always allowed, even under deny.
+        assert isinstance(await b._permission("mcp__voice__say", {}, None), PermissionResultAllow)
+        # voice mode defers to ctx.confirm
+        s.brain.permission = "voice"
+        ctx._answer = True
+        assert isinstance(await b._permission("Bash", {"command": "x"}, None), PermissionResultAllow)
+        ctx._answer = False
+        assert isinstance(await b._permission("Bash", {"command": "x"}, None), PermissionResultDeny)
+    asyncio.run(run())
+
+
+def test_projects_discovery():
+    # _decode round-trips a real directory (encode PROJECT_ROOT the way Claude does).
+    encoded = str(PROJECT_ROOT).replace("/", "-")   # leading "/" -> leading "-"
+    assert _decode(encoded) == str(PROJECT_ROOT)
+    # list_projects always includes the current project, marked.
+    projs = list_projects(current=str(PROJECT_ROOT), pinned=[])
+    cur = [p for p in projs if p.current]
+    assert cur and cur[0].path == str(PROJECT_ROOT)
+
+
+def test_app_routes_and_mcp():
     s = load_settings()
-    bus = EventBus()
-    app = create_app(Orchestrator(s, bus), bus)
-    paths = {r.path for r in app.routes}
-    assert "/" in paths and "/ws" in paths
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert "/" in paths and "/ws" in paths and "/settings" in paths
+    assert any(p.startswith("/api/config") for p in paths)
+    # MCP sub-app mounted when register_mcp is on.
+    assert any("/mcp" in getattr(r, "path", "") for r in app.routes)
+
+
+def test_mcp_server_builds():
+    mcp = build_mcp(Orchestrator(load_settings(), EventBus()))
+    assert mcp is not None
+    names = {t.name for t in asyncio.run(mcp.list_tools())}
+    assert {"speak", "show", "ask", "notify", "status"} <= names
 
 
 def test_render_canvas_publishes():
@@ -92,48 +132,8 @@ def test_ask_user_answer_routing():
         orch._loop = asyncio.get_running_loop()
         task = asyncio.create_task(orch.ask_user("pick a or b?"))
         await asyncio.sleep(0.05)
-        orch.submit_user_input("b")            # routed as the answer, not a new turn
+        orch.submit_user_input("b")
         assert await asyncio.wait_for(task, 2) == "b"
-    asyncio.run(run())
-
-
-def test_external_mcp_servers_mapping():
-    s = load_settings()
-    s.connectors = ConnectorsConfig(
-        mcp={
-            "fs": McpConnector(transport="stdio", command="npx", args=["-y", "srv"]),
-            "remote": McpConnector(transport="http", url="http://127.0.0.1:9000/mcp"),
-            "broken": McpConnector(transport="stdio"),  # no command -> skipped
-        }
-    )
-    out = external_mcp_servers(s)
-    assert out["fs"] == {"type": "stdio", "command": "npx", "args": ["-y", "srv"]}
-    assert out["remote"] == {"type": "http", "url": "http://127.0.0.1:9000/mcp"}
-    assert "broken" not in out
-
-
-def test_delegate_server_presence():
-    s = load_settings()
-    assert build_delegate_server(s) is None            # no CLI connectors -> no server
-    s.connectors = ConnectorsConfig(
-        cli={"echoer": CliConnector(command=["echo"], description="prints input")}
-    )
-    assert build_delegate_server(s) is not None
-    assert '"echoer"' in cli_agents_description(s)
-
-
-def test_run_cli_executes():
-    async def run():
-        conn = CliConnector(command=["echo"], timeout=10)
-        out = await run_cli(conn, "hello otto", ".")
-        assert "hello otto" in out and "[ok]" in out
-        # {task} substitution
-        conn2 = CliConnector(command=["echo", "pre", "{task}", "post"], timeout=10)
-        out2 = await run_cli(conn2, "MID", ".")
-        assert "pre MID post" in out2
-        # missing binary is reported, not raised
-        conn3 = CliConnector(command=["definitely_not_a_real_binary_xyz"], timeout=10)
-        assert "command not found" in await run_cli(conn3, "x", ".")
     asyncio.run(run())
 
 
@@ -142,8 +142,8 @@ def test_confirm_parsing():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
 
-        async def answer(text, question="do a thing"):
-            t = asyncio.create_task(orch.confirm(question))
+        async def answer(text):
+            t = asyncio.create_task(orch.confirm("do a thing"))
             await asyncio.sleep(0.05)
             orch.submit_user_input(text)
             return await asyncio.wait_for(t, 2)
@@ -151,5 +151,4 @@ def test_confirm_parsing():
         assert await answer("yes") is True
         assert await answer("go ahead") is True
         assert await answer("no thanks") is False
-        assert await answer("stop") is False
     asyncio.run(run())

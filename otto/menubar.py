@@ -21,6 +21,7 @@ import uvicorn
 
 from .config import load_env, load_settings
 from .orchestrator import Orchestrator
+from .projects import list_projects
 from .server.app import create_app
 from .server.events import EventBus
 
@@ -45,20 +46,46 @@ class OttoApp(rumps.App):
         self._server: uvicorn.Server | None = None
 
         self.status_item = rumps.MenuItem("Starting…")
+        self.project_menu = rumps.MenuItem("Project")
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.menu = [
             self.status_item,
             None,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
+            rumps.MenuItem("Settings…", callback=self.open_settings),
+            self.project_menu,
             self.mic_item,
             self.voice_item,
             None,
             rumps.MenuItem("Restart", callback=self.restart),
             rumps.MenuItem("Quit Otto", callback=self.quit_app),
         ]
+        self._proj_tick = 0
+        self._refresh_projects()
 
         threading.Thread(target=self._run_backend, daemon=True).start()
+
+    # -- project switcher --------------------------------------------------
+    def _refresh_projects(self) -> None:
+        try:
+            projs = list_projects(current=self.orch.current_project,
+                                  pinned=self.settings.brain.projects)
+        except Exception:
+            return
+        self.project_menu.clear()
+        for p in projs:
+            item = rumps.MenuItem(p.name, callback=self._make_switch(p.path))
+            item.state = 1 if p.current else 0
+            self.project_menu.add(item)
+
+    def _make_switch(self, path: str):
+        def _cb(_):
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(self.orch.switch_project(path))
+                )
+        return _cb
 
     # -- backend (its own asyncio loop, off the main thread) ---------------
     def _run_backend(self) -> None:
@@ -92,9 +119,16 @@ class OttoApp(rumps.App):
     def _tick(self, _) -> None:
         self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
         self.title = "🔇" if self.orch.mic_muted else "🧠"
+        # Refresh the project list (and current checkmark) every ~8s.
+        self._proj_tick = (self._proj_tick + 1) % 8
+        if self._proj_tick == 0:
+            self._refresh_projects()
 
     def open_dashboard(self, _) -> None:
         webbrowser.open(self.url)
+
+    def open_settings(self, _) -> None:
+        webbrowser.open(self.url + "/settings")
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted

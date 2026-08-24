@@ -63,6 +63,21 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl enable "gui/$(id -u)/$LABEL"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
+echo "==> Registering Otto as an MCP server for Claude Code"
+PORT="$("$PY" - <<'PY'
+from otto.config import load_settings
+print(load_settings().server.port)
+PY
+)"
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove otto 2>/dev/null || true
+  claude mcp add --transport http --scope user otto "http://127.0.0.1:${PORT}/mcp/" \
+    && echo "    Registered. Any Claude session now has speak/ask/show/notify." \
+    || echo "    Could not auto-register; add manually: claude mcp add --transport http otto http://127.0.0.1:${PORT}/mcp/"
+else
+  echo "    'claude' not on PATH — skipped MCP registration."
+fi
+
 cat <<EOF
 
 Otto is installed and running — look for the 🧠 in your menu bar.

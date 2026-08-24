@@ -87,6 +87,12 @@ function handle(ev) {
     case "notify":
       bubble("assistant", `🔔 ${ev.title}${ev.body ? " — " + ev.body : ""}`);
       break;
+
+    case "project": {
+      const el = document.getElementById("proj");
+      if (el) el.textContent = "📁 " + (ev.name || ev.path || "—");
+      break;
+    }
   }
 }
 

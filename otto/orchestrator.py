@@ -12,8 +12,9 @@ import re
 import subprocess
 from typing import Any
 
-from .brain.agent import Brain
-from .config import Settings
+from .brain.agent import ClaudeBrain
+from .brain.base import Brain
+from .config import Settings, save_config
 from .server.events import EventBus
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
@@ -38,7 +39,8 @@ class Orchestrator:
     def __init__(self, settings: Settings, bus: EventBus) -> None:
         self.settings = settings
         self.bus = bus
-        self.brain = Brain(self, settings)
+        self.brain: Brain = self._make_brain()
+        self.current_project = str(settings.project_path)
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
@@ -51,6 +53,10 @@ class Orchestrator:
         self.state = "starting"
         self.mic_muted = False
         self.voice_muted = False
+
+    def _make_brain(self) -> Brain:
+        # Only Claude today; the Brain protocol lets other agents drop in later.
+        return ClaudeBrain(self, self.settings)
 
     def _status(self, state: str, text: str = "") -> None:
         self.state = state
@@ -93,6 +99,7 @@ class Orchestrator:
                 self.ears = None
                 self.bus.notify("Voice input off", str(e))
 
+        self._publish_project()
         self._status("idle", "Ready")
 
     async def stop(self) -> None:
@@ -101,6 +108,40 @@ class Orchestrator:
         if self._ptt:
             self._ptt.stop()
         await self.brain.disconnect()
+
+    def _publish_project(self) -> None:
+        self.bus.publish({"type": "project", "path": self.current_project,
+                          "name": self.current_project.rstrip("/").split("/")[-1]})
+
+    async def switch_project(self, path: str) -> None:
+        """Re-bind the brain to another project directory (resumes its latest session)."""
+        from pathlib import Path
+        p = str(Path(path).expanduser())
+        if p == self.current_project:
+            return
+        self._status("thinking", f"Switching to {Path(p).name}…")
+        await self.brain.disconnect()
+        self.settings.brain.project_dir = p
+        self.current_project = p
+        self.brain = self._make_brain()
+        await self.brain.connect()
+        # Remember the choice for next launch.
+        try:
+            self._persist_project(p)
+        except Exception:
+            pass
+        self._publish_project()
+        self._status("idle", f"Ready · {Path(p).name}")
+        await self.say(f"Switched to {Path(p).name}.")
+
+    def _persist_project(self, path: str) -> None:
+        import yaml
+        from .config import config_path
+        cfg_file = config_path()
+        data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+        data = data or {}
+        data.setdefault("brain", {})["project_dir"] = path
+        save_config(data)
 
     # -- input routing -----------------------------------------------------
     def submit_user_input(self, text: str) -> None:
@@ -204,8 +245,6 @@ class Orchestrator:
     def _announce_tool(self, name: str, detail: str) -> None:
         if name == "Task":
             self.bus.tool_use("subagent", detail)
-        elif name == "mcp__agents__delegate":
-            self.bus.tool_use("delegate", detail)
         elif name.startswith("mcp__"):
             self.bus.tool_use(name.split("__")[-1], detail)
         else:

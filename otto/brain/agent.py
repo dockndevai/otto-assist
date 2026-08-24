@@ -1,8 +1,10 @@
-"""The brain: a persistent Claude session wired to Otto's tools and subagents.
+"""ClaudeBrain — runs the user's own Claude, wired to Otto's voice/screen.
 
-Wraps ClaudeSDKClient. `send()` streams the response back as a series of small events
-(text deltas, tool_use, result) that the orchestrator forwards to the mouth (TTS) and the
-screen (web UI).
+This is deliberately thin. It does NOT define a persona, subagents, or MCP servers of its
+own. Instead it loads the user's Claude configuration (settings, MCP servers, subagents,
+skills, CLAUDE.md, permissions) via ``setting_sources`` and uses the ``claude_code`` system
+prompt preset — so Otto behaves exactly like the user's Claude, just spoken. The only thing
+Otto injects is a short voice-manners note and its voice/screen tools.
 """
 
 from __future__ import annotations
@@ -23,103 +25,56 @@ from claude_agent_sdk import (
 )
 
 from ..config import Settings
-from .connectors import (
-    DELEGATE_SERVER,
-    build_delegate_server,
-    cli_agents_description,
-    external_mcp_servers,
-)
-from .subagents import default_agents
 from .tools import AssistantContext, build_server
 
-PERSONA = """You are Otto, a realtime personal assistant that talks with the user by voice \
-and shows things on a dashboard. You run on the user's own Mac and can get real work done.
-
-Style:
-- Your replies are SPOKEN aloud, so keep them short, natural, and conversational. No \
-markdown, no bullet lists, no code blocks in spoken replies.
-- When you have something visual or long to present (a chart, a table, a document, code, \
-detailed results), DON'T read it aloud — call the render_canvas tool to show it on the \
-dashboard, and say a one-line summary out loud.
-- When a request is ambiguous or you need a decision, use the ask_user tool and wait for \
-the answer. Don't guess on consequential things.
-- Before a consequential or irreversible action (sending messages, deleting, spending), \
-confirm with the user first.
-
-Capabilities:
-- You can read/write files and run shell commands in your workspace directory.
-- For open-ended research or self-contained coding jobs, dispatch a subagent with the \
-Task tool (researcher / coder). Tell the user briefly when you're kicking one off.
-- You may also have external agents/tools connected on this machine (listed below). Use \
-the `delegate` tool to hand a task to a command-line agent, and any connected tool \
-servers' tools directly. Tell the user which agent you're routing work to.
-- Use the say tool to give a quick spoken progress update during longer work.
-
-Be proactive, concise, and genuinely useful."""
-
-# Built-in tools that mutate the machine — gated when permission mode is "ask".
-ASK_TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
+# Appended to Claude's own system prompt — voice manners only, no persona override.
+VOICE_WRAPPER = """You are being spoken to and heard aloud through Otto, a voice interface.
+Keep replies short, natural, and conversational — they are read out by text-to-speech, so \
+no markdown, bullet lists, or code blocks in what you say. When you have something visual \
+or long to present (a chart, table, document, code, detailed results), don't read it out — \
+call the render_canvas tool to show it on the dashboard and say a one-line summary. When a \
+request is ambiguous or needs a decision, use the ask_user tool and wait. Use the say tool \
+for quick progress updates during longer work. Everything else about how you work — your \
+tools, subagents, project instructions — is unchanged."""
 
 
-def _describe(tool_name: str, args: dict[str, Any]) -> str:
-    """A short human phrase for a pending action, for spoken/typed confirmation."""
-    if tool_name == "Bash":
-        return f"run the command: {args.get('command', '')}"
-    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-        return f"modify the file {args.get('file_path', args.get('path', 'a file'))}"
-    return f"use the {tool_name} tool"
-
-
-class Brain:
+class ClaudeBrain:
     def __init__(self, ctx: AssistantContext, settings: Settings) -> None:
         self.ctx = ctx
         self.settings = settings
         self.client: ClaudeSDKClient | None = None
 
     async def connect(self) -> None:
-        mcp_servers: dict[str, object] = {"otto": build_server(self.ctx)}
-        # Attach external MCP connectors (their tools become Otto's tools).
-        mcp_servers.update(external_mcp_servers(self.settings))
-        # Attach the CLI-agent delegate tool, if any CLI connectors are configured.
-        delegate = build_delegate_server(self.settings)
-        if delegate is not None:
-            mcp_servers[DELEGATE_SERVER] = delegate
-
+        b = self.settings.brain
         options = ClaudeAgentOptions(
-            system_prompt=self._system_prompt(),
-            model=self.settings.brain.model,
-            mcp_servers=mcp_servers,
-            agents=default_agents(),
+            system_prompt={
+                "type": "preset",
+                "preset": "claude_code",
+                "append": VOICE_WRAPPER,
+            },
+            # Load the user's own Claude setup: MCP servers, subagents, skills, CLAUDE.md.
+            setting_sources=(["user", "project", "local"] if b.use_claude_config else []),
+            # Otto's voice/screen tools are the only thing we add (named "voice" to avoid
+            # colliding with an externally-registered "otto" MCP the user's Claude may load).
+            mcp_servers={"voice": build_server(self.ctx)},
             can_use_tool=self._permission,
-            cwd=str(self.settings.workspace_path),
-            add_dirs=[os.path.expanduser(d) for d in self.settings.brain.extra_dirs],
-            setting_sources=[],  # isolated — ignore ambient project/user settings
+            cwd=str(self.settings.project_path),
+            add_dirs=self.settings.add_dirs,
+            continue_conversation=b.continue_conversation,
             include_partial_messages=True,
             permission_mode="default",
+            **({"model": b.model} if b.model else {}),
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
 
-    def _system_prompt(self) -> str:
-        """Persona plus a live list of the agents/connectors available on this machine."""
-        prompt = PERSONA
-        cli_desc = cli_agents_description(self.settings)
-        if cli_desc:
-            prompt += (
-                "\n\nCommand-line agents you can hand tasks to via the `delegate` tool "
-                "(pass the exact name):\n" + cli_desc
-            )
-        mcp_names = list(self.settings.connectors.mcp)
-        if mcp_names:
-            prompt += (
-                "\n\nConnected tool servers (their tools are available to you directly): "
-                + ", ".join(mcp_names)
-            )
-        return prompt
-
     async def disconnect(self) -> None:
         if self.client:
-            await self.client.disconnect()
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
+            self.client = None
 
     async def interrupt(self) -> None:
         if self.client:
@@ -128,17 +83,25 @@ class Brain:
             except Exception:
                 pass
 
-    async def _permission(
-        self, tool_name: str, input_data: dict[str, Any], context: Any
-    ):
-        if tool_name in ASK_TOOLS and self.settings.brain.permission == "ask":
-            ok = await self.ctx.confirm(_describe(tool_name, input_data))
-            if not ok:
-                return PermissionResultDeny(message="The user declined this action.")
-        return PermissionResultAllow()
+    async def _permission(self, tool_name: str, input_data: dict[str, Any], context: Any):
+        """Route Claude's permission prompts to voice/UI per the wiring setting.
+
+        Only invoked for tools the user's own Claude rules didn't already auto-approve.
+        Otto's own voice/screen tools are always allowed.
+        """
+        if tool_name.startswith("mcp__voice__"):
+            return PermissionResultAllow()
+        mode = self.settings.brain.permission
+        if mode == "auto":
+            return PermissionResultAllow()
+        if mode == "deny":
+            return PermissionResultDeny(message="Denied by Otto's permission setting.")
+        ok = await self.ctx.confirm(_describe(tool_name, input_data))
+        return PermissionResultAllow() if ok else PermissionResultDeny(
+            message="The user declined this action."
+        )
 
     async def send(self, text: str) -> AsyncIterator[dict[str, Any]]:
-        """Send a user turn; yield {type: delta|tool_use|result} events."""
         assert self.client is not None, "Brain not connected"
         await self.client.query(text)
         delta_emitted = False
@@ -161,7 +124,6 @@ class Brain:
                         }
             elif isinstance(message, ResultMessage):
                 full = "".join(text_blocks).strip()
-                # Fallback: if the CLI didn't stream token deltas, emit the whole text.
                 if not delta_emitted and full:
                     yield {"type": "delta", "text": full}
                 yield {
@@ -170,6 +132,14 @@ class Brain:
                     "cost": message.total_cost_usd,
                     "error_text": full if message.is_error else "",
                 }
+
+
+def _describe(tool_name: str, args: dict[str, Any]) -> str:
+    if tool_name == "Bash":
+        return f"run the command: {args.get('command', '')}"
+    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return f"modify the file {args.get('file_path', args.get('path', 'a file'))}"
+    return f"use the {tool_name} tool"
 
 
 def _extract_text_delta(event: dict[str, Any] | None) -> str:
@@ -185,10 +155,8 @@ def _extract_text_delta(event: dict[str, Any] | None) -> str:
 def _tool_detail(name: str, args: dict[str, Any]) -> str:
     if name == "Task":
         return f"{args.get('subagent_type', 'subagent')}: {args.get('description', '')}"
-    if name == "mcp__agents__delegate":
-        return f"{args.get('agent', '')}: {str(args.get('task', ''))[:80]}"
     if name == "Bash":
         return str(args.get("command", ""))[:120]
-    if name.startswith("mcp__otto__"):
+    if name.startswith("mcp__voice__"):
         return ""
     return ", ".join(f"{k}={str(v)[:40]}" for k, v in list(args.items())[:2])

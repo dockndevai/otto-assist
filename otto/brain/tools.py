@@ -11,7 +11,9 @@ from typing import Any, Protocol
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-SERVER_NAME = "otto"
+# In-process voice/screen tools for the HOSTED brain. Named "voice" (not "otto") so it
+# never collides with the externally-registered "otto" MCP a user's Claude may also load.
+SERVER_NAME = "voice"
 
 
 class AssistantContext(Protocol):

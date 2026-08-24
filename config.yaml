@@ -1,68 +1,42 @@
-# Otto configuration. Everything here has a sensible default in otto/config.py;
-# edit to taste. Env vars (OTTO_*) override these values.
+# Otto configuration — WIRING only (how voice/UI flows).
+# Agent behavior (MCP servers, subagents, skills, CLAUDE.md, permissions) comes from your
+# OWN Claude config — Otto loads it. Env vars (OTTO_*) override these values.
+# When installed, the live copy lives at ~/Library/Application Support/Otto/config.yaml
+# and is editable from the menu bar → Settings.
 
 server:
   host: "127.0.0.1"
   port: 8000
 
 brain:
-  # Model alias ("sonnet", "opus", "haiku") or a full model id.
-  # sonnet is a good default for snappy voice; switch to opus for hard tasks.
-  model: "sonnet"
-  # Permission handling for side-effectful tools (Write/Edit/Bash/etc.):
-  #   "ask"      -> Otto asks you (spoken or on-screen) before running them
-  #   "auto"     -> auto-approve everything (fastest, least safe)
-  permission: "ask"
-  # Working directory the agent operates in (files, shell). Relative to project root.
-  workspace: "workspace"
+  type: claude
+  model: ""                    # blank = use Claude's default model
+  # How Claude's permission prompts (for consequential tools) are handled:
+  #   voice -> Otto asks you   |   auto -> approve   |   deny -> reject
+  permission: voice
+  project_dir: "~"             # current project = the brain's working directory
+  projects: []                 # pinned projects for the menu-bar switcher
+  extra_dirs: []               # extra readable dirs beyond the project (~ expanded)
+  use_claude_config: true      # load your ~/.claude settings, MCP, subagents, skills, CLAUDE.md
+  continue_conversation: true  # resume the project's most recent Claude session
+  register_mcp: true           # expose /mcp so `claude mcp add otto` gives Claude voice+screen
 
 voice:
-  # Master switches. Text path works with both off.
-  input_enabled: true    # microphone / wake word / push-to-talk
-  output_enabled: true   # speak responses
+  input_enabled: true          # microphone / wake word / push-to-talk
+  output_enabled: true         # speak replies
 
   stt:
-    # faster-whisper model: tiny.en / base.en / small.en / medium.en / large-v3
-    model: "small.en"
+    model: "small.en"          # faster-whisper: tiny/base/small/medium/large-v3 (+ .en)
     language: "en"
-    # "oww" (openWakeWord, no key) or "pvporcupine" (needs PICOVOICE_ACCESS_KEY)
-    wakeword_backend: "oww"
-    # NOTE: openWakeWord only ships a few built-in phrases; "hey jarvis" is one of them,
-    # so it's the default trigger even though the app is named Otto. To say "hey otto"
-    # you'd switch to the "pvporcupine" backend with a custom Picovoice keyword, or train
-    # a custom openWakeWord model. (Push-to-talk with ⌘⇧J needs no wake word.)
+    wakeword_backend: "oww"    # "oww" (openWakeWord, no key) or "pvporcupine"
+    # openWakeWord only ships a few phrases; "hey jarvis" is one, so it's the default
+    # trigger even though the app is Otto. For "hey otto", use Porcupine or a custom model.
     wake_words: "hey jarvis"
     wake_word_sensitivity: 0.6
 
   tts:
-    # "system" (local macOS voice, no key) or "elevenlabs" (needs ELEVENLABS_API_KEY)
-    engine: "system"
-    # For elevenlabs: a voice id or name. Ignored by the system engine.
+    engine: "system"           # "system" (local macOS voice) or "elevenlabs" (needs key)
     voice: ""
 
   hotkey:
-    # Push-to-talk chord (pynput syntax). Hold to talk, release to send.
     push_to_talk: "<cmd>+<shift>+j"
-
-# Other agents/tools on this machine that Otto can orchestrate. Uncomment to enable.
-connectors:
-  # MCP servers — their tools become Otto's tools directly.
-  mcp: {}
-  #   filesystem:
-  #     transport: stdio
-  #     command: "npx"
-  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
-  #   some_remote:
-  #     transport: http
-  #     url: "http://127.0.0.1:9000/mcp"
-
-  # Command-line agents — Otto hands them a task via the `delegate` tool.
-  cli: {}
-  #   claude:
-  #     command: ["claude", "-p"]        # task is appended as the final argument
-  #     description: "A fresh headless Claude Code session for a self-contained job."
-  #     timeout: 600
-  #   aider:
-  #     command: ["aider", "--message", "{task}"]   # {task} is substituted in place
-  #     description: "Autonomous coding in the current repo."
-  #     cwd: "/Users/you/code/myproject"

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Otto — Settings</title>
+  <style>
+    :root { --bg:#0a0e14; --panel:#111721; --line:#1e2836; --text:#dfe7f2; --muted:#7d8aa0; --accent:#37c0ff; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,sans-serif; }
+    .wrap { max-width:760px; margin:0 auto; padding:32px 24px 64px; }
+    h1 { letter-spacing:3px; font-size:20px; } a { color:var(--accent); text-decoration:none; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; margin:16px 0; }
+    .card h2 { font-size:14px; letter-spacing:2px; color:var(--muted); margin:0 0 16px; text-transform:uppercase; }
+    label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
+    input, select { width:100%; background:#0d131c; border:1px solid var(--line); color:var(--text);
+      padding:9px 11px; border-radius:8px; font-size:14px; outline:none; }
+    input:focus, select:focus { border-color:var(--accent); }
+    .row { display:flex; gap:8px; align-items:center; }
+    .row input[type=checkbox] { width:auto; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
+    button { background:var(--accent); color:#001521; border:0; border-radius:9px; padding:10px 18px;
+      font-weight:600; cursor:pointer; font-size:14px; }
+    button.ghost { background:#16202c; color:var(--text); border:1px solid var(--line); }
+    .proj { display:flex; justify-content:space-between; align-items:center; padding:9px 11px;
+      border:1px solid var(--line); border-radius:8px; margin:6px 0; font-size:13px; }
+    .proj.cur { border-color:var(--accent); }
+    .muted { color:var(--muted); font-size:12px; }
+    .bar { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 40%); padding-top:24px;
+      display:flex; gap:10px; align-items:center; }
+    #msg { color:var(--accent); font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>OTTO · SETTINGS</h1>
+    <p class="muted">Config file: <span id="cfgpath">…</span> · <a href="/">← Dashboard</a></p>
+
+    <div class="card">
+      <h2>Project</h2>
+      <p class="muted">Otto continues the selected project's most recent Claude conversation.</p>
+      <div id="projects"></div>
+    </div>
+
+    <div class="card">
+      <h2>Brain</h2>
+      <div class="grid">
+        <div><label>Model (blank = Claude default)</label><input id="brain_model" placeholder="sonnet / opus" /></div>
+        <div><label>Permission prompts</label>
+          <select id="brain_permission">
+            <option value="voice">voice — ask me</option>
+            <option value="auto">auto — approve</option>
+            <option value="deny">deny — reject</option>
+          </select>
+        </div>
+      </div>
+      <label class="row"><input type="checkbox" id="brain_use_claude_config" /> &nbsp;Use my Claude config (MCP, subagents, skills, CLAUDE.md)</label>
+      <label class="row"><input type="checkbox" id="brain_continue" /> &nbsp;Continue the project's latest session</label>
+      <label class="row"><input type="checkbox" id="brain_register_mcp" /> &nbsp;Expose Otto as an MCP for Claude (/mcp)</label>
+    </div>
+
+    <div class="card">
+      <h2>Voice</h2>
+      <label class="row"><input type="checkbox" id="voice_input" /> &nbsp;Microphone / wake word</label>
+      <label class="row"><input type="checkbox" id="voice_output" /> &nbsp;Speak replies</label>
+      <div class="grid">
+        <div><label>Wake word</label><input id="stt_wake" /></div>
+        <div><label>Whisper model</label><input id="stt_model" placeholder="small.en" /></div>
+        <div><label>TTS engine</label>
+          <select id="tts_engine"><option value="system">system (local)</option><option value="elevenlabs">elevenlabs</option></select>
+        </div>
+        <div><label>TTS voice (elevenlabs)</label><input id="tts_voice" /></div>
+        <div><label>Push-to-talk hotkey</label><input id="hotkey" placeholder="&lt;cmd&gt;+&lt;shift&gt;+j" /></div>
+      </div>
+    </div>
+
+    <div class="bar">
+      <button id="save">Save</button>
+      <button class="ghost" onclick="location.href='/'">Cancel</button>
+      <span id="msg"></span>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let cfg = {};
+
+    async function load() {
+      const r = await (await fetch('/api/config')).json();
+      cfg = r.config || {};
+      $('cfgpath').textContent = r.path;
+      const b = cfg.brain || {}, v = cfg.voice || {}, stt = (v.stt||{}), tts = (v.tts||{}), hk = (v.hotkey||{});
+      $('brain_model').value = b.model || '';
+      $('brain_permission').value = b.permission || 'voice';
+      $('brain_use_claude_config').checked = b.use_claude_config !== false;
+      $('brain_continue').checked = b.continue_conversation !== false;
+      $('brain_register_mcp').checked = b.register_mcp !== false;
+      $('voice_input').checked = v.input_enabled !== false;
+      $('voice_output').checked = v.output_enabled !== false;
+      $('stt_wake').value = stt.wake_words ?? 'hey jarvis';
+      $('stt_model').value = stt.model ?? 'small.en';
+      $('tts_engine').value = tts.engine ?? 'system';
+      $('tts_voice').value = tts.voice ?? '';
+      $('hotkey').value = hk.push_to_talk ?? '<cmd>+<shift>+j';
+      loadProjects();
+    }
+
+    async function loadProjects() {
+      const r = await (await fetch('/api/projects')).json();
+      const el = $('projects'); el.innerHTML = '';
+      (r.projects || []).forEach(p => {
+        const row = document.createElement('div');
+        row.className = 'proj' + (p.current ? ' cur' : '');
+        row.innerHTML = `<span>${p.name}<br><span class="muted">${p.path}</span></span>`;
+        const btn = document.createElement('button');
+        btn.className = 'ghost'; btn.textContent = p.current ? 'Current' : 'Switch';
+        btn.disabled = p.current;
+        btn.onclick = async () => {
+          await fetch('/api/project/switch', {method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({path: p.path})});
+          $('msg').textContent = 'Switching project…'; setTimeout(loadProjects, 1500);
+        };
+        row.appendChild(btn); el.appendChild(row);
+      });
+    }
+
+    $('save').onclick = async () => {
+      cfg.brain = Object.assign(cfg.brain || {}, {
+        model: $('brain_model').value.trim(),
+        permission: $('brain_permission').value,
+        use_claude_config: $('brain_use_claude_config').checked,
+        continue_conversation: $('brain_continue').checked,
+        register_mcp: $('brain_register_mcp').checked,
+      });
+      cfg.voice = cfg.voice || {}; cfg.voice.stt = cfg.voice.stt || {}; cfg.voice.tts = cfg.voice.tts || {};
+      cfg.voice.hotkey = cfg.voice.hotkey || {};
+      cfg.voice.input_enabled = $('voice_input').checked;
+      cfg.voice.output_enabled = $('voice_output').checked;
+      cfg.voice.stt.wake_words = $('stt_wake').value;
+      cfg.voice.stt.model = $('stt_model').value;
+      cfg.voice.tts.engine = $('tts_engine').value;
+      cfg.voice.tts.voice = $('tts_voice').value;
+      cfg.voice.hotkey.push_to_talk = $('hotkey').value;
+      const r = await (await fetch('/api/config', {method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({config: cfg})})).json();
+      $('msg').textContent = r.note || 'Saved.';
+    };
+
+    load();
+  </script>
+</body>
+</html>
