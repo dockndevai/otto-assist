@@ -39,7 +39,7 @@ def test_config_precedence(monkeypatch):
     s = load_settings()
     assert s.brain.model == "opus"                 # env overrides yaml
     assert s.brain.type == "claude"
-    assert s.voice.stt.wake_words == "hey jarvis"  # from yaml
+    assert s.voice.stt.wake_words == "hey otto"    # from yaml
     assert s.server.port == 8000
 
 
@@ -136,6 +136,7 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("Hey Otto, what's the time?") == (True, "whats the time")
     assert orch._match_wake("otto open my email") == (True, "open my email")   # "hey" optional
     assert orch._match_wake("Hey Otto") == (True, "")                          # bare wake
+    assert orch._match_wake("Auto, what is the time?") == (True, "what is the time")  # misheard
     assert orch._match_wake("what's the weather") == (False, "")              # no wake word
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
 

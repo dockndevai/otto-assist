@@ -19,6 +19,36 @@ from .server.events import EventBus
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
+# Common speech-to-text mishearings of the "otto" trigger word.
+_WAKE_ALIASES = {
+    "otto": {"otto", "auto", "oto", "ottos", "otho", "atto", "alto", "otter",
+             "ottoh", "audo", "auddo", "ado", "ottto", "hotto"},
+}
+
+
+def _levenshtein(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _wordish(word: str, target: str) -> bool:
+    """Fuzzy word match tolerant of STT mishearings (Otto/Auto/…)."""
+    if word == target:
+        return True
+    if word in _WAKE_ALIASES.get(target, set()):
+        return True
+    # small edit distance for words long enough to be distinctive
+    if len(target) >= 4 and _levenshtein(word, target) <= 2:
+        return True
+    return False
+
 _DEMO_CHART = """<!doctype html><meta charset="utf-8">
 <style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:28px;color:#0b1220}
 h2{margin:0 0 4px;font-size:20px}.sub{color:#6b7a90;font-size:13px;margin-bottom:20px}
@@ -199,17 +229,22 @@ class Orchestrator:
         self.submit_user_input(text)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:
-        """Does `text` start with the wake phrase? Returns (matched, remainder-command)."""
+        """Does `text` start with the wake phrase (fuzzily)? -> (matched, command).
+
+        Speech-to-text often mishears the trigger word (e.g. "Otto" -> "Auto"), so we
+        match the trigger word by small edit distance / known aliases rather than exactly.
+        """
         norm = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()
         phrase = re.sub(r"[^a-z0-9 ]", "", self.settings.voice.stt.wake_words.lower()).split()
-        if not phrase:
+        if not norm or not phrase:
             return False, ""
-        prefixes = [phrase]
-        if phrase[0] == "hey" and len(phrase) > 1:
-            prefixes.append(phrase[1:])               # also accept "otto" without "hey"
-        for pre in prefixes:
-            if norm[: len(pre)] == pre:
-                return True, " ".join(norm[len(pre):])
+        trigger = phrase[-1]                          # e.g. "otto"
+        start = 1 if norm[0] in ("hey", "hi", "ok", "okay", "hey!") else 0
+        if start < len(norm) and _wordish(norm[start], trigger):
+            return True, " ".join(norm[start + 1:])
+        # also accept the trigger as the very first word even without a greeting
+        if _wordish(norm[0], trigger):
+            return True, " ".join(norm[1:])
         return False, ""
 
     def _enter_awaiting_command(self) -> None:

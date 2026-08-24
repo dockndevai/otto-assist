@@ -14,6 +14,7 @@ Wake word:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Callable
@@ -85,8 +86,11 @@ class Ears:
             model=cfg.model,
             language=cfg.language,
             spinner=False,
-            enable_realtime_transcription=True,
-            on_realtime_transcription_update=lambda t: self._post(self._on_partial, t),
+            level=logging.WARNING,           # quiet RealtimeSTT's very chatty logging
+            # Live-partial transcription spawns a second worker that spams EOFErrors and
+            # burns CPU on an always-on app; we only need final transcripts for the wake
+            # phrase, so keep it off.
+            enable_realtime_transcription=False,
             on_recording_start=lambda: self._post(self._on_speech_start),
         )
         if self._on_recording_stop is not None:
