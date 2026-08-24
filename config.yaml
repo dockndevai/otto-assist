@@ -1,5 +1,5 @@
-# Jarvis configuration. Everything here has a sensible default in jarvis/config.py;
-# edit to taste. Env vars (JARVIS_*) override these values.
+# Otto configuration. Everything here has a sensible default in otto/config.py;
+# edit to taste. Env vars (OTTO_*) override these values.
 
 server:
   host: "127.0.0.1"
@@ -10,7 +10,7 @@ brain:
   # sonnet is a good default for snappy voice; switch to opus for hard tasks.
   model: "sonnet"
   # Permission handling for side-effectful tools (Write/Edit/Bash/etc.):
-  #   "ask"      -> Jarvis asks you (spoken or on-screen) before running them
+  #   "ask"      -> Otto asks you (spoken or on-screen) before running them
   #   "auto"     -> auto-approve everything (fastest, least safe)
   permission: "ask"
   # Working directory the agent operates in (files, shell). Relative to project root.
@@ -27,6 +27,10 @@ voice:
     language: "en"
     # "oww" (openWakeWord, no key) or "pvporcupine" (needs PICOVOICE_ACCESS_KEY)
     wakeword_backend: "oww"
+    # NOTE: openWakeWord only ships a few built-in phrases; "hey jarvis" is one of them,
+    # so it's the default trigger even though the app is named Otto. To say "hey otto"
+    # you'd switch to the "pvporcupine" backend with a custom Picovoice keyword, or train
+    # a custom openWakeWord model. (Push-to-talk with ⌘⇧J needs no wake word.)
     wake_words: "hey jarvis"
     wake_word_sensitivity: 0.6
 
@@ -39,3 +43,26 @@ voice:
   hotkey:
     # Push-to-talk chord (pynput syntax). Hold to talk, release to send.
     push_to_talk: "<cmd>+<shift>+j"
+
+# Other agents/tools on this machine that Otto can orchestrate. Uncomment to enable.
+connectors:
+  # MCP servers — their tools become Otto's tools directly.
+  mcp: {}
+  #   filesystem:
+  #     transport: stdio
+  #     command: "npx"
+  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
+  #   some_remote:
+  #     transport: http
+  #     url: "http://127.0.0.1:9000/mcp"
+
+  # Command-line agents — Otto hands them a task via the `delegate` tool.
+  cli: {}
+  #   claude:
+  #     command: ["claude", "-p"]        # task is appended as the final argument
+  #     description: "A fresh headless Claude Code session for a self-contained job."
+  #     timeout: 600
+  #   aider:
+  #     command: ["aider", "--message", "{task}"]   # {task} is substituted in place
+  #     description: "Autonomous coding in the current repo."
+  #     cwd: "/Users/you/code/myproject"

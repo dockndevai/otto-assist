@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-SERVER_NAME = "jarvis"
+SERVER_NAME = "otto"
 
 
 class AssistantContext(Protocol):
@@ -27,7 +27,7 @@ def _text(msg: str) -> dict[str, Any]:
 
 
 def build_server(ctx: AssistantContext):
-    """Create the SDK MCP server exposing Jarvis's self-directed tools."""
+    """Create the SDK MCP server exposing Otto's self-directed tools."""
 
     @tool(
         "say",

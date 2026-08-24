@@ -1,5 +1,5 @@
 [project]
-name = "jarvis-assist"
+name = "otto-assist"
 version = "0.1.0"
 description = "A realtime, voice-driven personal assistant that wraps Claude as its brain."
 requires-python = ">=3.11"
@@ -31,11 +31,11 @@ app = [
 ]
 
 [project.scripts]
-jarvis = "run:main"
-jarvis-menubar = "jarvis.menubar:main"
+otto = "run:main"
+otto-menubar = "otto.menubar:main"
 
 [tool.setuptools]
 py-modules = ["run"]
 
 [tool.setuptools.packages.find]
-include = ["jarvis*"]
+include = ["otto*"]

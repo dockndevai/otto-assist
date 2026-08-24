@@ -1,6 +1,6 @@
 """Subagent definitions.
 
-The main agent (Jarvis) dispatches these via the built-in Task tool when a job benefits
+The main agent (Otto) dispatches these via the built-in Task tool when a job benefits
 from an isolated context — e.g. a deep research sweep or a focused coding change. Each
 runs with its own context window and tool set, and reports a summary back.
 """

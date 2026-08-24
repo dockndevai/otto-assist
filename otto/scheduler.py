@@ -1,4 +1,4 @@
-"""Proactive scheduler — lets Jarvis speak to you unprompted.
+"""Proactive scheduler — lets Otto speak to you unprompted.
 
 Register reminders/check-ins that fire after a delay (or on an interval); each one speaks
 via the orchestrator and pops a desktop notification. This is the third "talk back"
@@ -18,13 +18,13 @@ class Scheduler:
     orch: Orchestrator
     _tasks: set[asyncio.Task] = field(default_factory=set)
 
-    def remind(self, delay_seconds: float, message: str, title: str = "Jarvis") -> None:
+    def remind(self, delay_seconds: float, message: str, title: str = "Otto") -> None:
         """Speak `message` once, `delay_seconds` from now."""
         t = asyncio.get_running_loop().create_task(self._fire(delay_seconds, message, title))
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
 
-    def every(self, interval_seconds: float, message: str, title: str = "Jarvis") -> None:
+    def every(self, interval_seconds: float, message: str, title: str = "Otto") -> None:
         """Speak `message` repeatedly on an interval."""
         async def loop():
             while True:

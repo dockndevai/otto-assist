@@ -1,6 +1,6 @@
-# Jarvis — realtime personal assistant
+# Otto — realtime personal assistant
 
-A Jarvis-style assistant that runs on your Mac: it listens by voice, talks back, spawns
+A Otto-style assistant that runs on your Mac: it listens by voice, talks back, spawns
 subagents to get real work done, and shows things on a web dashboard. Claude is the
 brain (via the Claude Agent SDK); a local realtime voice layer and a browser UI wrap it.
 
@@ -23,19 +23,19 @@ python run.py
 Then open http://127.0.0.1:8000. Type in the box, or say **“hey jarvis …”**, or hold the
 push-to-talk chord (default ⌘⇧J).
 
-> **Dashboard self-test:** type `/demo` in the box — Jarvis renders a sample chart to the
+> **Dashboard self-test:** type `/demo` in the box — Otto renders a sample chart to the
 > canvas without calling the model, confirming the UI ↔ server pipeline is wired up.
 
 ## Run as an always-on Mac app (menu bar + login item)
 
-Instead of a terminal, run Jarvis as a background **menu bar app** (🧠) that starts
+Instead of a terminal, run Otto as a background **menu bar app** (🧠) that starts
 automatically at login:
 
 ```bash
 bash scripts/install_service.sh
 ```
 
-This installs a launchd LaunchAgent, starts Jarvis, and puts a 🧠 in your menu bar with:
+This installs a launchd LaunchAgent, starts Otto, and puts a 🧠 in your menu bar with:
 
 - **Open Dashboard** — the web UI
 - **Mute microphone** / **Mute voice** — toggle ears/mouth without quitting
@@ -51,10 +51,10 @@ bash scripts/uninstall_service.sh
 To run the menu bar app once, without installing the login item:
 
 ```bash
-source .venv/bin/activate && python -m jarvis.menubar
+source .venv/bin/activate && python -m otto.menubar
 ```
 
-Logs live in `logs/jarvis.err.log`. On first launch, grant **Microphone** (and, for the
+Logs live in `logs/otto.err.log`. On first launch, grant **Microphone** (and, for the
 push-to-talk hotkey, **Input Monitoring**) in System Settings, then use **Restart**.
 
 ## Requirements
@@ -72,11 +72,44 @@ push-to-talk hotkey, **Input Monitoring**) in System Settings, then use **Restar
   it stops — barge-in).
 - **Asks you questions** — the `ask_user` tool speaks a question and waits for your spoken
   or typed answer before continuing. Also used to confirm consequential actions.
-- **Proactive** — `jarvis/scheduler.py` can speak unprompted (reminders, "build's done").
+- **Proactive** — `otto/scheduler.py` can speak unprompted (reminders, "build's done").
+
+## Connecting other agents (orchestration)
+
+Otto can route work to other agents/tools on your machine — the foundation of the
+multi-agent orchestrator. Add them under `connectors` in `config.yaml`; no code changes.
+
+- **MCP servers** (`connectors.mcp`) — an external MCP server (stdio/http/sse). Its tools
+  become Otto's tools directly. Good for filesystem/github/custom MCP servers, or Claude
+  Code exposed as MCP.
+- **CLI agents** (`connectors.cli`) — any command-line agent (e.g. `claude -p`, `aider`,
+  a script). Otto hands it a task via the `delegate` tool and reads back its output.
+
+```yaml
+connectors:
+  mcp:
+    filesystem:
+      transport: stdio
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
+  cli:
+    claude:
+      command: ["claude", "-p"]        # the task is appended as the final argument
+      description: "A fresh headless Claude session for a self-contained job."
+    aider:
+      command: ["aider", "--message", "{task}"]   # {task} is substituted in place
+      description: "Autonomous coding in a repo."
+      cwd: "/Users/you/code/myproject"
+```
+
+Then just ask: *"delegate this research to claude"* or *"use the filesystem tools to …"*.
+
+> Note on Cursor: Cursor has no official local API to drive its AI, so it isn't a clean
+> connector. Anything with a CLI or MCP server works; Cursor only shallowly (open files).
 
 ## Configuration
 
-Edit `config.yaml` (or override with `JARVIS_*` env vars). Highlights:
+Edit `config.yaml` (or override with `OTTO_*` env vars). Highlights:
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -94,7 +127,7 @@ Edit `config.yaml` (or override with `JARVIS_*` env vars). Highlights:
 ```
 run.py                     entrypoint
 config.yaml / .env         configuration
-jarvis/
+otto/
   orchestrator.py          realtime loop; implements the tools' callbacks
   scheduler.py             proactive/unprompted speech
   config.py                settings loader

@@ -204,7 +204,9 @@ class Orchestrator:
     def _announce_tool(self, name: str, detail: str) -> None:
         if name == "Task":
             self.bus.tool_use("subagent", detail)
-        elif name.startswith("mcp__jarvis__"):
+        elif name == "mcp__agents__delegate":
+            self.bus.tool_use("delegate", detail)
+        elif name.startswith("mcp__"):
             self.bus.tool_use(name.split("__")[-1], detail)
         else:
             self.bus.tool_use(name, detail)

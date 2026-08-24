@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup for Jarvis on macOS.
+# One-time setup for Otto on macOS.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,7 +25,7 @@ pip install -e ".[voice]" || echo "    Voice extras failed — text path will st
 
 echo "==> Pre-downloading the Whisper model (this can take a minute)"
 MODEL="$(python - <<'PY'
-from jarvis.config import load_settings
+from otto.config import load_settings
 print(load_settings().voice.stt.model)
 PY
 )"

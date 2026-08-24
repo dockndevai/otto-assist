@@ -1,4 +1,4 @@
-"""The brain: a persistent Claude session wired to Jarvis's tools and subagents.
+"""The brain: a persistent Claude session wired to Otto's tools and subagents.
 
 Wraps ClaudeSDKClient. `send()` streams the response back as a series of small events
 (text deltas, tool_use, result) that the orchestrator forwards to the mouth (TTS) and the
@@ -22,10 +22,16 @@ from claude_agent_sdk import (
 )
 
 from ..config import Settings
+from .connectors import (
+    DELEGATE_SERVER,
+    build_delegate_server,
+    cli_agents_description,
+    external_mcp_servers,
+)
 from .subagents import default_agents
 from .tools import AssistantContext, build_server
 
-PERSONA = """You are Jarvis, a realtime personal assistant that talks with the user by voice \
+PERSONA = """You are Otto, a realtime personal assistant that talks with the user by voice \
 and shows things on a dashboard. You run on the user's own Mac and can get real work done.
 
 Style:
@@ -43,6 +49,9 @@ Capabilities:
 - You can read/write files and run shell commands in your workspace directory.
 - For open-ended research or self-contained coding jobs, dispatch a subagent with the \
 Task tool (researcher / coder). Tell the user briefly when you're kicking one off.
+- You may also have external agents/tools connected on this machine (listed below). Use \
+the `delegate` tool to hand a task to a command-line agent, and any connected tool \
+servers' tools directly. Tell the user which agent you're routing work to.
 - Use the say tool to give a quick spoken progress update during longer work.
 
 Be proactive, concise, and genuinely useful."""
@@ -67,11 +76,18 @@ class Brain:
         self.client: ClaudeSDKClient | None = None
 
     async def connect(self) -> None:
-        server = build_server(self.ctx)
+        mcp_servers: dict[str, object] = {"otto": build_server(self.ctx)}
+        # Attach external MCP connectors (their tools become Otto's tools).
+        mcp_servers.update(external_mcp_servers(self.settings))
+        # Attach the CLI-agent delegate tool, if any CLI connectors are configured.
+        delegate = build_delegate_server(self.settings)
+        if delegate is not None:
+            mcp_servers[DELEGATE_SERVER] = delegate
+
         options = ClaudeAgentOptions(
-            system_prompt=PERSONA,
+            system_prompt=self._system_prompt(),
             model=self.settings.brain.model,
-            mcp_servers={"jarvis": server},
+            mcp_servers=mcp_servers,
             agents=default_agents(),
             can_use_tool=self._permission,
             cwd=str(self.settings.workspace_path),
@@ -81,6 +97,23 @@ class Brain:
         )
         self.client = ClaudeSDKClient(options=options)
         await self.client.connect()
+
+    def _system_prompt(self) -> str:
+        """Persona plus a live list of the agents/connectors available on this machine."""
+        prompt = PERSONA
+        cli_desc = cli_agents_description(self.settings)
+        if cli_desc:
+            prompt += (
+                "\n\nCommand-line agents you can hand tasks to via the `delegate` tool "
+                "(pass the exact name):\n" + cli_desc
+            )
+        mcp_names = list(self.settings.connectors.mcp)
+        if mcp_names:
+            prompt += (
+                "\n\nConnected tool servers (their tools are available to you directly): "
+                + ", ".join(mcp_names)
+            )
+        return prompt
 
     async def disconnect(self) -> None:
         if self.client:
@@ -150,8 +183,10 @@ def _extract_text_delta(event: dict[str, Any] | None) -> str:
 def _tool_detail(name: str, args: dict[str, Any]) -> str:
     if name == "Task":
         return f"{args.get('subagent_type', 'subagent')}: {args.get('description', '')}"
+    if name == "mcp__agents__delegate":
+        return f"{args.get('agent', '')}: {str(args.get('task', ''))[:80]}"
     if name == "Bash":
         return str(args.get("command", ""))[:120]
-    if name.startswith("mcp__jarvis__"):
+    if name.startswith("mcp__otto__"):
         return ""
     return ", ".join(f"{k}={str(v)[:40]}" for k, v in list(args.items())[:2])

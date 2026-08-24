@@ -1,11 +1,11 @@
-"""Jarvis as a macOS menu bar app.
+"""Otto as a macOS menu bar app.
 
 The AppKit run loop needs the main thread, so rumps runs there while the assistant
 (orchestrator + brain + dashboard server) runs on its own asyncio loop in a background
 thread. Menu actions on the main thread poke that loop via thread-safe calls; a 1s timer
 reads the orchestrator's live state to keep the menu label current.
 
-Run:  python -m jarvis.menubar
+Run:  python -m otto.menubar
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ _STATE_LABELS = {
 }
 
 
-class JarvisApp(rumps.App):
+class OttoApp(rumps.App):
     def __init__(self) -> None:
-        super().__init__("Jarvis", title="🧠", quit_button=None)
+        super().__init__("Otto", title="🧠", quit_button=None)
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
@@ -55,7 +55,7 @@ class JarvisApp(rumps.App):
             self.voice_item,
             None,
             rumps.MenuItem("Restart", callback=self.restart),
-            rumps.MenuItem("Quit Jarvis", callback=self.quit_app),
+            rumps.MenuItem("Quit Otto", callback=self.quit_app),
         ]
 
         threading.Thread(target=self._run_backend, daemon=True).start()
@@ -101,7 +101,7 @@ class JarvisApp(rumps.App):
         self.voice_item.title = "Unmute voice" if self.orch.voice_muted else "Mute voice"
 
     def restart(self, _) -> None:
-        os.execv(sys.executable, [sys.executable, "-m", "jarvis.menubar"])
+        os.execv(sys.executable, [sys.executable, "-m", "otto.menubar"])
 
     def quit_app(self, _) -> None:
         if self._server is not None:
@@ -115,7 +115,7 @@ class JarvisApp(rumps.App):
 
 def main() -> None:
     load_env()
-    JarvisApp().run()
+    OttoApp().run()
 
 
 if __name__ == "__main__":

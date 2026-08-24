@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install Jarvis as a login-item menu bar app via a launchd LaunchAgent.
+# Install Otto as a login-item menu bar app via a launchd LaunchAgent.
 # Idempotent: re-running reinstalls and reloads.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
-LABEL="com.jarvis.assistant"
+LABEL="com.otto.assistant"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR"
@@ -32,7 +32,7 @@ cat > "$PLIST" <<PLIST
     <array>
         <string>$PY</string>
         <string>-m</string>
-        <string>jarvis.menubar</string>
+        <string>otto.menubar</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$ROOT</string>
@@ -43,9 +43,9 @@ cat > "$PLIST" <<PLIST
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
-    <string>$LOG_DIR/jarvis.out.log</string>
+    <string>$LOG_DIR/otto.out.log</string>
     <key>StandardErrorPath</key>
-    <string>$LOG_DIR/jarvis.err.log</string>
+    <string>$LOG_DIR/otto.err.log</string>
 </dict>
 </plist>
 PLIST
@@ -58,10 +58,10 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
 cat <<EOF
 
-Jarvis is installed and running — look for the 🧠 in your menu bar.
+Otto is installed and running — look for the 🧠 in your menu bar.
 It will start automatically every time you log in.
 
-  Logs:      $LOG_DIR/jarvis.err.log
+  Logs:      $LOG_DIR/otto.err.log
   Stop/undo: bash scripts/uninstall_service.sh
 
 First launch: macOS will ask for Microphone (and, for the hotkey, Input Monitoring)

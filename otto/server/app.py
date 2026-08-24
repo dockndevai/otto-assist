@@ -17,7 +17,7 @@ WEB_DIR = Path(__file__).parent / "web"
 
 
 def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
-    app = FastAPI(title="Jarvis")
+    app = FastAPI(title="Otto")
 
     @app.get("/")
     async def index() -> FileResponse:

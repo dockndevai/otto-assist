@@ -1,8 +1,8 @@
 """Configuration loader.
 
 Values come from (lowest to highest priority): built-in defaults -> config.yaml ->
-environment variables (JARVIS_* with `__` as the nesting separator, e.g.
-JARVIS_BRAIN__MODEL=opus).
+environment variables (OTTO_* with `__` as the nesting separator, e.g.
+OTTO_BRAIN__MODEL=opus).
 """
 
 from __future__ import annotations
@@ -58,9 +58,36 @@ class VoiceConfig(BaseModel):
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
 
 
+class McpConnector(BaseModel):
+    """An external agent/tool exposed to Otto as an MCP server."""
+
+    transport: Literal["stdio", "http", "sse"] = "stdio"
+    # stdio
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    # http / sse
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class CliConnector(BaseModel):
+    """An external agent invoked as a shell command; Otto delegates a task to it."""
+
+    command: list[str]                       # e.g. ["claude", "-p"] or ["aider", "--message"]
+    description: str = ""                     # shown to Otto so it knows when to use it
+    timeout: int = 300                        # seconds
+    cwd: str = ""                             # working dir (defaults to Otto's workspace)
+
+
+class ConnectorsConfig(BaseModel):
+    mcp: dict[str, McpConnector] = Field(default_factory=dict)
+    cli: dict[str, CliConnector] = Field(default_factory=dict)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="JARVIS_",
+        env_prefix="OTTO_",
         env_nested_delimiter="__",
         yaml_file=str(CONFIG_FILE),
         extra="ignore",
@@ -69,6 +96,7 @@ class Settings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -90,7 +118,7 @@ class Settings(BaseSettings):
 
 
 def load_settings() -> Settings:
-    """Defaults <- config.yaml <- JARVIS_* env vars (highest priority)."""
+    """Defaults <- config.yaml <- OTTO_* env vars (highest priority)."""
     return Settings()
 
 
