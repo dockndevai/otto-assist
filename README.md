@@ -29,8 +29,37 @@ source .venv/bin/activate
 python run.py
 ```
 
-Open http://127.0.0.1:8000. Type, say **“hey jarvis …”**, or hold ⌘⇧J. Type `/demo` for a
-model-less dashboard self-test.
+Open http://127.0.0.1:8000. Click **🎤 Talk** and speak, type a message, or use the wake
+word (see below). Type `/demo` for a model-less dashboard self-test.
+
+## Talking to Otto
+
+Three ways in, most-to-least reliable:
+
+1. **🎤 Talk button** *(recommended)* — on the dashboard, in the menu bar (**🎤 Talk to
+   Otto**), or the **⌘⇧J** hotkey. Click, then say your command — **no wake word**. This
+   uses the proven VAD→Whisper path and never depends on the model hearing a name, so it's
+   dependable. The dashboard/menu buttons need no macOS permission; the hotkey needs
+   Accessibility.
+2. **Wake word "hey otto"** *(convenient, less reliable)* — hands-free, but it rides on
+   open-vocabulary speech-to-text, which frequently mishears/drops the name "Otto" (→
+   "auto", "your"). Fine when it lands; use Talk when it doesn't. See *Wake word* below.
+3. **Type** in the dashboard — always works.
+
+Otto shows when it's hearing you: the menu-bar glyph goes 🧠→**👂** and the dashboard orb
+pulses.
+
+### Wake word backends
+
+`voice.stt.wakeword_backend`:
+- **`phrase`** (default) — software wake word, any phrase, no account/models. Convenient
+  but limited by STT dropping the trigger word (above).
+- **`oww`** — [openWakeWord](https://github.com/dscripka/openWakeWord): built-in phrases
+  ("hey jarvis", …) work out of the box; a robust custom **"hey otto"** needs a free
+  trained model (personal Google account, ~20 min). This is the right hands-free upgrade.
+- **`pvporcupine`** — [Porcupine](https://picovoice.ai/platform/porcupine/): instant custom
+  keywords, but signup needs a work email (paid for production). Set `wake_words` to a
+  `.ppn` path + `PICOVOICE_ACCESS_KEY`.
 
 ## Run as an always-on Mac app (menu bar + login item)
 
@@ -89,12 +118,11 @@ env vars). Agent behavior comes from your Claude config, not here.
 | `brain.use_claude_config` | `true` | load your `~/.claude` MCP/subagents/skills/CLAUDE.md |
 | `brain.continue_conversation` | `true` | resume the project's latest session |
 | `brain.register_mcp` | `true` | serve `/mcp` for `claude mcp add otto` |
-| `voice.stt.wake_words` | `hey jarvis` | openWakeWord's built-in phrase (see note below) |
+| `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` (see *Talking to Otto*) |
+| `voice.stt.wake_words` | `hey otto` | phrase to listen for (or a `.ppn` path for Porcupine) |
 | `voice.tts.engine` | `system` | `elevenlabs` (needs `ELEVENLABS_API_KEY`) |
 
-> Wake word: openWakeWord only ships a few phrases; **"hey jarvis"** is one, so it's the
-> default even though the app is Otto. For "hey otto", use Porcupine or a trained model.
-> Push-to-talk (⌘⇧J) needs no wake word.
+> The most reliable voice input is the **🎤 Talk** button / ⌘⇧J — no wake word needed.
 
 ## Layout
 
@@ -117,3 +145,30 @@ otto/
 
 > Not an agent framework: there is no Otto persona, subagents, or connector config —
 > those come from your Claude. Otto is the wiring around it.
+
+## How Otto compares (community landscape, 2026)
+
+Two architectures dominate realtime voice AI:
+
+- **Cascaded** (STT → LLM → TTS) — transparent, swappable, gives a text transcript (needed
+  for tools/logging), and a well-built pipeline streams first audio in ~100–250 ms. This is
+  what Otto is. Popular frameworks: **[Pipecat](https://github.com/pipecat-ai/pipecat)**
+  (Python pipeline that nails barge-in, partial-transcript gating, buffering) and
+  **[LiveKit Agents](https://github.com/livekit/agents)** (WebRTC-native).
+- **Native speech-to-speech** — one end-to-end audio model (OpenAI Realtime, Gemini Live,
+  Amazon Nova Sonic). Lower latency and richer prosody, but less control, no transcript, and
+  it *is* the brain — you can't point it at your own Claude.
+
+**Otto is deliberately cascaded**, because the whole idea is to wire voice to *your* Claude
+(a text/tool brain via the Agent SDK) — a native S2S model would replace Claude, not use it.
+We hand-rolled the loop (RealtimeSTT + RealtimeTTS + barge-in) rather than adopt Pipecat to
+stay dependency-light and Claude-Code-native; Pipecat is a reasonable future refactor of the
+`voice/` + `orchestrator.py` layer.
+
+**On wake words**, the community splits the same way we landed:
+[openWakeWord](https://github.com/dscripka/openWakeWord) (free, on-device; custom phrases
+need a short training step) vs [Porcupine](https://picovoice.ai/platform/porcupine/)
+(instant custom keywords, but work-email/paid). Because a *software* wake word rides on
+open-vocab STT and drops uncommon names, most local assistants use a trained acoustic wake
+model **or** push-to-talk — which is exactly why Otto's dependable path is the **🎤 Talk**
+button, with a trained openWakeWord "hey otto" as the hands-free upgrade.
