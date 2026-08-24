@@ -53,6 +53,9 @@ class Orchestrator:
         self.state = "starting"
         self.mic_muted = False
         self.voice_muted = False
+        # Software ("phrase") wake word: await the command after "hey otto".
+        self._awaiting_command = False
+        self._await_handle = None
 
     def _make_brain(self) -> Brain:
         # Only Claude today; the Brain protocol lets other agents drop in later.
@@ -176,7 +179,57 @@ class Orchestrator:
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
             return
+        # "phrase" backend = software wake word: only act on speech that begins with the
+        # wake phrase (e.g. "hey otto"), or on the command right after it.
+        if self.settings.voice.stt.wakeword_backend == "phrase":
+            if self._awaiting_command:
+                self._cancel_await()
+                self.submit_user_input(text)
+                return
+            matched, remainder = self._match_wake(text)
+            if not matched:
+                if self.state == "listening":
+                    self._status("idle", "Ready")     # ignore ambient speech
+                return
+            if remainder.strip():
+                self.submit_user_input(remainder)     # "hey otto, what time is it"
+            else:
+                self._enter_awaiting_command()        # just "hey otto" — wait for command
+            return
         self.submit_user_input(text)
+
+    def _match_wake(self, text: str) -> tuple[bool, str]:
+        """Does `text` start with the wake phrase? Returns (matched, remainder-command)."""
+        norm = re.sub(r"[^a-z0-9 ]", "", text.lower()).split()
+        phrase = re.sub(r"[^a-z0-9 ]", "", self.settings.voice.stt.wake_words.lower()).split()
+        if not phrase:
+            return False, ""
+        prefixes = [phrase]
+        if phrase[0] == "hey" and len(phrase) > 1:
+            prefixes.append(phrase[1:])               # also accept "otto" without "hey"
+        for pre in prefixes:
+            if norm[: len(pre)] == pre:
+                return True, " ".join(norm[len(pre):])
+        return False, ""
+
+    def _enter_awaiting_command(self) -> None:
+        self._awaiting_command = True
+        self._status("listening", "Listening…")
+        if self.mouth and not self.voice_muted:
+            self.mouth.speak("Yes?")
+        if self._loop is not None:
+            self._await_handle = self._loop.call_later(8, self._await_timeout)
+
+    def _await_timeout(self) -> None:
+        if self._awaiting_command:
+            self._awaiting_command = False
+            self._status("idle", "Ready")
+
+    def _cancel_await(self) -> None:
+        self._awaiting_command = False
+        if self._await_handle is not None:
+            self._await_handle.cancel()
+            self._await_handle = None
 
     def _on_speech_start(self) -> None:
         if self.mic_muted:

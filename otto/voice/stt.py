@@ -92,8 +92,10 @@ class Ears:
         if self._on_recording_stop is not None:
             params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
 
-        # Wake word is optional; when set, the recorder idles until it hears it.
-        if cfg.wake_words:
+        # "phrase" = software wake word: transcribe everything (continuous VAD) and let the
+        # orchestrator match the phrase. Otherwise use a hardware wake-word gate.
+        use_gate = bool(cfg.wake_words) and cfg.wakeword_backend != "phrase"
+        if use_gate:
             if cfg.wakeword_backend in ("pvporcupine", "porcupine", "pvp"):
                 _install_porcupine_custom_keyword_shim()
             params.update(

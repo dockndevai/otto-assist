@@ -130,6 +130,16 @@ def test_listening_state():
     asyncio.run(run())
 
 
+def test_phrase_wake_matcher():
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.settings.voice.stt.wake_words = "hey otto"
+    assert orch._match_wake("Hey Otto, what's the time?") == (True, "whats the time")
+    assert orch._match_wake("otto open my email") == (True, "open my email")   # "hey" optional
+    assert orch._match_wake("Hey Otto") == (True, "")                          # bare wake
+    assert orch._match_wake("what's the weather") == (False, "")              # no wake word
+    assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
+
+
 def test_porcupine_custom_keyword_shim(monkeypatch):
     monkeypatch.setenv("PICOVOICE_ACCESS_KEY", "KEY123")
     import pvporcupine

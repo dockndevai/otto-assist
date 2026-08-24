@@ -76,8 +76,10 @@ class BrainConfig(BaseModel):
 class STTConfig(BaseModel):
     model: str = "small.en"
     language: str = "en"
-    wakeword_backend: str = "oww"
-    wake_words: str = "hey jarvis"
+    # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
+    # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
+    wakeword_backend: str = "phrase"
+    wake_words: str = "hey otto"
     wake_word_sensitivity: float = 0.6
 
 

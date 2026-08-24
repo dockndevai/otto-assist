@@ -28,10 +28,14 @@ voice:
   stt:
     model: "small.en"          # faster-whisper: tiny/base/small/medium/large-v3 (+ .en)
     language: "en"
-    wakeword_backend: "oww"    # "oww" (openWakeWord, no key) or "pvporcupine"
-    # openWakeWord only ships a few phrases; "hey jarvis" is one, so it's the default
-    # trigger even though the app is Otto. For "hey otto", use Porcupine or a custom model.
-    wake_words: "hey jarvis"
+    # Wake word backend:
+    #   phrase      -> software wake word: any phrase, no account/models (default).
+    #                  Otto transcribes continuously and acts when speech starts with it.
+    #   oww         -> openWakeWord built-in phrases only ("hey jarvis", "alexa", …).
+    #   pvporcupine -> custom .ppn keyword; set wake_words to the .ppn path + a
+    #                  PICOVOICE_ACCESS_KEY (Picovoice signup needs a work email).
+    wakeword_backend: "phrase"
+    wake_words: "hey otto"     # for "phrase": the trigger phrase ("hey" is optional to say)
     wake_word_sensitivity: 0.6
 
   tts:
