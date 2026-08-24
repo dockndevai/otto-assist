@@ -85,6 +85,10 @@ class STTConfig(BaseModel):
     # trained "hey otto". Empty = use openWakeWord's built-in phrases via `wake_words`.
     oww_model_path: str = ""
     oww_inference_framework: str = "onnx"   # "onnx" or "tflite" (match your model file)
+    # For backend "efficientword": a few-shot custom wake word anyone can make by recording
+    # their phrase (run `python -m otto.enroll_wake_word`). Points at the generated *_ref.json.
+    eff_reference: str = ""
+    eff_threshold: float = 0.65
 
 
 class TTSConfig(BaseModel):

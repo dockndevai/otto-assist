@@ -26,6 +26,7 @@ voice = [
     "onnxruntime>=1.17",    # runs the silero VAD / wake-word ONNX models
     "openwakeword>=0.6",    # "hey jarvis" wake word (oww backend)
     "pvporcupine>=3.0",     # custom wake word e.g. "hey otto" (needs PICOVOICE_ACCESS_KEY)
+    "EfficientWord-Net>=1.0",  # few-shot custom wake word — record your phrase, no account
     "RealtimeTTS>=0.4.0",   # streaming text-to-speech (mouth)
     "pyttsx3>=2.90",        # local system-voice backend for RealtimeTTS
     "pynput>=1.7",          # global push-to-talk hotkey

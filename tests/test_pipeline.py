@@ -82,6 +82,19 @@ def test_read_only_classifier():
     assert not _is_read_only("Bash")          # unknown/dangerous -> not auto-read
 
 
+def test_efficientword_backend_wiring(monkeypatch):
+    # config carries the few-shot wake-word fields
+    monkeypatch.setenv("OTTO_VOICE__STT__WAKEWORD_BACKEND", "efficientword")
+    monkeypatch.setenv("OTTO_VOICE__STT__EFF_THRESHOLD", "0.7")
+    s = load_settings()
+    assert s.voice.stt.wakeword_backend == "efficientword"
+    assert s.voice.stt.eff_threshold == 0.7
+    # the listener + enrollment modules import
+    import importlib
+    assert importlib.util.find_spec("otto.voice.wakeword_eff")
+    assert importlib.util.find_spec("otto.enroll_wake_word")
+
+
 def test_bash_read_only_classifier():
     from otto.brain.agent import _bash_is_read_only
     assert _bash_is_read_only("date")

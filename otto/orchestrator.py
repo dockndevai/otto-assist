@@ -86,6 +86,7 @@ class Orchestrator:
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
+        self._eff = None        # EfficientWord-Net custom wake-word listener
         self._loop: asyncio.AbstractEventLoop | None = None
         self._turn_lock = asyncio.Lock()
         self._pending_answer: asyncio.Future[str] | None = None
@@ -148,14 +149,38 @@ class Orchestrator:
                 self.ears = None
                 self.bus.notify("Voice input off", str(e))
 
+            # Custom few-shot wake word (EfficientWord-Net): a separate acoustic listener
+            # that arms capture on detection — reliable, and any phrase the user enrolled.
+            stt = v.stt
+            if stt.wakeword_backend == "efficientword" and stt.eff_reference:
+                try:
+                    from .voice.wakeword_eff import EffWakeWord
+                    slug = "".join(c if c.isalnum() else "_"
+                                   for c in stt.wake_words.lower()).strip("_")
+                    self._eff = EffWakeWord(
+                        reference_file=stt.eff_reference, hotword=slug,
+                        threshold=stt.eff_threshold, loop=self._loop,
+                        on_wake=self._on_eff_wake,
+                    )
+                    self._eff.start()
+                except Exception as e:
+                    self._eff = None
+                    self.bus.notify("Wake word off", f"{type(e).__name__}: {e}")
+
         self._publish_project()
         self._status("idle", "Ready")
+
+    def _on_eff_wake(self) -> None:
+        print("[otto] wake word detected", file=sys.stderr, flush=True)
+        self.arm_ptt()
 
     async def stop(self) -> None:
         if self.ears:
             self.ears.stop()
         if self._ptt:
             self._ptt.stop()
+        if self._eff:
+            self._eff.stop()
         await self.brain.disconnect()
 
     def _publish_project(self) -> None:
@@ -274,6 +299,8 @@ class Orchestrator:
             else:
                 self._enter_awaiting_command()        # just "hey otto" — wait for command
             return
+        if self.settings.voice.stt.wakeword_backend == "efficientword":
+            return   # wake is handled acoustically by EffWakeWord -> arm_ptt; ignore rest
         self.submit_user_input(text)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:

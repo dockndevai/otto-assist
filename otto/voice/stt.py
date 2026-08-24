@@ -102,9 +102,10 @@ class Ears:
         if self._on_recording_stop is not None:
             params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
 
-        # "phrase" = software wake word: transcribe everything (continuous VAD) and let the
-        # orchestrator match the phrase. Otherwise use a hardware wake-word gate.
-        use_gate = bool(cfg.wake_words) and cfg.wakeword_backend != "phrase"
+        # "phrase" / "efficientword" transcribe everything (continuous VAD); the wake is
+        # decided elsewhere (phrase match, or the EfficientWord-Net listener). Other
+        # backends use RealtimeSTT's own hardware wake-word gate.
+        use_gate = bool(cfg.wake_words) and cfg.wakeword_backend not in ("phrase", "efficientword")
         if use_gate:
             params.update(
                 wakeword_backend=cfg.wakeword_backend,

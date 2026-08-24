@@ -29,11 +29,13 @@ voice:
     model: "small.en"          # faster-whisper: tiny/base/small/medium/large-v3 (+ .en)
     language: "en"
     # Wake word backend:
-    #   phrase      -> software wake word: any phrase, no account/models (default).
-    #                  Otto transcribes continuously and acts when speech starts with it.
-    #   oww         -> openWakeWord built-in phrases only ("hey jarvis", "alexa", …).
-    #   pvporcupine -> custom .ppn keyword; set wake_words to the .ppn path + a
-    #                  PICOVOICE_ACCESS_KEY (Picovoice signup needs a work email).
+    #   efficientword -> BEST custom wake word: record your phrase a few times, no account,
+    #                    no training. Run `python -m otto.enroll_wake_word "hey otto"`.
+    #   phrase        -> software wake word: any phrase, zero setup, but rides on speech-to-
+    #                    text so it can miss the trigger (default until you enroll).
+    #   oww           -> openWakeWord built-in phrases ("hey jarvis", "alexa", …), or a
+    #                    trained model via oww_model_path.
+    #   pvporcupine   -> custom .ppn keyword + PICOVOICE_ACCESS_KEY (signup needs work email).
     wakeword_backend: "phrase"
     wake_words: "hey otto"     # for "phrase": the trigger phrase ("hey" is optional to say)
     wake_word_sensitivity: 0.6

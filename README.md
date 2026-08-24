@@ -78,16 +78,23 @@ The menu-bar glyph shows state at a glance: 🧠 idle · 👂 listening · 🗣�
 **acknowledges before it acts** ("One sec…") so it's never silently working, and reads flow
 freely while consequential actions (sending, deleting) ask first.
 
-### Wake word
+### Custom wake word — anyone, any phrase (recommended)
 
-`voice.stt.wakeword_backend`:
-- **`phrase`** (default) — software wake word, any phrase, no account. Convenient but
-  limited by STT dropping the trigger.
-- **`oww`** — [openWakeWord](https://github.com/dscripka/openWakeWord): built-ins work out
-  of the box; a robust custom **"hey otto"** needs a free trained model — see
-  [docs/HEY_OTTO.md](docs/HEY_OTTO.md), then `bash scripts/install_wake_word.sh model.onnx`.
-- **`pvporcupine`** — [Porcupine](https://picovoice.ai/platform/porcupine/): instant custom
-  keywords (signup needs a work email).
+Make your **own** wake word by recording it a few times — no account, no training, no Colab
+(via few-shot [EfficientWord-Net](https://pypi.org/project/EfficientWord-Net/)):
+
+```bash
+python -m otto.enroll_wake_word "hey otto"
+```
+
+Say it 4 times when prompted; Otto builds the detector, points its config at it, and
+switches to the `efficientword` backend. Restart and say your phrase. Works for *any*
+phrase and any user — great for a shareable app.
+
+Other `voice.stt.wakeword_backend` options: **`phrase`** (default, zero-setup software wake
+word, but STT can miss the trigger) · **`oww`** ([openWakeWord](https://github.com/dscripka/openWakeWord)
+built-ins like "hey jarvis", or a trained model) · **`pvporcupine`**
+([Porcupine](https://picovoice.ai/platform/porcupine/), instant but work-email signup).
 
 ## What it can do (via your Claude)
 
