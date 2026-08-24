@@ -26,6 +26,37 @@ push-to-talk chord (default ⌘⇧J).
 > **Dashboard self-test:** type `/demo` in the box — Jarvis renders a sample chart to the
 > canvas without calling the model, confirming the UI ↔ server pipeline is wired up.
 
+## Run as an always-on Mac app (menu bar + login item)
+
+Instead of a terminal, run Jarvis as a background **menu bar app** (🧠) that starts
+automatically at login:
+
+```bash
+bash scripts/install_service.sh
+```
+
+This installs a launchd LaunchAgent, starts Jarvis, and puts a 🧠 in your menu bar with:
+
+- **Open Dashboard** — the web UI
+- **Mute microphone** / **Mute voice** — toggle ears/mouth without quitting
+- live status (Ready / Listening / Thinking / Speaking)
+- **Restart**, **Quit**
+
+It relaunches on crash and comes back every time you log in. To remove it:
+
+```bash
+bash scripts/uninstall_service.sh
+```
+
+To run the menu bar app once, without installing the login item:
+
+```bash
+source .venv/bin/activate && python -m jarvis.menubar
+```
+
+Logs live in `logs/jarvis.err.log`. On first launch, grant **Microphone** (and, for the
+push-to-talk hotkey, **Input Monitoring**) in System Settings, then use **Restart**.
+
 ## Requirements
 
 - macOS with [Homebrew](https://brew.sh); `setup.sh` installs `portaudio` + `ffmpeg`.

@@ -47,6 +47,14 @@ class Orchestrator:
         self._pending_answer: asyncio.Future[str] | None = None
         self._speech_buf = ""
         self._speaking = False
+        # Live state + controls (read/driven by the menu bar app).
+        self.state = "starting"
+        self.mic_muted = False
+        self.voice_muted = False
+
+    def _status(self, state: str, text: str = "") -> None:
+        self.state = state
+        self.bus.status(state, text)
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
@@ -85,7 +93,7 @@ class Orchestrator:
                 self.ears = None
                 self.bus.notify("Voice input off", str(e))
 
-        self.bus.status("idle", "Ready")
+        self._status("idle", "Ready")
 
     async def stop(self) -> None:
         if self.ears:
@@ -121,12 +129,16 @@ class Orchestrator:
             final=True,
         )
         self.render_canvas(_DEMO_CHART, "html")
-        self.bus.status("idle", "Ready")
+        self._status("idle", "Ready")
 
     def _on_voice_final(self, text: str) -> None:
+        if self.mic_muted:
+            return
         self.submit_user_input(text)
 
     def _on_speech_start(self) -> None:
+        if self.mic_muted:
+            return
         # Barge-in: cut off speech the moment the user starts talking.
         if self.mouth and self.mouth.is_playing():
             self.mouth.stop()
@@ -144,7 +156,7 @@ class Orchestrator:
     async def _handle_turn(self, text: str) -> None:
         async with self._turn_lock:
             self.bus.transcript("user", text, final=True)
-            self.bus.status("thinking", "Thinking…")
+            self._status("thinking", "Thinking…")
             self._speech_buf = ""
             assistant_text = ""
             try:
@@ -154,7 +166,7 @@ class Orchestrator:
                         assistant_text += chunk
                         self.bus.assistant_delta(chunk)
                         self._feed_speech(chunk)
-                        self.bus.status("speaking", "Speaking…")
+                        self._status("speaking", "Speaking…")
                     elif ev["type"] == "tool_use":
                         self._announce_tool(ev["name"], ev.get("detail", ""))
                     elif ev["type"] == "result":
@@ -169,11 +181,11 @@ class Orchestrator:
                 self._flush_speech()
                 if assistant_text.strip():
                     self.bus.transcript("assistant", assistant_text.strip(), final=True)
-                self.bus.status("idle", "Ready")
+                self._status("idle", "Ready")
 
     def _feed_speech(self, chunk: str) -> None:
         """Buffer deltas and speak whole sentences for natural prosody."""
-        if not self.mouth:
+        if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
         while True:
@@ -185,7 +197,7 @@ class Orchestrator:
             self.mouth.speak(sentence.strip())
 
     def _flush_speech(self) -> None:
-        if self.mouth and self._speech_buf.strip():
+        if self.mouth and not self.voice_muted and self._speech_buf.strip():
             self.mouth.speak(self._speech_buf.strip())
         self._speech_buf = ""
 
@@ -200,13 +212,13 @@ class Orchestrator:
     # -- AssistantContext (called by the agent's tools) --------------------
     async def say(self, text: str) -> None:
         self.bus.transcript("assistant", text, final=True)
-        if self.mouth:
+        if self.mouth and not self.voice_muted:
             self.mouth.speak(text)
 
     async def ask_user(self, question: str) -> str:
         self.bus.publish({"type": "ask_user", "question": question})
         self.bus.transcript("assistant", question, final=True)
-        if self.mouth:
+        if self.mouth and not self.voice_muted:
             self.mouth.speak(question)
         assert self._loop is not None
         self._pending_answer = self._loop.create_future()
@@ -227,7 +239,7 @@ class Orchestrator:
         self.bus.canvas(content, fmt)
 
     def set_status(self, text: str) -> None:
-        self.bus.status("working", text)
+        self._status("working", text)
 
     def notify(self, title: str, body: str = "") -> None:
         self.bus.notify(title, body)

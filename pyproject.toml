@@ -25,9 +25,14 @@ voice = [
     "pyttsx3>=2.90",        # local system-voice backend for RealtimeTTS
     "pynput>=1.7",          # global push-to-talk hotkey
 ]
+# macOS menu bar app
+app = [
+    "rumps>=0.4",           # menu bar UI
+]
 
 [project.scripts]
 jarvis = "run:main"
+jarvis-menubar = "jarvis.menubar:main"
 
 [tool.setuptools]
 py-modules = ["run"]

@@ -3,29 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import webbrowser
-from pathlib import Path
 
 import uvicorn
 
-from jarvis.config import PROJECT_ROOT, load_settings
+from jarvis.config import load_env, load_settings
 from jarvis.orchestrator import Orchestrator
 from jarvis.server.app import create_app
 from jarvis.server.events import EventBus
-
-
-def load_env() -> None:
-    """Minimal .env loader (KEY=VALUE lines) into os.environ, without a dependency."""
-    env_file = PROJECT_ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
 
 
 async def main_async() -> None:
