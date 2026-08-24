@@ -42,6 +42,19 @@ function handle(ev) {
       setStatus(ev.state, ev.text);
       break;
 
+    case "history_start":
+      transcriptEl.innerHTML = "";   // avoid dupes on reconnect
+      break;
+
+    case "history_end": {
+      const d = document.createElement("div");
+      d.className = "divider";
+      d.textContent = "— now —";
+      transcriptEl.appendChild(d);
+      scroll();
+      break;
+    }
+
     case "transcript_partial":
       if (!partialUser) { partialUser = bubble("user partial", ""); }
       partialUser.textContent = ev.text;

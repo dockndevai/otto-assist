@@ -25,3 +25,7 @@ models/
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime conversation history
+history.jsonl
+*.jsonl

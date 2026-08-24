@@ -75,6 +75,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         queue = bus.subscribe()
+        # Replay saved conversation so a reloaded/reopened dashboard shows history.
+        history = orch.history.load()
+        if history:
+            await websocket.send_json({"type": "history_start"})
+            for ev in history:
+                await websocket.send_json(ev)
+            await websocket.send_json({"type": "history_end"})
         # Send the current project immediately so a fresh page shows context.
         orch._publish_project()
 

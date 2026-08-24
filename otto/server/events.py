@@ -16,12 +16,17 @@ subscriber) receives them. Events are plain dicts with a "type" field:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Callable
 
 
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._sinks: list[Callable[[dict[str, Any]], None]] = []
+
+    def add_sink(self, fn: Callable[[dict[str, Any]], None]) -> None:
+        """Register a synchronous side-effect (e.g. history persistence) run on publish."""
+        self._sinks.append(fn)
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
@@ -33,6 +38,11 @@ class EventBus:
 
     def publish(self, event: dict[str, Any]) -> None:
         """Fan an event out to all subscribers (drops on a full/slow queue)."""
+        for fn in self._sinks:
+            try:
+                fn(event)
+            except Exception:
+                pass
         for q in list(self._subscribers):
             try:
                 q.put_nowait(event)

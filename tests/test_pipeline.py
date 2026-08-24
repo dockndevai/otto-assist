@@ -207,6 +207,25 @@ def test_porcupine_custom_keyword_shim(monkeypatch):
     assert captured["access_key"] == "KEY123"
 
 
+def test_history_persist_and_replay(tmp_path):
+    from otto.history import History
+    h = History(tmp_path / "history.jsonl")
+    bus = EventBus()
+    bus.add_sink(h.sink)
+    bus.transcript("user", "hello")
+    bus.transcript("assistant", "hi there")
+    bus.canvas("<b>old</b>")
+    bus.canvas("<b>new</b>")
+    bus.status("idle", "ignored")          # not persisted
+    loaded = h.load()
+    kinds = [e["type"] for e in loaded]
+    assert kinds.count("transcript_final") == 2
+    # only the latest canvas is replayed, and it comes last
+    canvases = [e for e in loaded if e["type"] == "canvas_render"]
+    assert len(canvases) == 1 and canvases[0]["content"] == "<b>new</b>"
+    assert "status" not in kinds
+
+
 def test_render_canvas_publishes():
     bus = EventBus()
     orch = Orchestrator(load_settings(), bus)

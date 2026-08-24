@@ -15,7 +15,8 @@ from typing import Any
 
 from .brain.agent import ClaudeBrain
 from .brain.base import Brain
-from .config import Settings, save_config
+from .config import OTTO_HOME, Settings, save_config
+from .history import History
 from .server.events import EventBus
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
@@ -78,6 +79,8 @@ class Orchestrator:
     def __init__(self, settings: Settings, bus: EventBus) -> None:
         self.settings = settings
         self.bus = bus
+        self.history = History(OTTO_HOME / "history.jsonl")
+        bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
         self.brain: Brain = self._make_brain()
         self.current_project = str(settings.project_path)
         self.mouth = None       # set in start() if voice output enabled

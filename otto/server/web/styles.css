@@ -51,6 +51,7 @@ body {
 .msg.assistant { align-self: flex-start; background: var(--assistant); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
 .msg.partial { opacity: .55; font-style: italic; }
 .tool { align-self: center; font-size: 11px; color: var(--muted); background: #0e1620; border: 1px solid var(--line); border-radius: 20px; padding: 4px 12px; }
+.divider { align-self: center; font-size: 10px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; margin: 6px 0; opacity: .6; }
 .tool b { color: var(--accent); font-weight: 600; }
 
 .talk {
