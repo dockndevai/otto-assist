@@ -36,7 +36,18 @@ or long to present (a chart, table, document, code, detailed results), don't rea
 call the render_canvas tool to show it on the dashboard and say a one-line summary. When a \
 request is ambiguous or needs a decision, use the ask_user tool and wait. Use the say tool \
 for quick progress updates during longer work. Everything else about how you work — your \
-tools, subagents, project instructions — is unchanged."""
+tools, subagents, project instructions — is unchanged.
+
+Be fast. Answer simple questions (math, general knowledge, quick chat) directly from what \
+you know, without tools. Only reach for a tool when you genuinely need live/external data \
+(current time, email, files, the web). Prefer one tool call over many. Keep spoken answers \
+to a sentence or two.
+
+Acknowledge first, then act. Whenever a request needs a tool that takes a moment (checking \
+email, files, GitHub, the web, running a command), FIRST say a brief spoken acknowledgment \
+like "Sure, let me check that" or "One sec, pulling that up" — then call the tool — then \
+give the answer. Never go silent straight into a tool call; the user should always hear you \
+acknowledge before you start working."""
 
 
 class ClaudeBrain:
@@ -96,6 +107,8 @@ class ClaudeBrain:
         # confirmation — only consequential actions do.
         if _is_read_only(tool_name):
             return PermissionResultAllow()
+        if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
+            return PermissionResultAllow()
         mode = self.settings.brain.permission
         if mode == "auto":
             return PermissionResultAllow()
@@ -149,6 +162,28 @@ _WRITE_VERBS = re.compile(
 _READ_VERBS = re.compile(
     r"(search|list|get|read|fetch|view|find|query|status|count|show|describe|lookup|"
     r"recent|history|threads|messages|events|summary|details)", re.I)
+
+
+# Shell commands that only read state — safe to run without a spoken confirmation.
+_BASH_READ_CMDS = {"date", "ls", "pwd", "cat", "head", "tail", "echo", "whoami", "df",
+                   "du", "uptime", "cal", "which", "type", "printenv", "hostname", "uname",
+                   "wc", "find", "grep", "rg", "stat", "file", "open"}
+_BASH_DANGER = re.compile(r"([|;&><`$]|\brm\b|\bsudo\b|\bmv\b|\bcp\b|\bkill\b|\bdd\b|"
+                          r"\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bgit\s+(push|commit|reset)|"
+                          r"\bgh\s+\w+\s+(create|delete|edit|merge|close))")
+
+
+def _bash_is_read_only(command: str) -> bool:
+    cmd = command.strip()
+    if not cmd or _BASH_DANGER.search(cmd):
+        return False
+    first = cmd.split()[0] if cmd.split() else ""
+    if first in _BASH_READ_CMDS:
+        return True
+    # read-only subcommands of common tools
+    if re.match(r"^(git\s+(status|log|diff|show|branch)|gh\s+\w+\s+(list|view|status))", cmd):
+        return True
+    return False
 
 
 def _is_read_only(tool_name: str) -> bool:

@@ -82,6 +82,17 @@ def test_read_only_classifier():
     assert not _is_read_only("Bash")          # unknown/dangerous -> not auto-read
 
 
+def test_bash_read_only_classifier():
+    from otto.brain.agent import _bash_is_read_only
+    assert _bash_is_read_only("date")
+    assert _bash_is_read_only("gh repo list --limit 5")
+    assert _bash_is_read_only("git status")
+    assert not _bash_is_read_only("rm -rf /tmp/x")
+    assert not _bash_is_read_only("echo hi > file.txt")     # redirection = write
+    assert not _bash_is_read_only("gh repo delete foo")
+    assert not _bash_is_read_only("git push")
+
+
 def test_read_only_permission_allows_without_confirm():
     async def run():
         s = load_settings()

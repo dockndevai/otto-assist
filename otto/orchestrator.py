@@ -349,6 +349,7 @@ class Orchestrator:
             self._status("thinking", "Thinking…")
             self._speech_buf = ""
             assistant_text = ""
+            acknowledged = False
             try:
                 async for ev in self.brain.send(text):
                     if ev["type"] == "delta":
@@ -356,8 +357,14 @@ class Orchestrator:
                         assistant_text += chunk
                         self.bus.assistant_delta(chunk)
                         self._feed_speech(chunk)
+                        acknowledged = True
                         self._status("speaking", "Speaking…")
                     elif ev["type"] == "tool_use":
+                        # Acknowledge out loud before going quiet into a tool, so the user
+                        # always hears Otto is on it (unless it already said something).
+                        if not acknowledged:
+                            self._acknowledge()
+                            acknowledged = True
                         self._announce_tool(ev["name"], ev.get("detail", ""))
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
@@ -375,6 +382,14 @@ class Orchestrator:
                 if assistant_text.strip():
                     self.bus.transcript("assistant", assistant_text.strip(), final=True)
                 self._status("idle", "Ready")
+
+    def _acknowledge(self) -> None:
+        """Speak a brief filler when Otto starts working, so it's never silent."""
+        import random
+        line = random.choice(["On it.", "One sec.", "Let me check.", "Sure, checking now."])
+        self.bus.assistant_delta(line + " ")
+        if self.mouth and not self.voice_muted:
+            self.mouth.speak(line)
 
     def _feed_speech(self, chunk: str) -> None:
         """Buffer deltas and speak whole sentences for natural prosody."""
