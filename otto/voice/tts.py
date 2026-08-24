@@ -1,15 +1,19 @@
-"""The mouth: streaming text-to-speech with barge-in.
+"""The mouth: text-to-speech with barge-in.
 
-Wraps RealtimeTTS. Default engine is the local macOS system voice (no key). Set the TTS
-engine to "elevenlabs" (with ELEVENLABS_API_KEY) for a premium voice.
+Default engine is macOS **`say`** — native, reliable even from a launchd background app
+(RealtimeTTS's pyttsx3 engine plays inconsistently there), and easy to interrupt. Set the
+TTS engine to "elevenlabs" (with ELEVENLABS_API_KEY) for a premium streaming voice via
+RealtimeTTS.
 
-Speech runs on RealtimeTTS's own playback thread, so `speak()` returns immediately and
-`stop()` can cut it off mid-sentence when the user starts talking (barge-in).
+Sentences are queued and spoken in order on a worker thread, so `speak()` returns
+immediately and `stop()` cuts off playback mid-sentence for barge-in.
 """
 
 from __future__ import annotations
 
-import os
+import queue
+import subprocess
+import threading
 
 from ..config import Settings
 
@@ -17,45 +21,86 @@ from ..config import Settings
 class Mouth:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._stream = None  # RealtimeTTS TextToAudioStream
+        self._engine = settings.voice.tts.engine
+        self._voice = settings.voice.tts.voice
+        # macOS `say` path
+        self._q: "queue.Queue[str | None]" = queue.Queue()
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        # ElevenLabs (RealtimeTTS) path
+        self._stream = None
 
     def start(self) -> None:
-        from RealtimeTTS import TextToAudioStream  # lazy import
+        if self._engine == "elevenlabs":
+            self._start_elevenlabs()
+        else:
+            self._worker = threading.Thread(target=self._say_loop, daemon=True)
+            self._worker.start()
 
-        engine = self._make_engine()
-        self._stream = TextToAudioStream(engine)
-
-    def _make_engine(self):
-        cfg = self.settings.voice.tts
-        if cfg.engine == "elevenlabs":
-            from RealtimeTTS import ElevenlabsEngine
-
-            api_key = os.environ.get("ELEVENLABS_API_KEY", "")
-            kwargs = {"api_key": api_key}
-            if cfg.voice:
-                kwargs["voice"] = cfg.voice
-            return ElevenlabsEngine(**kwargs)
-
-        # Default: local system voice (macOS `say` via RealtimeTTS SystemEngine).
-        from RealtimeTTS import SystemEngine
-
-        return SystemEngine()
+    # -- macOS say ---------------------------------------------------------
+    def _say_loop(self) -> None:
+        while True:
+            text = self._q.get()
+            if text is None:
+                return
+            argv = ["say"]
+            if self._voice:
+                argv += ["-v", self._voice]
+            argv.append(text)
+            try:
+                with self._lock:
+                    self._proc = subprocess.Popen(argv)
+                self._proc.wait()
+            except Exception:
+                pass
+            finally:
+                with self._lock:
+                    self._proc = None
 
     def speak(self, text: str) -> None:
-        """Queue text and start (or continue) playback without blocking."""
-        if not text or self._stream is None:
+        if not text:
             return
-        self._stream.feed(text)
-        if not self._stream.is_playing():
-            self._stream.play_async()
+        if self._engine == "elevenlabs" and self._stream is not None:
+            self._stream.feed(text)
+            if not self._stream.is_playing():
+                self._stream.play_async()
+            return
+        self._q.put(text)
 
     def stop(self) -> None:
-        """Barge-in: stop playback immediately and clear the queue."""
-        if self._stream is not None:
+        """Barge-in: drop anything queued and cut the current utterance."""
+        if self._engine == "elevenlabs" and self._stream is not None:
             try:
                 self._stream.stop()
             except Exception:
                 pass
+            return
+        try:
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
+        with self._lock:
+            if self._proc is not None:
+                try:
+                    self._proc.terminate()
+                except Exception:
+                    pass
 
     def is_playing(self) -> bool:
-        return bool(self._stream and self._stream.is_playing())
+        if self._engine == "elevenlabs" and self._stream is not None:
+            return bool(self._stream.is_playing())
+        with self._lock:
+            return self._proc is not None or not self._q.empty()
+
+    # -- ElevenLabs (RealtimeTTS) ------------------------------------------
+    def _start_elevenlabs(self) -> None:
+        import os
+
+        from RealtimeTTS import ElevenlabsEngine, TextToAudioStream
+
+        kwargs = {"api_key": os.environ.get("ELEVENLABS_API_KEY", "")}
+        if self._voice:
+            kwargs["voice"] = self._voice
+        self._stream = TextToAudioStream(ElevenlabsEngine(**kwargs))
