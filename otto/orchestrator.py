@@ -95,6 +95,9 @@ class Orchestrator:
         # Software ("phrase") wake word: await the command after "hey otto".
         self._awaiting_command = False
         self._await_handle = None
+        # Push-to-talk: capture the next utterance as a command, no wake word needed.
+        self._ptt_armed = False
+        self._ptt_handle = None
 
     def _make_brain(self) -> Brain:
         # Only Claude today; the Brain protocol lets other agents drop in later.
@@ -215,8 +218,32 @@ class Orchestrator:
         self.render_canvas(_DEMO_CHART, "html")
         self._status("idle", "Ready")
 
+    def arm_ptt(self) -> None:
+        """Push-to-talk: capture the NEXT spoken utterance as a command (skip wake word)."""
+        self._ptt_armed = True
+        self._status("listening", "Listening… speak now")
+        if self.mouth and not self.voice_muted:
+            self.mouth.stop()
+        if self._loop is not None:
+            if self._ptt_handle is not None:
+                self._ptt_handle.cancel()
+            self._ptt_handle = self._loop.call_later(12, self._disarm_ptt)
+
+    def _disarm_ptt(self) -> None:
+        if self._ptt_armed:
+            self._ptt_armed = False
+            self._status("idle", "Ready")
+
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
+            return
+        # Push-to-talk armed: this utterance is the command, no wake word required.
+        if self._ptt_armed:
+            self._ptt_armed = False
+            if self._ptt_handle is not None:
+                self._ptt_handle.cancel()
+            print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(text)
             return
         # "phrase" backend = software wake word: only act on speech that begins with the
         # wake phrase (e.g. "hey otto"), or on the command right after it.
@@ -301,13 +328,11 @@ class Orchestrator:
         self._loop.call_later(2.5, _reset)
 
     def _on_ptt_press(self) -> None:
-        self._on_speech_start()
-        if self.ears:
-            self.ears.trigger_ptt_start()
+        # Global hotkey (⌘⇧J) arms capture of the next utterance — same as the Talk button.
+        self.arm_ptt()
 
     def _on_ptt_release(self) -> None:
-        if self.ears:
-            self.ears.trigger_ptt_stop()
+        pass  # VAD detects end-of-speech; nothing to do on release
 
     # -- the turn ----------------------------------------------------------
     async def _handle_turn(self, text: str) -> None:

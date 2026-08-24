@@ -52,6 +52,7 @@ class OttoApp(rumps.App):
         self.menu = [
             self.status_item,
             None,
+            rumps.MenuItem("🎤 Talk to Otto", callback=self.talk),
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -140,6 +141,10 @@ class OttoApp(rumps.App):
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
             self._refresh_projects()
+
+    def talk(self, _) -> None:
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(self.orch.arm_ptt)
 
     def open_dashboard(self, _) -> None:
         webbrowser.open(self.url)

@@ -130,6 +130,25 @@ def test_listening_state():
     asyncio.run(run())
 
 
+def test_ptt_bypasses_wake_word():
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+        seen = {}
+        orch.submit_user_input = lambda t: seen.setdefault("cmd", t)  # capture
+        # Without arming, a non-wake utterance is ignored.
+        orch._on_voice_final("what is the time")
+        assert "cmd" not in seen
+        # Armed (push-to-talk): the utterance goes straight through, no wake word.
+        orch.arm_ptt()
+        assert orch._ptt_armed is True
+        orch._on_voice_final("what is the time")
+        assert seen.get("cmd") == "what is the time"
+        assert orch._ptt_armed is False
+    asyncio.run(run())
+
+
 def test_phrase_wake_matcher():
     orch = Orchestrator(load_settings(), EventBus())
     orch.settings.voice.stt.wake_words = "hey otto"

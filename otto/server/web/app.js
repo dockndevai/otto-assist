@@ -121,6 +121,14 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+$("talk").addEventListener("click", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "ptt" }));
+    $("talk").classList.add("armed");
+    setTimeout(() => $("talk").classList.remove("armed"), 3000);
+  }
+});
+
 $("composer").addEventListener("submit", (e) => {
   e.preventDefault();
   const input = $("input");
