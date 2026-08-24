@@ -70,6 +70,29 @@ def test_defers_to_claude_config():
     assert not (Path(pkg.__file__).parent / "connectors.py").exists()
 
 
+def test_read_only_classifier():
+    from otto.brain.agent import _is_read_only
+    # reads flow freely
+    assert _is_read_only("mcp__claude_ai_Gmail__search_threads")
+    assert _is_read_only("mcp__gdrive__list_files")
+    assert _is_read_only("Read") and _is_read_only("WebSearch")
+    # writes require confirmation
+    assert not _is_read_only("mcp__claude_ai_Gmail__send_message")
+    assert not _is_read_only("mcp__cal__create_event")
+    assert not _is_read_only("Bash")          # unknown/dangerous -> not auto-read
+
+
+def test_read_only_permission_allows_without_confirm():
+    async def run():
+        s = load_settings()
+        s.brain.permission = "voice"           # would normally prompt
+        b = ClaudeBrain(FakeCtx(), s)
+        # a Gmail *read* is allowed with no confirm even in voice mode
+        r = await b._permission("mcp__claude_ai_Gmail__search_threads", {}, None)
+        assert isinstance(r, PermissionResultAllow)
+    asyncio.run(run())
+
+
 def test_permission_routing():
     async def run():
         s = load_settings()

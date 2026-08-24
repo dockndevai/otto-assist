@@ -10,6 +10,7 @@ Otto injects is a short voice-manners note and its voice/screen tools.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, AsyncIterator
 
 from claude_agent_sdk import (
@@ -91,6 +92,10 @@ class ClaudeBrain:
         """
         if tool_name.startswith("mcp__voice__"):
             return PermissionResultAllow()
+        # Read-only tools (searching Gmail, listing files, web search…) never need a
+        # confirmation — only consequential actions do.
+        if _is_read_only(tool_name):
+            return PermissionResultAllow()
         mode = self.settings.brain.permission
         if mode == "auto":
             return PermissionResultAllow()
@@ -132,6 +137,31 @@ class ClaudeBrain:
                     "cost": message.total_cost_usd,
                     "error_text": full if message.is_error else "",
                 }
+
+
+# Built-in tools that only read; and verb patterns for classifying MCP tools.
+_READ_BUILTINS = {"Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite",
+                  "NotebookRead", "Task"}
+_WRITE_VERBS = re.compile(
+    r"(send|create|delete|remove|update|write|edit|trash|move|archive|reply|forward|"
+    r"draft|post|add|set|modify|label|insert|upload|share|rename|revoke|cancel|pay|buy)",
+    re.I)
+_READ_VERBS = re.compile(
+    r"(search|list|get|read|fetch|view|find|query|status|count|show|describe|lookup|"
+    r"recent|history|threads|messages|events|summary|details)", re.I)
+
+
+def _is_read_only(tool_name: str) -> bool:
+    """Best-effort: does this tool only read? Reads skip the confirmation prompt."""
+    if tool_name in _READ_BUILTINS:
+        return True
+    if tool_name.startswith("mcp__"):
+        leaf = tool_name.split("__")[-1]
+        if _WRITE_VERBS.search(leaf):     # a write verb wins (e.g. send_message)
+            return False
+        if _READ_VERBS.search(leaf):
+            return True
+    return False
 
 
 def _describe(tool_name: str, args: dict[str, Any]) -> str:
