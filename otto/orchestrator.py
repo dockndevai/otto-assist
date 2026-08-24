@@ -222,8 +222,9 @@ class Orchestrator:
         """Push-to-talk: capture the NEXT spoken utterance as a command (skip wake word)."""
         self._ptt_armed = True
         self._status("listening", "Listening… speak now")
-        if self.mouth and not self.voice_muted:
+        if self.mouth:
             self.mouth.stop()
+            self.mouth._last_end = 0.0   # allow immediate capture (bypass echo guard)
         if self._loop is not None:
             if self._ptt_handle is not None:
                 self._ptt_handle.cancel()
@@ -244,6 +245,12 @@ class Orchestrator:
                 self._ptt_handle.cancel()
             print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
             self.submit_user_input(text)
+            return
+        # Echo guard: while Otto is speaking (and briefly after), the mic hears Otto's own
+        # voice — ignore it so it doesn't self-trigger. (No echo cancellation on the laptop
+        # mic; use the Talk button to interrupt Otto.)
+        if self.mouth is not None and self.mouth.recently_active():
+            print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
             return
         # "phrase" backend = software wake word: only act on speech that begins with the
         # wake phrase (e.g. "hey otto"), or on the command right after it.
@@ -311,9 +318,9 @@ class Orchestrator:
     def _on_speech_start(self) -> None:
         if self.mic_muted:
             return
-        # Barge-in: cut off speech the moment the user starts talking.
-        if self.mouth and self.mouth.is_playing():
-            self.mouth.stop()
+        # Otto hearing its own voice through the speaker — don't treat it as user speech.
+        if self.mouth is not None and self.mouth.recently_active():
+            return
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")
 

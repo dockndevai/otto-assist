@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import sys
 import threading
+import time
 
 from ..config import Settings
 
@@ -28,6 +30,7 @@ class Mouth:
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._last_end = 0.0   # when the last utterance finished (for echo suppression)
         # ElevenLabs (RealtimeTTS) path
         self._stream = None
 
@@ -44,19 +47,22 @@ class Mouth:
             text = self._q.get()
             if text is None:
                 return
-            argv = ["say"]
+            argv = ["/usr/bin/say"]
             if self._voice:
                 argv += ["-v", self._voice]
             argv.append(text)
             try:
                 with self._lock:
                     self._proc = subprocess.Popen(argv)
-                self._proc.wait()
-            except Exception:
-                pass
+                rc = self._proc.wait()
+                print(f"[otto] say rc={rc} text={text[:40]!r}", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[otto] say FAILED: {e!r}", file=sys.stderr, flush=True)
             finally:
                 with self._lock:
                     self._proc = None
+                if self._q.empty():
+                    self._last_end = time.monotonic()
 
     def speak(self, text: str) -> None:
         if not text:
@@ -93,6 +99,12 @@ class Mouth:
             return bool(self._stream.is_playing())
         with self._lock:
             return self._proc is not None or not self._q.empty()
+
+    def recently_active(self, window: float = 1.5) -> bool:
+        """Playing, or finished within `window`s — used to ignore the mic hearing Otto."""
+        if self.is_playing():
+            return True
+        return (time.monotonic() - self._last_end) < window
 
     # -- ElevenLabs (RealtimeTTS) ------------------------------------------
     def _start_elevenlabs(self) -> None:
