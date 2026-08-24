@@ -86,6 +86,7 @@ class Orchestrator:
                     on_partial=lambda t: self.bus.transcript("user", t, final=False),
                     on_speech_start=self._on_speech_start,
                     on_wake=self._on_speech_start,
+                    on_recording_stop=self._on_recording_stop,
                 )
                 self.ears.start()
                 from .voice.hotkey import PushToTalk
@@ -183,6 +184,18 @@ class Orchestrator:
         # Barge-in: cut off speech the moment the user starts talking.
         if self.mouth and self.mouth.is_playing():
             self.mouth.stop()
+        # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
+        self._status("listening", "Listening…")
+
+    def _on_recording_stop(self) -> None:
+        # Speech ended; if a turn doesn't pick up shortly (e.g. wake word with no
+        # command), drop back to idle so the indicator doesn't stick on "listening".
+        if self._loop is None:
+            return
+        def _reset():
+            if self.state == "listening":
+                self._status("idle", "Ready")
+        self._loop.call_later(2.5, _reset)
 
     def _on_ptt_press(self) -> None:
         self._on_speech_start()

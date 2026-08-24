@@ -2,15 +2,53 @@
 
 Runs the blocking recorder loop on a background thread and hands final/partial
 transcripts back to the asyncio loop through thread-safe callbacks. A wake-word or
-speech-start event is what triggers barge-in (stopping the mouth mid-sentence).
+speech-start event triggers barge-in and the "listening" indicator.
+
+Wake word:
+- "oww" (openWakeWord) uses built-in phrases only ("hey jarvis", …).
+- "pvporcupine" supports a CUSTOM keyword (e.g. "hey otto") via a .ppn file: set
+  `wake_words` to the .ppn path and put your Picovoice key in PICOVOICE_ACCESS_KEY.
+  RealtimeSTT itself only passes built-in keyword *names*, so we install a small shim on
+  `pvporcupine.create` that redirects .ppn paths to `keyword_paths` and injects the key.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Callable
 
 from ..config import Settings
+
+
+def _install_porcupine_custom_keyword_shim() -> None:
+    """Let RealtimeSTT use a custom .ppn keyword + access key with Porcupine.
+
+    RealtimeSTT calls ``pvporcupine.create(keywords=[...], sensitivities=[...])``. We wrap
+    it so any entry ending in ``.ppn`` becomes a ``keyword_paths`` entry, and the access
+    key is supplied from PICOVOICE_ACCESS_KEY when not passed.
+    """
+    import pvporcupine
+
+    if getattr(pvporcupine.create, "_otto_shim", False):
+        return
+    _orig = pvporcupine.create
+
+    def create(**kwargs):
+        kwargs.setdefault("access_key", os.environ.get("PICOVOICE_ACCESS_KEY", ""))
+        kws = list(kwargs.get("keywords") or [])
+        paths = [k for k in kws if str(k).endswith(".ppn")]
+        names = [k for k in kws if not str(k).endswith(".ppn")]
+        if paths:
+            kwargs["keyword_paths"] = paths
+            if names:
+                kwargs["keywords"] = names
+            else:
+                kwargs.pop("keywords", None)
+        return _orig(**kwargs)
+
+    create._otto_shim = True  # type: ignore[attr-defined]
+    pvporcupine.create = create
 
 
 class Ears:
@@ -22,6 +60,7 @@ class Ears:
         on_partial: Callable[[str], None],
         on_speech_start: Callable[[], None],
         on_wake: Callable[[], None],
+        on_recording_stop: Callable[[], None] | None = None,
     ) -> None:
         self.settings = settings
         self._loop = loop
@@ -29,6 +68,7 @@ class Ears:
         self._on_partial = on_partial
         self._on_speech_start = on_speech_start
         self._on_wake = on_wake
+        self._on_recording_stop = on_recording_stop
         self._recorder = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -49,8 +89,13 @@ class Ears:
             on_realtime_transcription_update=lambda t: self._post(self._on_partial, t),
             on_recording_start=lambda: self._post(self._on_speech_start),
         )
+        if self._on_recording_stop is not None:
+            params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
+
         # Wake word is optional; when set, the recorder idles until it hears it.
         if cfg.wake_words:
+            if cfg.wakeword_backend in ("pvporcupine", "porcupine", "pvp"):
+                _install_porcupine_custom_keyword_shim()
             params.update(
                 wakeword_backend=cfg.wakeword_backend,
                 wake_words=cfg.wake_words,

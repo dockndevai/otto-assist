@@ -117,6 +117,32 @@ def test_mcp_server_builds():
     assert {"speak", "show", "ask", "notify", "status"} <= names
 
 
+def test_listening_state():
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        assert orch.state == "starting"
+        orch._on_speech_start()                       # wake word / speech begins
+        assert orch.state == "listening"
+        orch._on_recording_stop()                     # speech ends, no command
+        await asyncio.sleep(2.7)                       # watchdog resets after ~2.5s
+        assert orch.state == "idle"
+    asyncio.run(run())
+
+
+def test_porcupine_custom_keyword_shim(monkeypatch):
+    monkeypatch.setenv("PICOVOICE_ACCESS_KEY", "KEY123")
+    import pvporcupine
+    from otto.voice.stt import _install_porcupine_custom_keyword_shim
+    captured = {}
+    monkeypatch.setattr(pvporcupine, "create", lambda **kw: captured.update(kw) or "PPN")
+    _install_porcupine_custom_keyword_shim()
+    pvporcupine.create(keywords=["/tmp/hey_otto.ppn"], sensitivities=[0.6])
+    assert captured["keyword_paths"] == ["/tmp/hey_otto.ppn"]
+    assert "keywords" not in captured
+    assert captured["access_key"] == "KEY123"
+
+
 def test_render_canvas_publishes():
     bus = EventBus()
     orch = Orchestrator(load_settings(), bus)

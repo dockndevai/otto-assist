@@ -73,11 +73,20 @@ class OttoApp(rumps.App):
                                   pinned=self.settings.brain.projects)
         except Exception:
             return
-        self.project_menu.clear()
+        # rumps builds a submenu's backing NSMenu lazily on first .add(); only .clear()
+        # once it exists (avoids AttributeError on the very first refresh).
+        if getattr(self.project_menu, "_menu", None) is not None:
+            try:
+                self.project_menu.clear()
+            except Exception:
+                pass
         for p in projs:
-            item = rumps.MenuItem(p.name, callback=self._make_switch(p.path))
-            item.state = 1 if p.current else 0
-            self.project_menu.add(item)
+            try:
+                item = rumps.MenuItem(p.name, callback=self._make_switch(p.path))
+                item.state = 1 if p.current else 0
+                self.project_menu.add(item)
+            except Exception:
+                pass
 
     def _make_switch(self, path: str):
         def _cb(_):
@@ -118,7 +127,15 @@ class OttoApp(rumps.App):
     @rumps.timer(1)
     def _tick(self, _) -> None:
         self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
-        self.title = "🔇" if self.orch.mic_muted else "🧠"
+        # Menu-bar glyph shows at a glance whether Otto is listening / speaking.
+        if self.orch.mic_muted:
+            self.title = "🔇"
+        elif self.orch.state == "listening":
+            self.title = "👂"
+        elif self.orch.state == "speaking":
+            self.title = "🗣️"
+        else:
+            self.title = "🧠"
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
