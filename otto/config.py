@@ -31,6 +31,8 @@ class BrainConfig(BaseModel):
     model: str = "sonnet"
     permission: Literal["ask", "auto"] = "ask"
     workspace: str = "workspace"
+    # Extra directories Otto may read/act in beyond its workspace (~ is expanded).
+    extra_dirs: list[str] = Field(default_factory=lambda: ["~/Documents"])
 
 
 class STTConfig(BaseModel):

@@ -7,6 +7,7 @@ screen (web UI).
 
 from __future__ import annotations
 
+import os
 from typing import Any, AsyncIterator
 
 from claude_agent_sdk import (
@@ -91,6 +92,7 @@ class Brain:
             agents=default_agents(),
             can_use_tool=self._permission,
             cwd=str(self.settings.workspace_path),
+            add_dirs=[os.path.expanduser(d) for d in self.settings.brain.extra_dirs],
             setting_sources=[],  # isolated — ignore ambient project/user settings
             include_partial_messages=True,
             permission_mode="default",
