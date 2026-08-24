@@ -66,8 +66,12 @@ class OttoApp(rumps.App):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._backend_main())
-        except Exception as e:  # surface fatal backend errors to the menu
+        except Exception as e:  # surface fatal backend errors to the menu + log
+            import traceback
+
             self.orch.state = f"error: {e}"
+            print(f"[otto] backend crashed: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc()
 
     async def _backend_main(self) -> None:
         await self.orch.start()
@@ -115,6 +119,7 @@ class OttoApp(rumps.App):
 
 def main() -> None:
     load_env()
+    print("[otto] menu bar app starting…", file=sys.stderr, flush=True)
     OttoApp().run()
 
 
