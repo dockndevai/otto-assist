@@ -309,9 +309,9 @@ class Orchestrator:
             print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
             self.submit_user_input(command)
             return
-        # Echo guard: while Otto is speaking (and briefly after), the mic hears Otto's own
-        # voice — ignore it so it doesn't self-trigger.
-        if self.mouth is not None and self.mouth.recently_active():
+        # Echo guard: while Otto is speaking (and for the transcription lag after), the mic
+        # hears Otto's own voice — ignore it so it doesn't answer itself in a loop.
+        if self.mouth is not None and self.mouth.recently_active(self._echo_window()):
             print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
             return
         # Always-listen: no wake word, just respond to whatever you say (self-echo already
@@ -401,11 +401,16 @@ class Orchestrator:
             self._await_handle.cancel()
             self._await_handle = None
 
+    def _echo_window(self) -> float:
+        # Cover the whole pipeline after Otto stops: VAD end (silence_seconds) +
+        # transcription lag + margin, so Otto's own reply doesn't come back as a command.
+        return self.settings.voice.stt.silence_seconds + 2.5
+
     def _on_speech_start(self) -> None:
         if self.mic_muted:
             return
         # Otto hearing its own voice through the speaker — don't treat it as user speech.
-        if self.mouth is not None and self.mouth.recently_active():
+        if self.mouth is not None and self.mouth.recently_active(self._echo_window()):
             return
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")

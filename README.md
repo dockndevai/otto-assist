@@ -72,14 +72,21 @@ project Otto is working in, choose the brain/permissions, and tune voice — no 
 
 ## Talking to Otto
 
-Three ways in, most-to-least reliable:
+Four ways in:
 
-1. **🎤 Talk button** *(recommended)* — dashboard button, menu-bar **Talk to Otto**, or the
+1. **🎤 Talk button** *(most reliable)* — dashboard button, menu-bar **Talk to Otto**, or the
    **⌘⇧J** hotkey. Click, then speak — no wake word, no mishearing. Needs no macOS
    permission (the hotkey needs Accessibility).
-2. **Wake word "hey otto"** — hands-free, but it rides on speech-to-text which can drop the
-   name; a trained model fixes that (see below).
-3. **Type** in the dashboard — always works.
+2. **Always-listen** *(just talk)* — set `voice.stt.always_listen: true` and Otto responds
+   to whatever you say, no wake word. It ignores its own voice; **mute the mic** (menu bar)
+   when you're not talking to it so it doesn't pick up background chatter.
+3. **Wake word** — say your phrase first; hands-free but the software wake word rides on
+   speech-to-text which can drop the name (a custom trained model is reliable — see below).
+4. **Type** in the dashboard — always works.
+
+Otto **waits for you to finish** (`voice.stt.silence_seconds`, ~1.8s pause) so it won't cut
+you off, and the menu-bar robot shows state by color: grey idle · green listening · blue
+thinking · orange speaking · red muted.
 
 The menu-bar glyph shows state at a glance: 🧠 idle · 👂 listening · 🗣️ speaking. Otto
 **acknowledges before it acts** ("One sec…") so it's never silently working, and reads flow

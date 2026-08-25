@@ -29,6 +29,7 @@ voice:
     model: "small.en"          # faster-whisper: tiny/base/small/medium/large-v3 (+ .en)
     language: "en"
     silence_seconds: 1.8    # pause (s) that ends your turn — higher = waits longer, won't cut you off
+    always_listen: false    # true = just talk, no wake word (mute the mic when not in use)
     # Wake word backend:
     #   efficientword -> BEST custom wake word: record your phrase a few times, no account,
     #                    no training. Run `python -m otto.enroll_wake_word "hey otto"`.
