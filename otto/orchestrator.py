@@ -314,6 +314,12 @@ class Orchestrator:
         if self.mouth is not None and self.mouth.recently_active():
             print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
             return
+        # Always-listen: no wake word, just respond to whatever you say (self-echo already
+        # filtered above). Mute the mic when you don't want Otto listening.
+        if self.settings.voice.stt.always_listen:
+            print(f"[otto] always-listen: {text!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(text)
+            return
         # "phrase" backend = software wake word: act on speech that begins with the wake
         # phrase (e.g. "hey otto"), or greet + await the command when it's said alone.
         if self.settings.voice.stt.wakeword_backend == "phrase":
