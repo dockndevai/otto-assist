@@ -85,8 +85,24 @@ Four ways in:
 4. **Type** in the dashboard — always works.
 
 Otto **waits for you to finish** (`voice.stt.silence_seconds`, ~1.8s pause) so it won't cut
-you off, and the menu-bar robot shows state by color: grey idle · green listening · blue
-thinking · orange speaking · red muted.
+you off.
+
+### Menu bar — status at a glance
+
+The menu-bar robot changes color to show what Otto is doing:
+
+![Menu-bar states: idle, listening, thinking, speaking, muted](assets/menubar-states.png)
+
+| Color | State |
+|---|---|
+| ⚪ **Grey** | Idle — doing nothing |
+| 🟢 **Green** | Listening — hearing you |
+| 🔵 **Blue** | Thinking / working |
+| 🟠 **Orange** | Speaking — replying aloud |
+| 🔴 **Red** | Mic muted |
+
+The menu also has **Talk to Otto · Open Dashboard · Settings · Project ▸ · Mute mic / voice ·
+Restart · Quit**. It starts at login and restarts on crash.
 
 The menu-bar glyph shows state at a glance: 🧠 idle · 👂 listening · 🗣️ speaking. Otto
 **acknowledges before it acts** ("One sec…") so it's never silently working, and reads flow
@@ -133,8 +149,10 @@ config** — not here. Otto's `config.yaml` is wiring only:
 | `brain.permission` | `voice` | prompts for consequential tools: `voice`/`auto`/`deny` |
 | `brain.project_dir` | `~` | current project (the brain's cwd) |
 | `brain.continue_conversation` | `true` | resume the project's latest session |
-| `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` |
-| `voice.tts.engine` | `system` | macOS `say`; `elevenlabs` for a premium voice |
+| `voice.stt.always_listen` | `false` | `true` = just talk, no wake word (mute when idle) |
+| `voice.stt.silence_seconds` | `1.8` | pause that ends your turn — higher waits longer |
+| `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` / `efficientword` |
+| `voice.tts.engine` | `system` | macOS `say`; `elevenlabs` needs `ELEVENLABS_API_KEY` |
 
 ## How Otto compares (2026)
 
