@@ -196,6 +196,25 @@ def test_ptt_bypasses_wake_word():
     asyncio.run(run())
 
 
+def test_wake_greeting_and_echo_filter():
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+        seen = {}
+        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        # bare wake -> greet + await (a real greeting, not just "yes")
+        orch._enter_awaiting_command()
+        assert orch._awaiting_command and orch._last_ack in __import__("otto.orchestrator", fromlist=["_WAKE_ACKS"])._WAKE_ACKS
+        # Otto hears its own greeting echo -> ignored, still awaiting, no command
+        orch._on_voice_final(orch._last_ack)
+        assert "cmd" not in seen and orch._awaiting_command
+        # the real command after the wake -> submitted
+        orch._on_voice_final("what is the weather")
+        assert seen.get("cmd") == "what is the weather"
+    asyncio.run(run())
+
+
 def test_phrase_wake_matcher():
     orch = Orchestrator(load_settings(), EventBus())
     orch.settings.voice.stt.wake_words = "hey otto"

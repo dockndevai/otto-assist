@@ -8,6 +8,7 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import subprocess
 import sys
@@ -27,6 +28,18 @@ _WAKE_ALIASES = {
              "ottoh", "audo", "auddo", "ado", "ottto", "hotto", "otta", "auddo"},
 }
 _GREETINGS = {"hey", "hi", "ok", "okay", "yo", "hello", "hay"}
+
+# Spoken when you say the wake word alone — warm and varied, not a robotic "yes".
+_WAKE_ACKS = [
+    "Hey! What can I do for you?",
+    "Yes? I'm listening.",
+    "Hi there — what do you need?",
+    "Hey, I'm here. What's up?",
+    "Sure — what would you like?",
+    "Go ahead, I'm listening.",
+    "Hey! How can I help?",
+    "Yep — what can I do?",
+]
 
 
 def _norm_words(s: str) -> list[str]:
@@ -99,6 +112,7 @@ class Orchestrator:
         # Software ("phrase") wake word: await the command after "hey otto".
         self._awaiting_command = False
         self._await_handle = None
+        self._last_ack = ""     # last greeting spoken (to ignore its own echo)
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
         self._ptt_handle = None
@@ -172,7 +186,9 @@ class Orchestrator:
 
     def _on_eff_wake(self) -> None:
         print("[otto] wake word detected", file=sys.stderr, flush=True)
-        self.arm_ptt()
+        if self.mouth:
+            self.mouth.stop()   # stop any current speech; we're greeting fresh
+        self._enter_awaiting_command()   # greet warmly, then capture the command
 
     async def stop(self) -> None:
         if self.ears:
@@ -274,19 +290,24 @@ class Orchestrator:
             print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
             self.submit_user_input(text)
             return
+        # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
+        # greeting echoing back; the next real utterance is the command.
+        if self._awaiting_command:
+            if self._is_ack_echo(text):
+                print(f"[otto] ignoring greeting echo: {text!r}", file=sys.stderr, flush=True)
+                return
+            self._cancel_await()
+            print(f"[otto] command after wake: {text!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(text)
+            return
         # Echo guard: while Otto is speaking (and briefly after), the mic hears Otto's own
-        # voice — ignore it so it doesn't self-trigger. (No echo cancellation on the laptop
-        # mic; use the Talk button to interrupt Otto.)
+        # voice — ignore it so it doesn't self-trigger.
         if self.mouth is not None and self.mouth.recently_active():
             print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
             return
-        # "phrase" backend = software wake word: only act on speech that begins with the
-        # wake phrase (e.g. "hey otto"), or on the command right after it.
+        # "phrase" backend = software wake word: act on speech that begins with the wake
+        # phrase (e.g. "hey otto"), or greet + await the command when it's said alone.
         if self.settings.voice.stt.wakeword_backend == "phrase":
-            if self._awaiting_command:
-                self._cancel_await()
-                self.submit_user_input(text)
-                return
             matched, remainder = self._match_wake(text)
             print(f"[otto] heard: {text!r} | matched={matched} cmd={remainder!r}",
                   file=sys.stderr, flush=True)
@@ -300,7 +321,7 @@ class Orchestrator:
                 self._enter_awaiting_command()        # just "hey otto" — wait for command
             return
         if self.settings.voice.stt.wakeword_backend == "efficientword":
-            return   # wake is handled acoustically by EffWakeWord -> arm_ptt; ignore rest
+            return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
         self.submit_user_input(text)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:
@@ -327,12 +348,25 @@ class Orchestrator:
         return False, ""
 
     def _enter_awaiting_command(self) -> None:
+        """Wake word heard alone — greet warmly and wait for the command."""
         self._awaiting_command = True
         self._status("listening", "Listening…")
+        ack = random.choice(_WAKE_ACKS)
+        self._last_ack = ack
+        self.bus.transcript("assistant", ack, final=True)
         if self.mouth and not self.voice_muted:
-            self.mouth.speak("Yes?")
+            self.mouth.speak(ack)
         if self._loop is not None:
-            self._await_handle = self._loop.call_later(8, self._await_timeout)
+            if self._await_handle is not None:
+                self._await_handle.cancel()
+            self._await_handle = self._loop.call_later(12, self._await_timeout)
+
+    def _is_ack_echo(self, text: str) -> bool:
+        """Did the mic just hear Otto's own greeting? (avoid treating it as the command)."""
+        if not self._last_ack:
+            return False
+        tw, aw = set(_norm_words(text)), set(_norm_words(self._last_ack))
+        return bool(tw) and len(tw & aw) / len(tw) > 0.6
 
     def _await_timeout(self) -> None:
         if self._awaiting_command:
