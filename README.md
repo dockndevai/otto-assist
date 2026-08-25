@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🧠 Otto
+<img src="assets/otto-logo.png" width="128" alt="Otto logo" />
+
+# Otto
 
 ### A voice & a screen for the Claude you already run.
 
