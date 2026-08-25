@@ -37,7 +37,7 @@ _STATE_LABELS = {
 
 class OttoApp(rumps.App):
     def __init__(self) -> None:
-        super().__init__("Otto", title="🧠", quit_button=None)
+        super().__init__("Otto", title="Otto", quit_button=None)
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
@@ -127,16 +127,20 @@ class OttoApp(rumps.App):
     # -- menu (main thread) ------------------------------------------------
     @rumps.timer(1)
     def _tick(self, _) -> None:
-        self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
-        # Menu-bar glyph shows at a glance whether Otto is listening / speaking.
-        if self.orch.mic_muted:
-            self.title = "🔇"
-        elif self.orch.state == "listening":
-            self.title = "👂"
-        elif self.orch.state == "speaking":
-            self.title = "🗣️"
-        else:
-            self.title = "🧠"
+        try:
+            self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
+            # Text title so it always renders in the menu bar (emoji can show blank on some
+            # setups). A leading dot marks the live state.
+            if self.orch.mic_muted:
+                self.title = "Otto ×"
+            elif self.orch.state == "listening":
+                self.title = "Otto ●"
+            elif self.orch.state == "speaking":
+                self.title = "Otto ♪"
+            else:
+                self.title = "Otto"
+        except Exception:
+            self.title = "Otto"
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
