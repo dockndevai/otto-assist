@@ -35,9 +35,18 @@ _STATE_LABELS = {
 }
 
 
+_ICON = os.path.join(os.path.dirname(__file__), "assets", "menubar.png")
+
+
 class OttoApp(rumps.App):
     def __init__(self) -> None:
-        super().__init__("Otto", title="Otto", quit_button=None)
+        # Prefer the logo (a macOS template image, tinted for light/dark); fall back to
+        # text if the file is missing so the menu bar is never blank.
+        self._has_icon = os.path.exists(_ICON)
+        if self._has_icon:
+            super().__init__("Otto", icon=_ICON, template=True, quit_button=None)
+        else:
+            super().__init__("Otto", title="Otto", quit_button=None)
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
@@ -129,18 +138,18 @@ class OttoApp(rumps.App):
     def _tick(self, _) -> None:
         try:
             self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
-            # Text title so it always renders in the menu bar (emoji can show blank on some
-            # setups). A leading dot marks the live state.
+            # Keep the logo; show live state as a small marker beside it.
             if self.orch.mic_muted:
-                self.title = "Otto ×"
+                mark = " ×"
             elif self.orch.state == "listening":
-                self.title = "Otto ●"
+                mark = " ●"
             elif self.orch.state == "speaking":
-                self.title = "Otto ♪"
+                mark = " ♪"
             else:
-                self.title = "Otto"
+                mark = ""
+            self.title = mark if self._has_icon else ("Otto" + mark)
         except Exception:
-            self.title = "Otto"
+            self.title = "" if self._has_icon else "Otto"
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
@@ -165,7 +174,11 @@ class OttoApp(rumps.App):
         self.voice_item.title = "Unmute voice" if self.orch.voice_muted else "Mute voice"
 
     def restart(self, _) -> None:
-        os.execv(sys.executable, [sys.executable, "-m", "otto.menubar"])
+        # Exit cleanly; launchd (KeepAlive) relaunches a fresh process that rebuilds the
+        # menu bar. os.execv re-execs in place and leaves the menu bar item blank.
+        if self._server is not None:
+            self._server.should_exit = True
+        os._exit(0)
 
     def quit_app(self, _) -> None:
         if self._server is not None:

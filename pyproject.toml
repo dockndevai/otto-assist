@@ -43,5 +43,8 @@ otto-menubar = "otto.menubar:main"
 [tool.setuptools]
 py-modules = ["run"]
 
+[tool.setuptools.package-data]
+otto = ["assets/*.png"]
+
 [tool.setuptools.packages.find]
 include = ["otto*"]
