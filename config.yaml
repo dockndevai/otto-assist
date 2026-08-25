@@ -18,7 +18,7 @@ brain:
   projects: []                 # pinned projects for the menu-bar switcher
   extra_dirs: []               # extra readable dirs beyond the project (~ expanded)
   use_claude_config: true      # load your ~/.claude settings, MCP, subagents, skills, CLAUDE.md
-  continue_conversation: true  # resume the project's most recent Claude session
+  continue_conversation: false  # resume project chat on launch (false = fresh each launch)
   register_mcp: true           # expose /mcp so `claude mcp add otto` gives Claude voice+screen
 
 voice:

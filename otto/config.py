@@ -69,7 +69,7 @@ class BrainConfig(BaseModel):
     projects: list[str] = Field(default_factory=list)   # pinned projects for the switcher
     extra_dirs: list[str] = Field(default_factory=list)  # extra readable dirs (~ expanded)
     use_claude_config: bool = True              # load the user's ~/.claude settings/MCP/agents
-    continue_conversation: bool = True          # resume the project's latest Claude session
+    continue_conversation: bool = False          # resume the project's latest Claude session
     register_mcp: bool = True                   # expose /mcp for `claude mcp add otto`
 
 

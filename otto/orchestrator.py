@@ -8,11 +8,26 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import random
 import re
 import subprocess
 import sys
 from typing import Any
+
+
+def _answer_card(question: str, answer: str) -> str:
+    """A clean dark card shown on the canvas when the model didn't render its own visual."""
+    q, a = _html.escape(question), _html.escape(answer)
+    return (
+        '<!doctype html><meta charset="utf-8">'
+        "<style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+        "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:6vh 8vw;"
+        "background:radial-gradient(800px 500px at 20% 0%,rgba(34,211,238,.10),transparent),#0a0f1c;color:#e6ecf6}"
+        ".card{max-width:820px}.q{font-size:14px;letter-spacing:1px;text-transform:uppercase;"
+        "color:#22d3ee;margin-bottom:16px}.a{font-size:30px;line-height:1.5;font-weight:400}</style>"
+        f'<div class="card"><div class="q">{q}</div><div class="a">{a}</div></div>'
+    )
 
 from .brain.agent import ClaudeBrain
 from .brain.base import Brain
@@ -73,11 +88,13 @@ def _wordish(word: str, target: str) -> bool:
     return False
 
 _DEMO_CHART = """<!doctype html><meta charset="utf-8">
-<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:28px;color:#0b1220}
-h2{margin:0 0 4px;font-size:20px}.sub{color:#6b7a90;font-size:13px;margin-bottom:20px}
-.bar{height:30px;border-radius:6px;background:linear-gradient(90deg,#37c0ff,#1f7fb8);line-height:30px}
-.row{display:grid;grid-template-columns:120px 1fr 60px;align-items:center;gap:10px;margin:10px 0}
-.lbl{font-size:14px;font-weight:600}.val{font-size:13px;color:#456;text-align:right}</style>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:34px;color:#e6ecf6;
+background:radial-gradient(700px 400px at 20% 0%,rgba(34,211,238,.10),transparent),#0a0f1c}
+h2{margin:0 0 4px;font-size:22px}.sub{color:#7d8aa3;font-size:13px;margin-bottom:24px;letter-spacing:1px}
+.bar{height:30px;border-radius:7px;background:linear-gradient(90deg,#22d3ee,#a855f7);line-height:30px;
+box-shadow:0 0 16px rgba(34,211,238,.25)}
+.row{display:grid;grid-template-columns:120px 1fr 60px;align-items:center;gap:12px;margin:12px 0}
+.lbl{font-size:14px;font-weight:600}.val{font-size:13px;color:#9fb0c8;text-align:right}</style>
 <h2>Global EV Market Share — 2024</h2><div class="sub">sample data · rendered via render_canvas</div>
 <div class="row"><div class="lbl">BYD</div><div class="bar" style="width:100%"></div><div class="val">22.3%</div></div>
 <div class="row"><div class="lbl">Tesla</div><div class="bar" style="width:89%"></div><div class="val">19.9%</div></div>
@@ -113,6 +130,7 @@ class Orchestrator:
         self._awaiting_command = False
         self._await_handle = None
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
+        self._canvas_this_turn = False   # did the model render to the canvas this turn?
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
         self._ptt_handle = None
@@ -441,6 +459,7 @@ class Orchestrator:
             self._speech_buf = ""
             assistant_text = ""
             acknowledged = False
+            self._canvas_this_turn = False
             try:
                 async for ev in self.brain.send(text):
                     if ev["type"] == "delta":
@@ -472,6 +491,10 @@ class Orchestrator:
                 self._flush_speech()
                 if assistant_text.strip():
                     self.bus.transcript("assistant", assistant_text.strip(), final=True)
+                    # Guarantee the canvas reflects the answer: if the model didn't render
+                    # a visual this turn, show the reply as a clean card.
+                    if not self._canvas_this_turn:
+                        self.render_canvas(_answer_card(text, assistant_text.strip()))
                 self._status("idle", "Ready")
 
     def _acknowledge(self) -> None:
@@ -535,6 +558,7 @@ class Orchestrator:
                    for a in _AFFIRMATIVE)
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:
+        self._canvas_this_turn = True
         self.bus.canvas(content, fmt)
 
     def set_status(self, text: str) -> None:
