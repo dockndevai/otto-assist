@@ -37,14 +37,19 @@ Code just works, spoken.
 
 ## Quick start
 
+> 📖 **New here? Follow [INSTALL.md](INSTALL.md) — a complete step-by-step guide anyone can
+> follow (~10 min).** The short version:
+
 ```bash
-bash scripts/setup.sh
-source .venv/bin/activate
-python run.py
+git clone https://github.com/dockndevai/otto-assist.git && cd otto-assist
+bash scripts/setup.sh                      # installs everything
+claude                                     # sign in once (or set ANTHROPIC_API_KEY in .env)
+bash scripts/install_service.sh            # 🧠 menu-bar app, starts at login
 ```
 
 Open http://127.0.0.1:8000 → click **🎤 Talk** and speak, or type. `/demo` renders the
-sample chart above without calling the model.
+sample chart above without calling the model. Make a custom **"hey otto"** wake word with
+`python -m otto.enroll_wake_word "hey otto"`.
 
 ## Run as an always-on Mac app
 

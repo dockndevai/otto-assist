@@ -20,8 +20,8 @@ pip install --upgrade pip >/dev/null
 echo "==> Core dependencies"
 pip install -e .
 
-echo "==> Voice dependencies (Whisper ears + TTS mouth + hotkey)"
-pip install -e ".[voice]" || echo "    Voice extras failed — text path will still work."
+echo "==> Voice + menu-bar dependencies (Whisper ears, TTS mouth, wake words, menu bar)"
+pip install -e ".[voice,app]" || echo "    Some extras failed — text path will still work."
 
 echo "==> Pre-downloading the Whisper model (this can take a minute)"
 MODEL="$(python - <<'PY'
