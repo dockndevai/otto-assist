@@ -88,7 +88,7 @@ class STTConfig(BaseModel):
     # For backend "efficientword": a few-shot custom wake word anyone can make by recording
     # their phrase (run `python -m otto.enroll_wake_word`). Points at the generated *_ref.json.
     eff_reference: str = ""
-    eff_threshold: float = 0.65
+    eff_threshold: float = 0.70
 
 
 class TTSConfig(BaseModel):

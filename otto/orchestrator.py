@@ -185,9 +185,13 @@ class Orchestrator:
         self._status("idle", "Ready")
 
     def _on_eff_wake(self) -> None:
+        # Echo guard: the wake listener also hears Otto's own voice through the speaker —
+        # ignore detections while Otto is speaking (or just spoke) to avoid a feedback loop.
+        if self.mouth is not None and self.mouth.recently_active():
+            return
+        if self._awaiting_command:
+            return   # already greeted and waiting; don't greet again
         print("[otto] wake word detected", file=sys.stderr, flush=True)
-        if self.mouth:
-            self.mouth.stop()   # stop any current speech; we're greeting fresh
         self._enter_awaiting_command()   # greet warmly, then capture the command
 
     async def stop(self) -> None:
@@ -367,11 +371,18 @@ class Orchestrator:
             self._await_handle = self._loop.call_later(12, self._await_timeout)
 
     def _is_ack_echo(self, text: str) -> bool:
-        """Did the mic just hear Otto's own greeting? (avoid treating it as the command)."""
-        if not self._last_ack:
-            return False
-        tw, aw = set(_norm_words(text)), set(_norm_words(self._last_ack))
-        return bool(tw) and len(tw & aw) / len(tw) > 0.6
+        """Did the mic just hear Otto's own greeting? (avoid treating it as the command).
+
+        Checks against ALL greeting phrases, so even a garbled/merged echo of one or more
+        greetings is recognised rather than sent to the brain.
+        """
+        tw = set(_norm_words(text))
+        if not tw:
+            return True
+        ack_words = set()
+        for a in _WAKE_ACKS:
+            ack_words |= set(_norm_words(a))
+        return len(tw & ack_words) / len(tw) > 0.6
 
     def _await_timeout(self) -> None:
         if self._awaiting_command:
