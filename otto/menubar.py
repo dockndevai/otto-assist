@@ -35,16 +35,28 @@ _STATE_LABELS = {
 }
 
 
-_ICON = os.path.join(os.path.dirname(__file__), "assets", "menubar.png")
+_ASSETS = os.path.join(os.path.dirname(__file__), "assets")
+
+
+def _icon(name: str) -> str | None:
+    p = os.path.join(_ASSETS, f"mb_{name}.png")
+    return p if os.path.exists(p) else None
+
+
+# Which colored robot to show for each live state (grey idle, colors when active).
+_STATE_ICON = {
+    "starting": "idle", "idle": "idle", "listening": "listening",
+    "thinking": "thinking", "working": "thinking", "speaking": "speaking",
+}
 
 
 class OttoApp(rumps.App):
     def __init__(self) -> None:
-        # Prefer the logo (a macOS template image, tinted for light/dark); fall back to
-        # text if the file is missing so the menu bar is never blank.
-        self._has_icon = os.path.exists(_ICON)
+        # Colored logo that changes with state; text fallback so it's never blank.
+        self._has_icon = _icon("idle") is not None
+        self._current_icon = "idle"
         if self._has_icon:
-            super().__init__("Otto", icon=_ICON, template=True, quit_button=None)
+            super().__init__("Otto", icon=_icon("idle"), template=False, quit_button=None)
         else:
             super().__init__("Otto", title="Otto", quit_button=None)
         self.settings = load_settings()
@@ -138,18 +150,20 @@ class OttoApp(rumps.App):
     def _tick(self, _) -> None:
         try:
             self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
-            # Keep the logo; show live state as a small marker beside it.
-            if self.orch.mic_muted:
-                mark = " ×"
-            elif self.orch.state == "listening":
-                mark = " ●"
-            elif self.orch.state == "speaking":
-                mark = " ♪"
+            # Swap the colored logo to match the live state (grey idle, colors when active).
+            name = "muted" if self.orch.mic_muted else _STATE_ICON.get(self.orch.state, "idle")
+            if self._has_icon:
+                if name != self._current_icon:
+                    p = _icon(name)
+                    if p:
+                        self.icon = p
+                        self._current_icon = name
+                self.title = ""     # icon carries the state; no text needed
             else:
-                mark = ""
-            self.title = mark if self._has_icon else ("Otto" + mark)
+                self.title = "Otto"
         except Exception:
-            self.title = "" if self._has_icon else "Otto"
+            if not self._has_icon:
+                self.title = "Otto"
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
