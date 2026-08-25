@@ -76,6 +76,9 @@ class BrainConfig(BaseModel):
 class STTConfig(BaseModel):
     model: str = "small.en"
     language: str = "en"
+    # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
+    # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
+    silence_seconds: float = 1.8
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

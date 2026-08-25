@@ -87,6 +87,9 @@ class Ears:
             language=cfg.language,
             spinner=False,
             level=logging.WARNING,           # quiet RealtimeSTT's very chatty logging
+            # Wait longer after you stop before ending the turn, so Otto doesn't cut you
+            # off mid-thought (accommodates different speaking/thinking speeds).
+            post_speech_silence_duration=cfg.silence_seconds,
             # Live-partial transcription spawns a second worker that spams EOFErrors and
             # burns CPU on an always-on app; we only need final transcripts for the wake
             # phrase, so keep it off.
