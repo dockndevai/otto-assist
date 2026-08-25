@@ -291,14 +291,19 @@ class Orchestrator:
             self.submit_user_input(text)
             return
         # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
-        # greeting echoing back; the next real utterance is the command.
+        # greeting echo and a repeated wake word; the next real utterance is the command.
         if self._awaiting_command:
             if self._is_ack_echo(text):
                 print(f"[otto] ignoring greeting echo: {text!r}", file=sys.stderr, flush=True)
                 return
+            matched, remainder = self._match_wake(text)
+            if matched and not remainder.strip():
+                print(f"[otto] ignoring wake echo: {text!r}", file=sys.stderr, flush=True)
+                return   # just the wake word again — keep waiting for the command
+            command = remainder if (matched and remainder.strip()) else text
             self._cancel_await()
-            print(f"[otto] command after wake: {text!r}", file=sys.stderr, flush=True)
-            self.submit_user_input(text)
+            print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(command)
             return
         # Echo guard: while Otto is speaking (and briefly after), the mic hears Otto's own
         # voice — ignore it so it doesn't self-trigger.
