@@ -2,11 +2,11 @@
 // transcript, status orb, and canvas. Sends typed input back.
 
 const $ = (id) => document.getElementById(id);
+const appEl = $("app");
 const transcriptEl = $("transcript");
 const statusEl = $("status");
 const orbEl = $("orb");
 const canvasEl = $("canvas");
-const canvasEmpty = $("canvasEmpty");
 
 let ws;
 let partialUser = null;      // live partial-transcript bubble
@@ -112,9 +112,14 @@ function handle(ev) {
 function showCanvas(content, format) {
   const html = format === "markdown" ? mdToHtml(content) : content;
   canvasEl.srcdoc = html;
-  canvasEl.classList.remove("empty");
-  canvasEmpty.classList.add("hidden");
+  appEl.classList.add("has-canvas");   // reveal the canvas column (hidden when empty)
 }
+
+function closeCanvas() {
+  appEl.classList.remove("has-canvas");
+  canvasEl.srcdoc = "";
+}
+$("canvasClose").addEventListener("click", closeCanvas);
 
 function mdToHtml(md) {
   // Minimal, safe-ish markdown for when the agent sends markdown instead of HTML.

@@ -7,31 +7,34 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div class="app" id="app">
     <aside class="left">
       <header class="brand">
         <div class="orb" id="orb"></div>
-        <div>
+        <div class="brand-txt">
           <h1>OTTO</h1>
           <div class="status" id="status">connecting…</div>
-          <div class="proj"><span id="proj">—</span> · <a href="/settings">settings</a></div>
         </div>
+        <div class="proj"><span id="proj">—</span> · <a href="/settings">settings</a></div>
       </header>
 
       <div class="transcript" id="transcript"></div>
 
-      <button class="talk" id="talk" title="Click, then speak your command — no wake word needed">🎤 Talk</button>
-
-      <form class="composer" id="composer">
-        <input id="input" autocomplete="off" placeholder="Type a message…" />
-        <button type="submit">Send</button>
-      </form>
+      <footer class="dock">
+        <button class="talk" id="talk" title="Click, then speak — no wake word needed">🎤 Talk</button>
+        <form class="composer" id="composer">
+          <input id="input" autocomplete="off" placeholder="Type a message…" />
+          <button type="submit">Send</button>
+        </form>
+      </footer>
     </aside>
 
     <main class="canvas-wrap">
-      <div class="canvas-head">CANVAS</div>
+      <div class="canvas-head">
+        <span>CANVAS</span>
+        <button class="canvas-close" id="canvasClose" title="Close canvas">✕</button>
+      </div>
       <iframe id="canvas" sandbox="allow-scripts" title="canvas"></iframe>
-      <div class="canvas-empty" id="canvasEmpty">Anything Otto shows you appears here.</div>
     </main>
   </div>
   <script src="/static/app.js"></script>
