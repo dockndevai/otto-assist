@@ -12,12 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import webbrowser
 
 import rumps
 import uvicorn
+
+# launchd job label (see scripts/install_service.sh). Quitting must unload this, or the
+# LaunchAgent's KeepAlive immediately relaunches the process we just exited.
+_LAUNCHD_LABEL = "com.otto.assistant"
 
 from .config import load_env, load_settings
 from .orchestrator import Orchestrator
@@ -177,7 +182,8 @@ class OttoApp(rumps.App):
         webbrowser.open(self.url)
 
     def open_settings(self, _) -> None:
-        webbrowser.open(self.url + "/settings")
+        # Open the dashboard's inline settings drawer (falls back to the standalone page too).
+        webbrowser.open(self.url + "/#settings")
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted
@@ -195,12 +201,26 @@ class OttoApp(rumps.App):
         os._exit(0)
 
     def quit_app(self, _) -> None:
+        # Stop the backend, then actually STOP — not just exit. When Otto runs under launchd
+        # (the installed menu-bar app), the LaunchAgent has KeepAlive=true, so a plain exit is
+        # immediately relaunched. To truly quit we must unload the job with `launchctl bootout`;
+        # that also terminates this process. In a dev run (no launchd job) bootout is a no-op and
+        # we fall back to a normal quit.
         if self._server is not None:
             self._server.should_exit = True
         if self._loop is not None:
             self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self.orch.stop())
             )
+        try:
+            r = subprocess.run(
+                ["launchctl", "bootout", f"gui/{os.getuid()}/{_LAUNCHD_LABEL}"],
+                capture_output=True, timeout=5,
+            )
+            if r.returncode == 0:      # job unloaded; won't relaunch — make sure we're gone
+                os._exit(0)
+        except Exception:
+            pass
         rumps.quit_application()
 
 

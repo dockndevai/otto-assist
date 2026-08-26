@@ -26,6 +26,15 @@ git clone https://github.com/dockndevai/otto-assist.git
 cd otto-assist
 ```
 
+> **In a hurry?** After connecting Claude (step 4), a single command does everything below
+> — setup, install, start, and open the dashboard:
+>
+> ```bash
+> bash install.sh
+> ```
+>
+> The step-by-step version follows.
+
 ## 3. Run setup (installs everything)
 
 ```bash

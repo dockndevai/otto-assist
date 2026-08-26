@@ -94,8 +94,94 @@ function mdToHtml(md) {
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 // chat drawer
-$("chatToggle").onclick = () => { appEl.classList.toggle("chat-open"); $("chatToggle").classList.remove("unread"); scroll(); };
+$("chatToggle").onclick = () => {
+  appEl.classList.remove("settings-open");
+  appEl.classList.toggle("chat-open"); $("chatToggle").classList.remove("unread"); scroll();
+};
 $("chatClose").onclick = () => appEl.classList.remove("chat-open");
+
+// ---- Settings (inline, same dashboard) ----
+let cfg = {};
+function wakeLabel(v) {
+  const s = v.stt || {}, on = v.input_enabled !== false;
+  if (!on) return "MIC OFF";
+  if (s.always_listen) return "ALWAYS ON";
+  const w = (s.wake_words || "hey otto").trim();
+  return "“" + w.toUpperCase() + "”";
+}
+async function loadConfig() {
+  try {
+    const r = await (await fetch("/api/config")).json();
+    cfg = r.config || {};
+    const v = cfg.voice || {}, s = v.stt || {}, t = v.tts || {}, b = cfg.brain || {};
+    $("wakeBadge").textContent = wakeLabel(v);
+    $("setWake").value = s.wake_words ?? "hey otto";
+    $("setModel").value = s.model ?? "small.en";
+    $("setMic").checked = v.input_enabled !== false;
+    $("setSpeak").checked = v.output_enabled !== false;
+    $("setTts").value = t.engine ?? "system";
+    $("setBrainModel").value = b.model ?? "";
+    $("setPerm").value = b.permission ?? "voice";
+    $("setContinue").checked = b.continue_conversation === true;
+    $("setMcp").checked = b.register_mcp !== false;
+    $("setPath").textContent = r.path || "";
+  } catch (_) {}
+}
+async function loadProjects() {
+  try {
+    const r = await (await fetch("/api/projects")).json();
+    const el = $("setProjects"); if (!el) return; el.innerHTML = "";
+    (r.projects || []).forEach((p) => {
+      const row = document.createElement("div");
+      row.className = "prow" + (p.current ? " cur" : "");
+      const meta = document.createElement("div"); meta.className = "pmeta";
+      meta.innerHTML = `<b>${escapeHtml(p.name)}</b><span>${escapeHtml(p.path)}</span>`;
+      const btn = document.createElement("button");
+      btn.textContent = p.current ? "Current" : "Switch";
+      if (p.current) { btn.className = "ghost"; btn.disabled = true; }
+      btn.onclick = async () => {
+        await fetch("/api/project/switch", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: p.path }) });
+        $("setMsg").textContent = "Switching…"; setTimeout(loadProjects, 1400);
+      };
+      row.append(meta, btn); el.appendChild(row);
+    });
+  } catch (_) {}
+}
+function openSettings() {
+  appEl.classList.remove("chat-open");
+  appEl.classList.add("settings-open");
+  loadConfig(); loadProjects();
+}
+$("settingsToggle").onclick = () =>
+  appEl.classList.contains("settings-open") ? appEl.classList.remove("settings-open") : openSettings();
+$("setClose").onclick = () => appEl.classList.remove("settings-open");
+$("setSave").onclick = async () => {
+  cfg.brain = Object.assign(cfg.brain || {}, {
+    model: $("setBrainModel").value.trim(),
+    permission: $("setPerm").value,
+    continue_conversation: $("setContinue").checked,
+    register_mcp: $("setMcp").checked,
+  });
+  const v = (cfg.voice = cfg.voice || {});
+  v.stt = v.stt || {}; v.tts = v.tts || {};
+  v.input_enabled = $("setMic").checked;
+  v.output_enabled = $("setSpeak").checked;
+  v.stt.wake_words = $("setWake").value.trim();
+  v.stt.model = $("setModel").value.trim();
+  v.tts.engine = $("setTts").value;
+  $("setMsg").textContent = "Saving…";
+  try {
+    const r = await (await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: cfg }) })).json();
+    $("wakeBadge").textContent = wakeLabel(v);
+    $("setMsg").textContent = r.note || "Saved.";
+  } catch (_) { $("setMsg").textContent = "Save failed."; }
+};
+loadConfig();
+// Menu bar "Settings…" deep-links here with #settings — open the drawer on arrival.
+if (location.hash === "#settings") openSettings();
+window.addEventListener("hashchange", () => { if (location.hash === "#settings") openSettings(); });
 
 // mic (push-to-talk / arm capture)
 $("mic").onclick = () => {

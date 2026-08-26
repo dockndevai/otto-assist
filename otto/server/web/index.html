@@ -3,14 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Otto</title>
+  <title>Otto — your Claude, by voice</title>
+  <meta name="description" content="Otto — a voice & a screen for the Claude you already run." />
+  <meta name="theme-color" content="#060912" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png" />
+  <link rel="apple-touch-icon" href="/static/icon-180.png" />
+  <link rel="manifest" href="/static/manifest.json" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <div class="app" id="app">
 
     <header class="hud">
-      <div class="brand"><span class="logo">🤖</span> Otto <span class="ver">JARVIS</span></div>
+      <div class="brand"><span class="logo">🤖</span> Otto <span class="ver" id="wakeBadge" title="Say your wake word, then talk">“HEY OTTO”</span></div>
       <div class="hudstate">
         <div class="wave" id="wave"></div>
         <span class="hudlabel" id="heroState">Ready</span>
@@ -18,7 +24,7 @@
       <div class="hud-right">
         <span class="proj" id="proj">—</span>
         <button class="hbtn" id="chatToggle" title="Conversation">💬</button>
-        <a class="hbtn" href="/settings" title="Settings">⚙</a>
+        <button class="hbtn" id="settingsToggle" title="Settings">⚙</button>
       </div>
     </header>
 
@@ -47,6 +53,55 @@
         <button class="dclose" id="chatClose" title="Close">✕</button>
       </div>
       <div class="transcript" id="transcript"></div>
+    </aside>
+
+    <aside class="sdrawer" id="sdrawer">
+      <div class="drawer-head">
+        <span>SETTINGS</span>
+        <button class="dclose" id="setClose" title="Close">✕</button>
+      </div>
+      <div class="sbody">
+        <section class="sgroup">
+          <h3>Project <span class="tiny">Otto continues its latest Claude chat</span></h3>
+          <div id="setProjects" class="projlist"></div>
+        </section>
+
+        <section class="sgroup">
+          <h3>Voice</h3>
+          <label class="field"><span>Wake word</span>
+            <input id="setWake" placeholder="hey otto" /></label>
+          <div class="two">
+            <label class="chk"><input type="checkbox" id="setMic" /> Microphone / wake word</label>
+            <label class="chk"><input type="checkbox" id="setSpeak" /> Speak replies</label>
+          </div>
+          <div class="two">
+            <label class="field"><span>Whisper model</span><input id="setModel" placeholder="small.en" /></label>
+            <label class="field"><span>TTS engine</span>
+              <select id="setTts"><option value="system">system (local)</option><option value="elevenlabs">elevenlabs</option></select></label>
+          </div>
+        </section>
+
+        <section class="sgroup">
+          <h3>Brain</h3>
+          <div class="two">
+            <label class="field"><span>Model</span><input id="setBrainModel" placeholder="Claude default" /></label>
+            <label class="field"><span>Permission prompts</span>
+              <select id="setPerm">
+                <option value="voice">voice — ask me</option>
+                <option value="auto">auto — approve</option>
+                <option value="deny">deny — reject</option>
+              </select></label>
+          </div>
+          <label class="chk"><input type="checkbox" id="setContinue" /> Continue the project's latest session</label>
+          <label class="chk"><input type="checkbox" id="setMcp" /> Expose Otto as an MCP for Claude (/mcp)</label>
+        </section>
+
+        <div class="sbar">
+          <button id="setSave">Save changes</button>
+          <span id="setMsg" class="tiny"></span>
+        </div>
+        <p class="tiny path">Config: <span id="setPath">…</span> · some changes apply after Restart (menu bar).</p>
+      </div>
     </aside>
 
   </div>

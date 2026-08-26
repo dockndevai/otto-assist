@@ -38,6 +38,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def index() -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
+    @app.get("/favicon.ico")
+    async def favicon() -> FileResponse:
+        return FileResponse(WEB_DIR / "favicon-32.png")
+
     @app.get("/settings")
     async def settings_page() -> FileResponse:
         return FileResponse(WEB_DIR / "settings.html")

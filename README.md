@@ -11,9 +11,9 @@ always-on loop) that plugs into the **Claude Code already installed on your Mac*
 you *talk* to it. Your MCP servers, subagents, skills, and `CLAUDE.md` — all of it, now by
 voice, on a live dashboard.
 
-![Otto in action — talking to your Claude, with a chart rendered on the canvas](assets/otto-demo.gif)
+![Otto in action — a JARVIS-style canvas dashboard: idle clock, a capital-city card, a live weather scene, a REST-API diagram, and the inline settings drawer](assets/otto-demo.gif)
 
-<sub>▶️ [Watch the demo (MP4)](assets/otto-demo.mp4) · the transcript, streamed replies, and the canvas are all live.</sub>
+<sub>▶️ [Watch the demo (MP4)](assets/otto-demo.mp4) · idle standby → Otto answers each question **as a canvas visual** (clock, weather scene, diagram) → the ⚙ drawer edits every setting in place.</sub>
 
 </div>
 
@@ -29,11 +29,16 @@ Code just works, spoken.
   runs your Claude and answers out loud.
 - 🧩 **Inherits everything** — Gmail, Google Drive, GitHub, your files, every MCP connector
   in your Claude — automatically, because Otto loads your Claude config.
-- 🖥️ **Shows you things** — a live transcript plus a **canvas** Otto renders charts, tables,
-  and results into (see the chart above — rendered by Claude via a `render_canvas` tool).
+- 🖥️ **Canvas-first, like JARVIS** — most answers appear as a **visual on the canvas**: the
+  time becomes a clock, weather becomes a scene, "how does X work" becomes a diagram, code
+  becomes pseudocode. The full conversation stays tucked in a drawer until you want it.
+- ⚙️ **Configure it in place** — the header badge shows your live wake word, and the **⚙
+  settings drawer** (same dashboard) switches project and edits voice/brain settings, saved
+  straight to `config.yaml`.
 - 💬 **Remembers** — the conversation is persisted and replayed when you reopen the dashboard.
 - 🍎 **Lives in your menu bar** — installs as a login-item app: project switcher, mute,
-  settings, live status.
+  settings, live status (a state-colored icon: grey idle, cyan listening, blue thinking,
+  purple speaking, red muted).
 - 🔌 **Is itself an MCP for Claude** — `claude mcp add otto` gives *any* Claude session a
   voice and a screen (`speak` / `ask` / `show`).
 
@@ -44,31 +49,39 @@ Code just works, spoken.
 
 ```bash
 git clone https://github.com/dockndevai/otto-assist.git && cd otto-assist
-bash scripts/setup.sh                      # installs everything
 claude                                     # sign in once (or set ANTHROPIC_API_KEY in .env)
-bash scripts/install_service.sh            # 🧠 menu-bar app, starts at login
+bash install.sh                            # one command: sets up, installs & starts Otto
 ```
 
-Open http://127.0.0.1:8000 → click **🎤 Talk** and speak, or type. `/demo` renders the
-sample chart above without calling the model. Make a custom **"hey otto"** wake word with
+`install.sh` does everything end to end — prerequisites, a virtualenv with all
+dependencies, the Whisper model, the launchd menu-bar app, the Claude MCP registration —
+then **waits until Otto is up and opens the dashboard**. Safe to re-run.
+
+Open http://127.0.0.1:8000 → click **🎤 Talk** and speak, or type. `/demo` renders a
+sample canvas without calling the model. Make a custom **"hey otto"** wake word with
 `python -m otto.enroll_wake_word "hey otto"`.
 
 ## Run as an always-on Mac app
+
+`bash install.sh` (above) already does this. To (re)install just the service:
 
 ```bash
 bash scripts/install_service.sh
 ```
 
-Installs a launchd login-item, puts a **🧠** in your menu bar (**Talk · Open Dashboard ·
-Settings · Project ▸ · Mute · Restart · Quit**), and registers Otto's voice/screen MCP into
-your Claude Code. Remove with `bash scripts/uninstall_service.sh`.
+Installs a launchd login-item, puts a state-colored **🤖** in your menu bar (**Talk · Open
+Dashboard · Settings · Project ▸ · Mute · Restart · Quit**), and registers Otto's
+voice/screen MCP into your Claude Code. **Quit** fully stops Otto (it unloads the launchd
+job, so it won't relaunch); **Restart** reloads a fresh process. Remove entirely with
+`bash scripts/uninstall_service.sh`.
 
 ## Everything is configurable — from the app
 
-Menu bar → **Settings** (or `~/Library/Application Support/Otto/config.yaml`): pick the
-project Otto is working in, choose the brain/permissions, and tune voice — no editing code.
-
-![Otto settings — project switcher and brain options](assets/settings.png)
+Click the **⚙ gear** on the dashboard (or menu bar → **Settings**) to open the settings
+drawer **right on the dashboard** — switch the project Otto is working in, set the wake
+word, choose the brain/permissions, and tune voice, then **Save**. It writes
+`~/Library/Application Support/Otto/config.yaml`; the header badge updates to your new wake
+word immediately (some changes apply after **Restart**).
 
 ## Talking to Otto
 
