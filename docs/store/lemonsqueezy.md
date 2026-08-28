@@ -80,12 +80,17 @@ Start with one-time $29 launch; you can add a "Pro" tier later without re-listin
 - `dist/Orrin.dmg` — **must be signed + notarized first** (see `packaging/pyinstaller/BUILD.md`),
   or buyers hit Gatekeeper warnings. This is the one blocker that needs your Apple Developer ID.
 
-## Visual assets checklist
-Lemon Squeezy shows a cover image + a gallery. Use:
-- **Cover / hero:** the landing-page hero (Orrin wordmark + HUD). (Artifact already built.)
-- **Gallery:** the demo GIF + 2–3 dashboard screenshots showing canvas cards.
-- ⚠️ Re-capture these with the new **Orrin** branding (the app header now says "Orrin"); the
-  current `assets/otto-demo.gif` shows the old "Otto" header. Ask Claude to regenerate.
+## Visual assets checklist — READY (Orrin-branded, retina)
+Lemon Squeezy shows a cover image + a gallery. Use these files:
+- **Demo GIF / MP4:** `assets/orrin-demo.gif` · `assets/orrin-demo.mp4` (idle → capital → weather
+  → diagram → settings).
+- **Gallery screenshots** (2560×1600, in `assets/gallery/`):
+  - `01-idle.png` — standby (orb + clock)
+  - `02-capital.png` — “Capital City · Tokyo” card
+  - `03-weather.png` — live weather scene
+  - `04-diagram.png` — “How a REST API request works”
+  - `05-settings.png` — inline settings drawer
+- **Cover / hero:** the landing-page hero (Orrin wordmark + HUD) — the Artifact.
 
 ## FAQ (add as product FAQ)
 - **Do I need a separate subscription?** Yes — Orrin uses your own Claude Code (Claude Pro/Team
