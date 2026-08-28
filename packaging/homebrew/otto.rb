@@ -16,6 +16,9 @@ class Otto < Formula
     libexec.install Dir["*"]
     (bin/"otto").write <<~SH
       #!/bin/bash
+      # Ensure Homebrew's bin is on PATH so the Claude CLI + ffmpeg are found even when Otto
+      # is launched from Spotlight/LaunchServices (which gives a minimal /usr/bin:/bin PATH).
+      export PATH="#{HOMEBREW_PREFIX}/bin:#{HOMEBREW_PREFIX}/sbin:$PATH"
       export OTTO_LIBEXEC="#{libexec}"
       export OTTO_BREW_PYTHON="#{formula_opt_bin("python@3.12")}/python3.12"
       export OTTO_LAUNCHD_LABEL="homebrew.mxcl.otto"
