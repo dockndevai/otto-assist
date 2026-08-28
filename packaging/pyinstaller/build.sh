@@ -20,6 +20,30 @@ echo "==> Ensuring build tooling (pyinstaller) in the venv"
 [ -x .venv/bin/python ] || { echo "Run scripts/setup.sh first (.venv missing)"; exit 1; }
 .venv/bin/pip install -q --upgrade pyinstaller
 
+echo "==> Metadata fixups (so PyInstaller's stdhooks don't crash)"
+# RealtimeSTT ships 'webrtcvad-wheels' (module: webrtcvad), but PyInstaller's webrtcvad hook
+# looks for dist metadata named 'webrtcvad'. Alias it so copy_metadata('webrtcvad') succeeds.
+.venv/bin/python - <<'PY'
+import glob, shutil, pathlib, importlib.metadata as md
+try:
+    md.version("webrtcvad"); print("   webrtcvad metadata already present")
+except md.PackageNotFoundError:
+    import webrtcvad
+    sp = pathlib.Path(webrtcvad.__file__).parent
+    srcs = glob.glob(str(sp / "webrtcvad_wheels-*.dist-info"))
+    if not srcs:
+        print("   WARN: webrtcvad_wheels dist-info not found; build may fail"); raise SystemExit(0)
+    src = pathlib.Path(srcs[0]); ver = src.name.split("-", 1)[1].rsplit(".dist-info", 1)[0]
+    dst = src.parent / f"webrtcvad-{ver}.dist-info"
+    if not dst.exists():
+        shutil.copytree(src, dst)
+        meta = dst / "METADATA"
+        lines = ["Name: webrtcvad" if l.startswith("Name:") else l
+                 for l in meta.read_text().splitlines()]
+        meta.write_text("\n".join(lines))
+        print("   aliased ->", dst.name)
+PY
+
 echo "==> Building Orrin.app"
 rm -rf build dist
 .venv/bin/pyinstaller packaging/pyinstaller/orrin.spec --noconfirm

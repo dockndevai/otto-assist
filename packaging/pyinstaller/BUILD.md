@@ -45,6 +45,17 @@ Outputs `dist/Orrin.app` and a signed, notarized, stapled `dist/Orrin.dmg`.
 - **ffmpeg**, if any path needs it — verify at runtime or bundle the binary.
 - **Whisper model weights** — download to the user cache on first listen.
 
+## Verified (first build, 2026-08-28)
+- `bash build.sh` produces `dist/Orrin.app` + `dist/Orrin.dmg`, and the frozen app **runs** —
+  the bundled dashboard serves and imports load cleanly.
+- **Size: ~1.2 GB app / ~480 MB DMG.** A dependency (silero-vad) pulls in **torch**, which
+  dominates the size. To slim toward a few hundred MB: force the **onnx** VAD/wake path and
+  add `excludes=["torch","torchaudio","torchvision","tensorboard"]` to `orrin.spec` — verify
+  RealtimeSTT still initialises without torch before shipping.
+- `build.sh` aliases the `webrtcvad-wheels` metadata so PyInstaller's `webrtcvad` hook passes.
+- `orrin_main.py` prepends Homebrew/user bins to PATH so the frozen app finds the user's
+  `claude` (LaunchServices otherwise gives a bare PATH).
+
 ## Known gotchas (expect iteration on the first build)
 - `ctranslate2` / `onnxruntime` dylibs: if the app fails to import them, add them explicitly to
   `binaries` in `orrin.spec`.
