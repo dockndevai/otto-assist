@@ -8,7 +8,10 @@
 import os
 from PyInstaller.utils.hooks import collect_all, collect_data_files
 
-ROOT = os.path.abspath(os.getcwd())
+# SPECPATH is injected by PyInstaller (the dir containing this spec). Paths must be resolved
+# relative to it / the repo root, not the cwd.
+HERE = SPECPATH
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 datas, binaries, hiddenimports = [], [], []
 
@@ -29,7 +32,7 @@ hiddenimports += ["otto.menubar", "otto.server.app", "uvicorn.logging",
                   "uvicorn.lifespan.on"]
 
 a = Analysis(
-    [os.path.join("packaging", "pyinstaller", "orrin_main.py")],
+    [os.path.join(HERE, "orrin_main.py")],
     pathex=[ROOT],
     datas=datas, binaries=binaries, hiddenimports=hiddenimports,
     noarchive=False,
@@ -44,8 +47,7 @@ coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Orrin")
 app = BUNDLE(
     coll,
     name="Orrin.app",
-    icon=os.path.join("packaging", "pyinstaller", "orrin.icns") if
-        os.path.exists(os.path.join("packaging", "pyinstaller", "orrin.icns")) else None,
+    icon=os.path.join(HERE, "orrin.icns") if os.path.exists(os.path.join(HERE, "orrin.icns")) else None,
     bundle_identifier="com.orrin.app",
     info_plist={
         "CFBundleName": "Orrin",
