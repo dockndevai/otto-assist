@@ -44,7 +44,10 @@ otto-menubar = "otto.menubar:main"
 py-modules = ["run"]
 
 [tool.setuptools.package-data]
-otto = ["assets/*.png"]
+# Ship the menu-bar icons AND the dashboard web assets (html/css/js/json/png) so a normal
+# (non-editable) install has a working dashboard. Without web/*, StaticFiles(WEB_DIR) fails.
+otto = ["assets/*"]
+"otto.server" = ["web/*"]
 
 [tool.setuptools.packages.find]
 include = ["otto*"]
