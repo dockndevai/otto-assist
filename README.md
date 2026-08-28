@@ -11,6 +11,11 @@ always-on loop) that plugs into the **Claude Code already installed on your Mac*
 you *talk* to it. Your MCP servers, subagents, skills, and `CLAUDE.md` — all of it, now by
 voice, on a live dashboard.
 
+> **Going commercial:** this project is being productized under the brand **Orrin** (the
+> assistant you talk to stays **"Otto"**). Roadmap + decisions in [docs/COMMERCIAL.md](docs/COMMERCIAL.md);
+> standalone signed-app build in [packaging/pyinstaller/](packaging/pyinstaller/BUILD.md).
+> Source is now **proprietary** — see [LICENSE](LICENSE).
+
 ![Otto in action — a JARVIS-style canvas dashboard: idle clock, a capital-city card, a live weather scene, a REST-API diagram, and the inline settings drawer](assets/otto-demo.gif)
 
 <sub>▶️ [Watch the demo (MP4)](assets/otto-demo.mp4) · idle standby → Otto answers each question **as a canvas visual** (clock, weather scene, diagram) → the ⚙ drawer edits every setting in place.</sub>

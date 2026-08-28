@@ -1,0 +1,61 @@
+# PyInstaller spec — build a standalone Orrin.app (menu-bar assistant) for macOS.
+#
+#   pyinstaller packaging/pyinstaller/orrin.spec --noconfirm
+#
+# Produces dist/Orrin.app. Uses ctranslate2 (not torch) via faster-whisper, and onnxruntime
+# for VAD/wake-word — so the bundle stays comparatively small. Whisper model weights are NOT
+# bundled; they download to the user cache on first listen.
+import os
+from PyInstaller.utils.hooks import collect_all, collect_data_files
+
+ROOT = os.path.abspath(os.getcwd())
+
+datas, binaries, hiddenimports = [], [], []
+
+# Heavy/awkward packages that need their data files + dylibs collected wholesale.
+for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openwakeword",
+            "RealtimeSTT", "RealtimeTTS", "rumps", "fastmcp", "claude_agent_sdk", "pvporcupine"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d; binaries += b; hiddenimports += h
+    except Exception as e:                       # a missing optional dep shouldn't break the build
+        print(f"[orrin.spec] skip {pkg}: {e}")
+
+# Our own package data: the dashboard web assets + menu-bar icons.
+datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
+
+hiddenimports += ["otto.menubar", "otto.server.app", "uvicorn.logging",
+                  "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
+                  "uvicorn.lifespan.on"]
+
+a = Analysis(
+    [os.path.join("packaging", "pyinstaller", "orrin_main.py")],
+    pathex=[ROOT],
+    datas=datas, binaries=binaries, hiddenimports=hiddenimports,
+    noarchive=False,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Orrin",
+          console=False, disable_windowed_traceback=False)
+
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Orrin")
+
+app = BUNDLE(
+    coll,
+    name="Orrin.app",
+    icon=os.path.join("packaging", "pyinstaller", "orrin.icns") if
+        os.path.exists(os.path.join("packaging", "pyinstaller", "orrin.icns")) else None,
+    bundle_identifier="com.orrin.app",
+    info_plist={
+        "CFBundleName": "Orrin",
+        "CFBundleDisplayName": "Orrin",
+        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleVersion": "0.1.0",
+        "LSMinimumSystemVersion": "12.0",
+        "LSUIElement": True,                     # menu-bar agent: no Dock icon
+        "NSMicrophoneUsageDescription":
+            "Orrin listens to your voice when you talk to it.",
+        "NSHighResolutionCapable": True,
+    },
+)
