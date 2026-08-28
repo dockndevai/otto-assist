@@ -20,9 +20,11 @@ import webbrowser
 import rumps
 import uvicorn
 
-# launchd job label (see scripts/install_service.sh). Quitting must unload this, or the
-# LaunchAgent's KeepAlive immediately relaunches the process we just exited.
-_LAUNCHD_LABEL = "com.otto.assistant"
+# launchd job label. Quitting must unload it, or the LaunchAgent's KeepAlive immediately
+# relaunches the process we just exited. The label depends on who installed us:
+# scripts/install_service.sh uses "com.otto.assistant"; `brew services` uses
+# "homebrew.mxcl.otto". Each plist exports OTTO_LAUNCHD_LABEL so Quit boots out the right one.
+_LAUNCHD_LABEL = os.environ.get("OTTO_LAUNCHD_LABEL", "com.otto.assistant")
 
 from .config import load_env, load_settings
 from .orchestrator import Orchestrator

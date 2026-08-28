@@ -61,6 +61,23 @@ Open http://127.0.0.1:8000 → click **🎤 Talk** and speak, or type. `/demo` r
 sample canvas without calling the model. Make a custom **"hey otto"** wake word with
 `python -m otto.enroll_wake_word "hey otto"`.
 
+## Install with Homebrew
+
+Prefer `brew`? There's a tap ([dockndevai/homebrew-otto](https://github.com/dockndevai/homebrew-otto)).
+The app repo is private, so it installs from `main` over your SSH key:
+
+```bash
+brew tap dockndevai/otto https://github.com/dockndevai/homebrew-otto.git
+brew install --HEAD dockndevai/otto/otto
+otto setup                     # one-time: builds the env + downloads Whisper (~few min)
+otto start                     # foreground, dashboard at http://127.0.0.1:8000
+```
+
+Keep it in your menu bar at login with `brew services start otto`. To make Otto show up in
+**Spotlight** (⌘-Space) and be double-clickable, run `otto install-app` — it adds a small
+`Otto.app` to `~/Applications`. (You need read access to `dockndevai/otto-assist` and an SSH
+key on your GitHub account.)
+
 ## Run as an always-on Mac app
 
 `bash install.sh` (above) already does this. To (re)install just the service:

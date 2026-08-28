@@ -42,6 +42,8 @@ cat > "$PLIST" <<PLIST
         <string>$ROOT/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
+        <key>OTTO_LAUNCHD_LABEL</key>
+        <string>$LABEL</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
