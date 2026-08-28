@@ -45,6 +45,10 @@ setup() {
     echo "  Some voice extras failed to build; installing the core (text path still works)."
     "$PY" -m pip install "$LIBEXEC"
   }
+  # Otto's version stays 0.1.0 across HEAD commits, so pip would skip re-copying the package
+  # on a rebuild. Force-refresh just the package files (not deps) so code + web assets are
+  # always current with this libexec.
+  "$PY" -m pip install --force-reinstall --no-deps "$LIBEXEC" >/dev/null
   bold "▶ Pre-downloading the Whisper model"
   MODEL="$("$PY" - <<'PY'
 try:
