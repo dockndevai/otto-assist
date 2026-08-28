@@ -31,10 +31,16 @@ hiddenimports += ["otto.menubar", "otto.server.app", "uvicorn.logging",
                   "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
                   "uvicorn.lifespan.on"]
 
+# The voice stack runs torch-free (ctranslate2 for Whisper, onnxruntime for VAD via
+# silero_use_onnx=True), so torch and friends are dead weight — excluding them drops ~1 GB.
+EXCLUDES = ["torch", "torchaudio", "torchvision", "tensorboard", "triton",
+            "matplotlib", "scipy.spatial.cKDTree"]
+
 a = Analysis(
     [os.path.join(HERE, "orrin_main.py")],
     pathex=[ROOT],
     datas=datas, binaries=binaries, hiddenimports=hiddenimports,
+    excludes=EXCLUDES,
     noarchive=False,
 )
 pyz = PYZ(a.pure)
