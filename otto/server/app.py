@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import config_path, save_config
 from ..orchestrator import Orchestrator
 from ..projects import list_projects
+from ..sessions import list_sessions
 from .events import EventBus
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -74,6 +75,34 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.switch_project(path))
         return JSONResponse({"ok": True})
 
+    # -- chats (Claude sessions within the current project) ----------------
+    @app.get("/api/sessions")
+    async def get_sessions() -> JSONResponse:
+        current = getattr(orch.brain, "session_id", None) or orch._active_session
+        chats = list_sessions(orch.current_project, current_id=current)
+        return JSONResponse({"sessions": [s.__dict__ for s in chats]})
+
+    @app.post("/api/session/switch")
+    async def switch_session(payload: dict) -> JSONResponse:
+        sid = payload.get("session_id", "")
+        if not sid:
+            return JSONResponse({"ok": False, "error": "session_id required"}, status_code=400)
+        asyncio.create_task(orch.switch_session(sid))
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/session/new")
+    async def new_session() -> JSONResponse:
+        asyncio.create_task(orch.new_chat())
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/session/rename")
+    async def rename_session(payload: dict) -> JSONResponse:
+        title = payload.get("title", "")
+        if not title:
+            return JSONResponse({"ok": False, "error": "title required"}, status_code=400)
+        asyncio.create_task(orch.rename_chat(title))
+        return JSONResponse({"ok": True})
+
     # -- event stream ------------------------------------------------------
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
@@ -86,8 +115,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
             for ev in history:
                 await websocket.send_json(ev)
             await websocket.send_json({"type": "history_end"})
-        # Send the current project immediately so a fresh page shows context.
+        # Send the current project + chat immediately so a fresh page shows context.
         orch._publish_project()
+        orch._publish_session()
 
         async def pump() -> None:
             while True:
@@ -104,6 +134,12 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     orch.arm_ptt()
                 elif data.get("type") == "switch_project":
                     asyncio.create_task(orch.switch_project(data.get("path", "")))
+                elif data.get("type") == "switch_session":
+                    asyncio.create_task(orch.switch_session(data.get("session_id", "")))
+                elif data.get("type") == "new_chat":
+                    asyncio.create_task(orch.new_chat())
+                elif data.get("type") == "rename_chat":
+                    asyncio.create_task(orch.rename_chat(data.get("title", "")))
         except WebSocketDisconnect:
             pass
         finally:

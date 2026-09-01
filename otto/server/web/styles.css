@@ -161,3 +161,21 @@ body {
 .prow button.ghost { background: rgba(255,255,255,.05); color: var(--muted); border: 1px solid var(--line); }
 #setMsg { color: var(--cyan); }
 .path { margin-top: 14px; opacity: .8; }
+
+/* ---- Chats drawer (switch/create Claude chats in this project) ---- */
+.cdrawer {
+  position: fixed; top: 56px; right: 0; height: calc(100vh - 56px); width: 380px; max-width: 90vw;
+  background: rgba(9, 13, 24, 0.97); border-left: 1px solid var(--line);
+  backdrop-filter: blur(8px); transform: translateX(100%); transition: transform .25s ease;
+  display: flex; flex-direction: column; z-index: 21;
+}
+.app.chats-open .cdrawer { transform: translateX(0); box-shadow: -20px 0 50px rgba(0,0,0,.45); }
+.newchat { width: 100%; border: 0; border-radius: 10px; padding: 11px 14px; cursor: pointer;
+  font-weight: 650; font-size: 13px; color: #04121a;
+  background: linear-gradient(90deg, var(--cyan), var(--blue)); }
+.newchat:hover { filter: brightness(1.05); }
+.prow .pmeta { cursor: default; }
+.prow .rename { background: rgba(255,255,255,.05); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 9px; font-size: 12px; cursor: pointer; }
+.prow .rename:hover { color: var(--text); border-color: rgba(34,211,238,.4); }
+.crow-actions { display: flex; gap: 6px; flex: none; }

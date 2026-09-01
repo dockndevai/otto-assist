@@ -23,6 +23,8 @@
       </div>
       <div class="hud-right">
         <span class="proj" id="proj">—</span>
+        <span class="proj" id="chat" title="Current chat">—</span>
+        <button class="hbtn" id="chatsToggle" title="Chats">🗂</button>
         <button class="hbtn" id="chatToggle" title="Conversation">💬</button>
         <button class="hbtn" id="settingsToggle" title="Settings">⚙</button>
       </div>
@@ -101,6 +103,18 @@
           <span id="setMsg" class="tiny"></span>
         </div>
         <p class="tiny path">Config: <span id="setPath">…</span> · some changes apply after Restart (menu bar).</p>
+      </div>
+    </aside>
+
+    <aside class="cdrawer" id="cdrawer">
+      <div class="drawer-head">
+        <span>CHATS</span>
+        <button class="dclose" id="chatsClose" title="Close">✕</button>
+      </div>
+      <div class="sbody">
+        <button id="newChat" class="newchat">＋ New chat</button>
+        <p class="tiny" style="margin:10px 0 4px">Chats in this project — switch, or start a new one.</p>
+        <div id="chatList" class="projlist"></div>
       </div>
     </aside>
 

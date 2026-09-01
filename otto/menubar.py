@@ -29,6 +29,7 @@ _LAUNCHD_LABEL = os.environ.get("OTTO_LAUNCHD_LABEL", "com.otto.assistant")
 from .config import load_env, load_settings
 from .orchestrator import Orchestrator
 from .projects import list_projects
+from .sessions import list_sessions
 from .server.app import create_app
 from .server.events import EventBus
 
@@ -75,6 +76,7 @@ class OttoApp(rumps.App):
 
         self.status_item = rumps.MenuItem("Starting…")
         self.project_menu = rumps.MenuItem("Project")
+        self.chat_menu = rumps.MenuItem("Chat")
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.menu = [
@@ -84,6 +86,7 @@ class OttoApp(rumps.App):
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
+            self.chat_menu,
             self.mic_item,
             self.voice_item,
             None,
@@ -92,6 +95,7 @@ class OttoApp(rumps.App):
         ]
         self._proj_tick = 0
         self._refresh_projects()
+        self._refresh_chats()
 
         threading.Thread(target=self._run_backend, daemon=True).start()
 
@@ -124,6 +128,46 @@ class OttoApp(rumps.App):
                     lambda: asyncio.ensure_future(self.orch.switch_project(path))
                 )
         return _cb
+
+    # -- chat (session) switcher ------------------------------------------
+    def _refresh_chats(self) -> None:
+        try:
+            current = getattr(self.orch.brain, "session_id", None) or \
+                getattr(self.orch, "_active_session", None)
+            chats = list_sessions(self.orch.current_project, current_id=current, limit=12)
+        except Exception:
+            return
+        if getattr(self.chat_menu, "_menu", None) is not None:
+            try:
+                self.chat_menu.clear()
+            except Exception:
+                pass
+        try:
+            self.chat_menu.add(rumps.MenuItem("＋ New chat", callback=self._new_chat_cb))
+            self.chat_menu.add(rumps.separator)
+        except Exception:
+            pass
+        for s in chats:
+            try:
+                item = rumps.MenuItem(s.title, callback=self._make_switch_chat(s.session_id))
+                item.state = 1 if s.current else 0
+                self.chat_menu.add(item)
+            except Exception:
+                pass
+
+    def _make_switch_chat(self, session_id: str):
+        def _cb(_):
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(self.orch.switch_session(session_id))
+                )
+        return _cb
+
+    def _new_chat_cb(self, _):
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self.orch.new_chat())
+            )
 
     # -- backend (its own asyncio loop, off the main thread) ---------------
     def _run_backend(self) -> None:
@@ -175,6 +219,7 @@ class OttoApp(rumps.App):
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
             self._refresh_projects()
+            self._refresh_chats()
 
     def talk(self, _) -> None:
         if self._loop is not None:

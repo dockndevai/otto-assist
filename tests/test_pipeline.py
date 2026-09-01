@@ -153,6 +153,9 @@ def test_app_routes_and_mcp():
     paths = {getattr(r, "path", "") for r in app.routes}
     assert "/" in paths and "/ws" in paths and "/settings" in paths
     assert any(p.startswith("/api/config") for p in paths)
+    # chat (session) switcher endpoints
+    assert {"/api/sessions", "/api/session/switch", "/api/session/new",
+            "/api/session/rename"} <= paths
     # MCP sub-app mounted when register_mcp is on.
     assert any("/mcp" in getattr(r, "path", "") for r in app.routes)
 
@@ -292,4 +295,128 @@ def test_confirm_parsing():
         assert await answer("yes") is True
         assert await answer("go ahead") is True
         assert await answer("no thanks") is False
+    asyncio.run(run())
+
+
+# ---- Chat (Claude session) switching --------------------------------------
+
+class _FakeInfo:
+    def __init__(self, session_id, custom_title=None, summary="", first_prompt=None,
+                 last_modified=0, git_branch=None):
+        self.session_id = session_id; self.custom_title = custom_title
+        self.summary = summary; self.first_prompt = first_prompt
+        self.last_modified = last_modified; self.git_branch = git_branch
+
+
+class _FakeSDKClient:
+    """Stands in for ClaudeSDKClient so connect() spawns no `claude` subprocess."""
+    def __init__(self, options=None):
+        self.options = options
+    async def connect(self): ...
+    async def disconnect(self): ...
+
+
+def test_session_title_fallback_and_sort(monkeypatch):
+    from otto.sessions import list_sessions
+    infos = [
+        _FakeInfo("aaaa1111", custom_title="Auth refactor", last_modified=300),
+        _FakeInfo("bbbb2222", summary="Billing summary", last_modified=200),
+        _FakeInfo("cccc3333", first_prompt="how do I center a div", last_modified=100),
+        _FakeInfo("dddd4444eeee", last_modified=50),          # no labels -> id[:8]
+    ]
+    monkeypatch.setattr("claude_agent_sdk.list_sessions", lambda **kw: infos, raising=False)
+    out = list_sessions("/tmp/proj", current_id="bbbb2222")
+    assert [s.title for s in out] == ["Auth refactor", "Billing summary",
+                                      "how do I center a div", "dddd4444"]
+    assert out[0].session_id == "aaaa1111"                    # sorted most-recent first
+    assert next(s for s in out if s.session_id == "bbbb2222").current is True
+
+
+def test_brain_resume_excludes_continue(monkeypatch):
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    async def run():
+        s = load_settings()
+        s.brain.continue_conversation = True
+        # resume wins: resume set, the global continue flag is NOT carried through
+        b = ClaudeBrain(FakeCtx(), s, resume="abc123")
+        await b.connect()
+        assert getattr(b.client.options, "resume", None) == "abc123"
+        assert not getattr(b.client.options, "continue_conversation", False)
+        assert b.session_id == "abc123"                       # pre-seeded for a resume
+        # new chat: neither resume nor continue -> a fresh session
+        b2 = ClaudeBrain(FakeCtx(), s, new_chat=True)
+        await b2.connect()
+        assert not getattr(b2.client.options, "resume", None)
+        assert not getattr(b2.client.options, "continue_conversation", False)
+        # default binding: the continue flag is honored
+        b3 = ClaudeBrain(FakeCtx(), s)
+        await b3.connect()
+        assert getattr(b3.client.options, "continue_conversation", False) is True
+    asyncio.run(run())
+
+
+def test_brain_captures_session_id():
+    from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+    class _RecvClient:
+        async def query(self, text, session_id="default"): ...
+        async def receive_response(self):
+            yield AssistantMessage(content=[TextBlock(text="hi")], model="m",
+                                   session_id="sid-xyz")
+            yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                                is_error=False, num_turns=1, session_id="sid-xyz",
+                                total_cost_usd=0.0)
+
+    async def run():
+        b = ClaudeBrain(FakeCtx(), load_settings())
+        b.client = _RecvClient()
+        evs = [ev async for ev in b.send("hi")]
+        assert b.session_id == "sid-xyz"
+        result = [e for e in evs if e["type"] == "result"][0]
+        assert result["session_id"] == "sid-xyz"
+    asyncio.run(run())
+
+
+def test_switch_session_rebuilds_and_persists(monkeypatch):
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    saved = {}
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: saved.update(d))
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        q = orch.bus.subscribe()
+        await orch.switch_session("sid1")
+        assert orch._active_session == "sid1"
+        assert getattr(orch.brain, "session_id", None) == "sid1"
+        kinds = []
+        try:
+            while True:
+                kinds.append(q.get_nowait()["type"])
+        except Exception:
+            pass
+        assert "session" in kinds
+        assert saved["brain"]["sessions"][orch.current_project] == "sid1"
+    asyncio.run(run())
+
+
+def test_voice_chat_commands_parsed():
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        calls = []
+        async def _new(): calls.append(("new",))
+        async def _rename(t): calls.append(("rename", t))
+        async def _byname(n): calls.append(("switch", n))
+        async def _turn(t): calls.append(("turn", t))
+        orch.new_chat = _new
+        orch.rename_chat = _rename
+        orch._switch_chat_by_name = _byname
+        orch._handle_turn = _turn
+        orch.submit_user_input("start a new chat")
+        orch.submit_user_input("rename this chat to Auth work")
+        orch.submit_user_input("switch to the auth chat")
+        await asyncio.sleep(0.05)
+        assert [c[0] for c in calls] == ["new", "rename", "switch"]   # no "turn"
+        assert ("rename", "Auth work") in calls
+        assert ("switch", "auth") in calls
     asyncio.run(run())
