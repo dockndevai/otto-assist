@@ -8,26 +8,12 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
-import html as _html
 import random
 import re
 import subprocess
 import sys
 from typing import Any
 
-
-def _answer_card(question: str, answer: str) -> str:
-    """A clean dark card shown on the canvas when the model didn't render its own visual."""
-    q, a = _html.escape(question), _html.escape(answer)
-    return (
-        '<!doctype html><meta charset="utf-8">'
-        "<style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
-        "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:6vh 8vw;"
-        "background:radial-gradient(800px 500px at 20% 0%,rgba(34,211,238,.10),transparent),#0a0f1c;color:#e6ecf6}"
-        ".card{max-width:820px}.q{font-size:14px;letter-spacing:1px;text-transform:uppercase;"
-        "color:#22d3ee;margin-bottom:16px}.a{font-size:30px;line-height:1.5;font-weight:400}</style>"
-        f'<div class="card"><div class="q">{q}</div><div class="a">{a}</div></div>'
-    )
 
 from . import sessions
 from .brain.base import Brain
@@ -121,7 +107,6 @@ class Orchestrator:
             self.focused: Workspace(self, settings, self.focused,
                                     resume=settings.brain.sessions.get(self.focused)),
         }
-        self._canvas_turn: dict[str, bool] = {}   # per-workspace "rendered this turn?"
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
@@ -303,7 +288,7 @@ class Orchestrator:
         # Re-show whatever this workspace last drew, so the canvas reflects the focus.
         ws = self.workspaces[path]
         if ws.last_canvas:
-            self.bus.canvas(ws.last_canvas, "html")
+            self.bus.canvas(ws.last_canvas, "html", ws=path)
         self._status("idle", f"Ready · {Path(path).name}")
 
     async def close_workspace(self, path: str) -> None:
@@ -708,55 +693,52 @@ class Orchestrator:
 
     async def _run_turn(self, ws: Workspace, text: str) -> None:
         """Run one turn for a workspace. Different workspaces run concurrently (per-workspace
-        lock); only the *focused* one streams to the screen and speaks — a background one works
-        silently and posts a completion notification when it's done."""
+        lock). EVERY workspace streams its real work — the user's turn, tool calls, and reply —
+        to its OWN chat window in the dashboard (events tagged with the workspace). Only the
+        *focused* workspace is spoken aloud; the others work in the background and post a
+        completion notification when done. This mirrors having several Claude windows open."""
         async with ws.lock:
-            focused = ws.project == self.focused
+            p = ws.project
+            focused = p == self.focused
             print(f"[otto] turn -> {ws.name} (focused={focused}): {text!r}",
                   file=sys.stderr, flush=True)
+            self.bus.transcript("user", text, final=True, ws=p)   # show it in this window
             if focused:
-                self.bus.transcript("user", text, final=True)
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""
             ws.state = "thinking"
-            self._canvas_turn[ws.project] = False
             self._publish_workspaces()
             assistant_text = ""
-            acknowledged = False
             try:
                 async for ev in ws.brain.send(text):
-                    live = ws.project == self.focused   # focus can change mid-turn
+                    live = p == self.focused   # focus can change mid-turn
                     if ev["type"] == "delta":
                         chunk = ev["text"]
                         assistant_text += chunk
+                        self.bus.assistant_delta(chunk, ws=p)     # into this window
                         if live:
-                            self.bus.assistant_delta(chunk)
-                            self._feed_speech(chunk)
+                            self._feed_speech(chunk)              # ...but only speak the focused
                             self._status("speaking", "Speaking…")
                         ws.state = "speaking"
-                        acknowledged = True
                     elif ev["type"] == "tool_use":
                         ws.state = "working"
+                        # The tool call itself IS the visible work — show it in the window
+                        # (that's the "chat window" feel). No spoken narration of tools.
+                        self._announce_tool(ev["name"], ev.get("detail", ""), ws=p)
                         if live:
-                            if not acknowledged:
-                                self._acknowledge()
-                                acknowledged = True
-                            self._announce_tool(ev["name"], ev.get("detail", ""))
+                            self._status("working", ev["name"])
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
                             self.bus.notify(
                                 "Brain error",
-                                ev.get("error_text") or "The model returned an error.",
-                            )
-                        # A brand-new chat learns its id here (first completed turn); record
-                        # it so the chat is remembered and the HUD shows its title.
-                        sid = ev.get("session_id")
+                                ev.get("error_text") or "The model returned an error.")
+                        sid = ev.get("session_id")   # a new chat mints its id on turn 1
                         if sid:
                             try:
-                                self._persist_session(ws.project, sid)
+                                self._persist_session(p, sid)
                             except Exception:
                                 pass
-                            if ws.project == self.focused:
+                            if p == self.focused:
                                 self._publish_session()
             except Exception as e:
                 print(f"[otto] turn error ({ws.name}): {e!r}", file=sys.stderr, flush=True)
@@ -767,27 +749,16 @@ class Orchestrator:
                       file=sys.stderr, flush=True)
                 ws.state = "idle"
                 ws.last_reply = reply
-                if ws.project == self.focused:
+                if reply:
+                    self.bus.transcript("assistant", reply, final=True, ws=p)
+                if focused:
                     self._flush_speech()
-                    if reply:
-                        self.bus.transcript("assistant", reply, final=True)
-                        # Guarantee the canvas reflects the answer if the model didn't draw.
-                        if not self._canvas_turn.get(ws.project):
-                            self.render_canvas(_answer_card(text, reply))
                     self._status("idle", "Ready")
                 else:
-                    # Background workspace finished — nudge the user, they can switch to view.
+                    # Background window finished — nudge the user; its chat is there to switch to.
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."
                     self.notify(f"{ws.name} finished", summary)
                 self._publish_workspaces()
-
-    def _acknowledge(self) -> None:
-        """Speak a brief filler when Otto starts working, so it's never silent."""
-        import random
-        line = random.choice(["On it.", "One sec.", "Let me check.", "Sure, checking now."])
-        self.bus.assistant_delta(line + " ")
-        if self.mouth and not self.voice_muted:
-            self.mouth.speak(line)
 
     def _feed_speech(self, chunk: str) -> None:
         """Buffer deltas and speak whole sentences for natural prosody."""
@@ -807,13 +778,13 @@ class Orchestrator:
             self.mouth.speak(self._speech_buf.strip())
         self._speech_buf = ""
 
-    def _announce_tool(self, name: str, detail: str) -> None:
+    def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":
-            self.bus.tool_use("subagent", detail)
+            self.bus.tool_use("subagent", detail, ws=ws)
         elif name.startswith("mcp__"):
-            self.bus.tool_use(name.split("__")[-1], detail)
+            self.bus.tool_use(name.split("__")[-1], detail, ws=ws)
         else:
-            self.bus.tool_use(name, detail)
+            self.bus.tool_use(name, detail, ws=ws)
 
     # -- AssistantContext (called by the agent's tools) --------------------
     async def say(self, text: str) -> None:
@@ -842,30 +813,28 @@ class Orchestrator:
                    for a in _AFFIRMATIVE)
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:
-        self._canvas_turn[self.focused] = True
         self.focused_ws.last_canvas = content
-        self.bus.canvas(content, fmt)
+        self.bus.canvas(content, fmt, ws=self.focused)
 
     def set_status(self, text: str) -> None:
         self._status("working", text)
 
     # -- per-workspace routing (called by each workspace's tools via WorkspaceContext) -----
-    # The focused workspace behaves exactly as before (stream + speak); a background one is
-    # stored/suppressed so it works silently until it finishes.
+    # Every workspace streams into its OWN chat window (events tagged with the project); only
+    # the focused workspace is spoken aloud.
     async def _ws_say(self, project: str, text: str) -> None:
         ws = self.workspaces.get(project)
         if ws is not None:
             ws.last_reply = text
-        if project == self.focused:
-            await self.say(text)
+        self.bus.transcript("assistant", text, final=True, ws=project)
+        if project == self.focused and self.mouth and not self.voice_muted:
+            self.mouth.speak(text)
 
     def _ws_render(self, project: str, content: str, fmt: str = "html") -> None:
         ws = self.workspaces.get(project)
         if ws is not None:
             ws.last_canvas = content
-        self._canvas_turn[project] = True
-        if project == self.focused:
-            self.bus.canvas(content, fmt)
+        self.bus.canvas(content, fmt, ws=project)
 
     def _ws_set_status(self, project: str, text: str) -> None:
         ws = self.workspaces.get(project)
