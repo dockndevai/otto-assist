@@ -1,0 +1,78 @@
+"""Parallel workspaces — each is a project running its own Claude, concurrently.
+
+A workspace bundles a project directory + its own ``ClaudeBrain`` (its own CLI subprocess,
+so several workspaces run truly in parallel) + a per-workspace lock (same-workspace turns
+serialize; different workspaces don't). Only the *focused* workspace streams to the screen
+and speaks; background workspaces run headless and notify when done.
+
+``WorkspaceContext`` is the ``AssistantContext`` handed to each brain's voice/screen tools,
+so a tool call (say / render_canvas / …) is tagged with the workspace it came from and the
+orchestrator can route it (stream only if focused, else store/suppress).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from .brain.agent import ClaudeBrain
+from .config import Settings
+
+
+class WorkspaceContext:
+    """AssistantContext bound to one workspace; forwards tool callbacks to the orchestrator
+    tagged with the workspace path."""
+
+    def __init__(self, orch: Any, project: str) -> None:
+        self.orch = orch
+        self.project = project
+
+    async def say(self, text: str) -> None:
+        await self.orch._ws_say(self.project, text)
+
+    async def ask_user(self, question: str) -> str:
+        return await self.orch._ws_ask_user(self.project, question)
+
+    async def confirm(self, action: str) -> bool:
+        return await self.orch._ws_confirm(self.project, action)
+
+    def render_canvas(self, content: str, fmt: str = "html") -> None:
+        self.orch._ws_render(self.project, content, fmt)
+
+    def set_status(self, text: str) -> None:
+        self.orch._ws_set_status(self.project, text)
+
+    def notify(self, title: str, body: str = "") -> None:
+        self.orch.notify(title, body)
+
+
+class Workspace:
+    """One project running its own Claude chat, in parallel with others."""
+
+    def __init__(self, orch: Any, settings: Settings, project: str, *,
+                 resume: str | None = None, new_chat: bool = False) -> None:
+        self.project = project
+        self.name = Path(project).name or project
+        self.ctx = WorkspaceContext(orch, project)
+        self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
+                                 new_chat=new_chat, cwd=project)
+        self.state = "idle"                 # idle | thinking | speaking | working
+        self.lock = asyncio.Lock()          # serialize this workspace's own turns
+        self.last_canvas: str | None = None  # last visual it rendered (shown when focused)
+        self.last_reply = ""                # last spoken/summary line (for the done-notify)
+
+    @property
+    def session_id(self) -> str | None:
+        return getattr(self.brain, "session_id", None)
+
+    async def rebind(self, settings: Settings, *, resume: str | None = None,
+                     new_chat: bool = False) -> None:
+        """Point this workspace at a different chat (new brain, same project cwd)."""
+        try:
+            await self.brain.disconnect()
+        except Exception:
+            pass
+        self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
+                                 new_chat=new_chat, cwd=self.project)
+        await self.brain.connect()

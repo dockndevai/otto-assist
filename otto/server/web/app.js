@@ -81,7 +81,40 @@ function handle(ev) {
       if (appEl.classList.contains("chats-open")) loadSessions();
       break;
     }
+    case "workspaces": renderWorkspaces(ev.items || [], ev.focused, ev.max); break;
   }
+}
+
+// ---- Parallel workspaces strip (each a project running its own Claude) ----
+const WS_DOT = { idle: "idle", thinking: "busy", working: "busy", speaking: "busy" };
+function renderWorkspaces(items, focused, max) {
+  const bar = $("wsbar"); if (!bar) return;
+  // Only clutter the HUD once there's more than one workspace (i.e. actual parallelism).
+  if (items.length <= 1) { bar.classList.add("empty"); bar.innerHTML = ""; return; }
+  bar.classList.remove("empty"); bar.innerHTML = "";
+  const lbl = document.createElement("span"); lbl.className = "wslbl";
+  lbl.textContent = `WORKSPACES ${items.length}/${max || 3}`;
+  bar.appendChild(lbl);
+  items.forEach((w) => {
+    const pill = document.createElement("div");
+    pill.className = "wspill" + (w.focused ? " foc" : "") + (w.state !== "idle" ? " active" : "");
+    const dot = document.createElement("i"); dot.className = "wsdot " + (WS_DOT[w.state] || "idle");
+    const nm = document.createElement("span"); nm.className = "wsname"; nm.textContent = w.name;
+    pill.append(dot, nm);
+    if (!w.focused) {
+      pill.title = "Focus " + w.name;
+      pill.onclick = () => ws && ws.readyState === 1 &&
+        ws.send(JSON.stringify({ type: "focus_workspace", path: w.project }));
+      const x = document.createElement("button"); x.className = "wsx"; x.textContent = "✕";
+      x.title = "Close " + w.name;
+      x.onclick = (e) => { e.stopPropagation(); ws && ws.readyState === 1 &&
+        ws.send(JSON.stringify({ type: "close_workspace", path: w.project })); };
+      pill.appendChild(x);
+    } else {
+      pill.title = w.name + " · focused (speaks & shows here)";
+    }
+    bar.appendChild(pill);
+  });
 }
 
 function showCanvas(content, format) {
@@ -198,6 +231,7 @@ async function loadProjects() {
       row.className = "prow" + (p.current ? " cur" : "");
       const meta = document.createElement("div"); meta.className = "pmeta";
       meta.innerHTML = `<b>${escapeHtml(p.name)}</b><span>${escapeHtml(p.path)}</span>`;
+      const actions = document.createElement("div"); actions.className = "crow-actions";
       const btn = document.createElement("button");
       btn.textContent = p.current ? "Current" : "Switch";
       if (p.current) { btn.className = "ghost"; btn.disabled = true; }
@@ -206,7 +240,18 @@ async function loadProjects() {
           body: JSON.stringify({ path: p.path }) });
         $("setMsg").textContent = "Switching…"; setTimeout(loadProjects, 1400);
       };
-      row.append(meta, btn); el.appendChild(row);
+      actions.append(btn);
+      if (!p.current) {   // open as a parallel (background) workspace, keeping this one
+        const par = document.createElement("button"); par.className = "ghost"; par.textContent = "⇄ Parallel";
+        par.title = "Run alongside — it works in the background and pings you when done";
+        par.onclick = async () => {
+          await fetch("/api/workspace/open", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: p.path, focus: false }) });
+          $("setMsg").textContent = "Opened in parallel."; setTimeout(loadProjects, 1000);
+        };
+        actions.append(par);
+      }
+      row.append(meta, actions); el.appendChild(row);
     });
   } catch (_) {}
 }
