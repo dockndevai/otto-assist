@@ -232,6 +232,26 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
 
 
+def test_pretrust_silero_vad_skips_prompt():
+    """The ears must not hang on torch.hub's 'trust this repo? (y/N)' prompt in a
+    non-interactive process (launchd/service) — that EOFErrors and leaves Otto deaf."""
+    import torch.hub as hub
+    from otto.voice.stt import _pretrust_silero_vad
+
+    def _boom(owner, name, *a, **k):
+        raise EOFError("EOF when reading a line")   # what the interactive prompt does headless
+
+    hub._check_repo_is_trusted = _boom
+    _pretrust_silero_vad()
+    # Silero VAD is now trusted (no raise); unrelated repos still defer to the original check.
+    assert hub._check_repo_is_trusted("snakers4", "silero-vad") is None
+    import pytest
+    with pytest.raises(EOFError):
+        hub._check_repo_is_trusted("someone", "other-repo")
+    _pretrust_silero_vad()          # idempotent — doesn't stack wrappers
+    assert hub._check_repo_is_trusted("snakers4", "silero-vad") is None
+
+
 def test_porcupine_custom_keyword_shim(monkeypatch):
     monkeypatch.setenv("PICOVOICE_ACCESS_KEY", "KEY123")
     import pvporcupine
