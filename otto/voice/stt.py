@@ -52,6 +52,35 @@ def _install_porcupine_custom_keyword_shim() -> None:
     pvporcupine.create = create
 
 
+def _pretrust_silero_vad() -> None:
+    """Stop RealtimeSTT's Silero-VAD init from hanging in a non-interactive process.
+
+    RealtimeSTT loads the VAD via ``torch.hub.load('snakers4/silero-vad', ...)``. When the
+    repo isn't on torch.hub's trusted list, torch asks ``Do you trust this repository? (y/N)``
+    on stdin — which instantly raises ``EOFError`` under launchd / a service / any headless
+    run, so the recorder never starts and Otto silently can't hear you. Marking the repo
+    trusted up front (equivalent to ``trust_repo=True``) skips that prompt.
+    """
+    try:
+        import torch.hub as _hub
+    except Exception:
+        return  # torch-free build: VAD comes from the pip silero package, no prompt
+    try:
+        if getattr(_hub._check_repo_is_trusted, "_otto_trusted", False):
+            return
+        _orig = _hub._check_repo_is_trusted
+
+        def _check(repo_owner, repo_name, *a, **k):
+            if "silero-vad" in f"{repo_owner}/{repo_name}":
+                return                      # trust Silero VAD without prompting
+            return _orig(repo_owner, repo_name, *a, **k)
+
+        _check._otto_trusted = True         # type: ignore[attr-defined]
+        _hub._check_repo_is_trusted = _check
+    except Exception:
+        pass
+
+
 class Ears:
     def __init__(
         self,
@@ -79,6 +108,7 @@ class Ears:
         self._loop.call_soon_threadsafe(fn, *args)
 
     def start(self) -> None:
+        _pretrust_silero_vad()
         from RealtimeSTT import AudioToTextRecorder  # lazy import
 
         cfg = self.settings.voice.stt
