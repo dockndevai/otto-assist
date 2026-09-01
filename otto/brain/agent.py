@@ -69,13 +69,30 @@ about how you work — your tools, subagents, project instructions — is unchan
 
 
 class ClaudeBrain:
-    def __init__(self, ctx: AssistantContext, settings: Settings) -> None:
+    def __init__(self, ctx: AssistantContext, settings: Settings, *,
+                 resume: str | None = None, new_chat: bool = False) -> None:
         self.ctx = ctx
         self.settings = settings
         self.client: ClaudeSDKClient | None = None
+        # Which chat (Claude session) this brain is bound to:
+        #   resume=<id> -> attach to that existing chat; new_chat=True -> a fresh chat;
+        #   neither -> honor the global continue_conversation setting (today's behavior).
+        self._resume = resume
+        self._new_chat = new_chat
+        # The live chat id — pre-seeded for a resume, else captured from the first turn.
+        self.session_id: str | None = resume
 
     async def connect(self) -> None:
         b = self.settings.brain
+        # Session binding is mutually exclusive: a specific chat (resume) OR a brand-new chat
+        # OR continue-latest. Building it as a dict-spread keeps the SDK from ever getting a
+        # conflicting pair (resume + continue_conversation).
+        if self._new_chat:
+            session_opts: dict[str, Any] = {}
+        elif self._resume:
+            session_opts = {"resume": self._resume}
+        else:
+            session_opts = {"continue_conversation": b.continue_conversation}
         options = ClaudeAgentOptions(
             system_prompt={
                 "type": "preset",
@@ -90,9 +107,9 @@ class ClaudeBrain:
             can_use_tool=self._permission,
             cwd=str(self.settings.project_path),
             add_dirs=self.settings.add_dirs,
-            continue_conversation=b.continue_conversation,
             include_partial_messages=True,
             permission_mode="default",
+            **session_opts,
             **({"model": b.model} if b.model else {}),
         )
         self.client = ClaudeSDKClient(options=options)
@@ -149,6 +166,9 @@ class ClaudeBrain:
                     delta_emitted = True
                     yield {"type": "delta", "text": delta}
             elif isinstance(message, AssistantMessage):
+                # Capture the chat id early — this is how a brand-new chat learns its id.
+                if getattr(message, "session_id", None):
+                    self.session_id = message.session_id
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text_blocks.append(block.text)
@@ -159,6 +179,8 @@ class ClaudeBrain:
                             "detail": _tool_detail(block.name, block.input),
                         }
             elif isinstance(message, ResultMessage):
+                if getattr(message, "session_id", None):
+                    self.session_id = message.session_id
                 full = "".join(text_blocks).strip()
                 if not delta_emitted and full:
                     yield {"type": "delta", "text": full}
@@ -167,6 +189,7 @@ class ClaudeBrain:
                     "is_error": message.is_error,
                     "cost": message.total_cost_usd,
                     "error_text": full if message.is_error else "",
+                    "session_id": self.session_id,
                 }
 
 

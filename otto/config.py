@@ -67,6 +67,9 @@ class BrainConfig(BaseModel):
     permission: Literal["voice", "auto", "deny"] = "voice"
     project_dir: str = "~"                       # current project (the brain's cwd)
     projects: list[str] = Field(default_factory=list)   # pinned projects for the switcher
+    # Last-used chat (Claude session id) per project path — so switching back to a project
+    # reopens the chat you were in. Written by the orchestrator when a chat is used/switched.
+    sessions: dict[str, str] = Field(default_factory=dict)
     extra_dirs: list[str] = Field(default_factory=list)  # extra readable dirs (~ expanded)
     use_claude_config: bool = True              # load the user's ~/.claude settings/MCP/agents
     continue_conversation: bool = False          # resume the project's latest Claude session

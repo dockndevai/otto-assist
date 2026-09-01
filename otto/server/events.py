@@ -11,6 +11,8 @@ subscriber) receives them. Events are plain dicts with a "type" field:
     canvas_render       {"format": "html|markdown", "content": str}
     ask_user            {"question": str}             # awaiting a spoken/typed answer
     notify              {"title": str, "body": str}
+    project             {"path": str, "name": str}    # active project (cowork space)
+    session             {"session_id": str|None, "title": str}  # active chat
 """
 
 from __future__ import annotations

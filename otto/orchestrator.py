@@ -29,6 +29,7 @@ def _answer_card(question: str, answer: str) -> str:
         f'<div class="card"><div class="q">{q}</div><div class="a">{a}</div></div>'
     )
 
+from . import sessions
 from .brain.agent import ClaudeBrain
 from .brain.base import Brain
 from .config import OTTO_HOME, Settings, save_config
@@ -111,8 +112,14 @@ class Orchestrator:
         self.bus = bus
         self.history = History(OTTO_HOME / "history.jsonl")
         bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
-        self.brain: Brain = self._make_brain()
         self.current_project = str(settings.project_path)
+        # Chat (Claude session) binding intent, consumed by _make_brain():
+        #   _pending_resume=<id> -> attach to that chat; _pending_new=True -> a fresh chat.
+        # On startup, reopen this project's last-used chat (if we recorded one).
+        self._pending_resume: str | None = settings.brain.sessions.get(self.current_project)
+        self._pending_new: bool = False
+        self.brain: Brain = self._make_brain()
+        self._active_session: str | None = getattr(self.brain, "session_id", None)
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
@@ -137,7 +144,12 @@ class Orchestrator:
 
     def _make_brain(self) -> Brain:
         # Only Claude today; the Brain protocol lets other agents drop in later.
-        return ClaudeBrain(self, self.settings)
+        # Consume the pending chat-binding intent, then reset it to the default (continue).
+        brain = ClaudeBrain(self, self.settings,
+                            resume=self._pending_resume, new_chat=self._pending_new)
+        self._pending_resume = None
+        self._pending_new = False
+        return brain
 
     def _status(self, state: str, text: str = "") -> None:
         self.state = state
@@ -200,6 +212,7 @@ class Orchestrator:
                     self.bus.notify("Wake word off", f"{type(e).__name__}: {e}")
 
         self._publish_project()
+        self._publish_session()
         self._status("idle", "Ready")
 
     def _on_eff_wake(self) -> None:
@@ -226,7 +239,7 @@ class Orchestrator:
                           "name": self.current_project.rstrip("/").split("/")[-1]})
 
     async def switch_project(self, path: str) -> None:
-        """Re-bind the brain to another project directory (resumes its latest session)."""
+        """Re-bind the brain to another project directory, reopening its last-used chat."""
         from pathlib import Path
         p = str(Path(path).expanduser())
         if p == self.current_project:
@@ -235,14 +248,18 @@ class Orchestrator:
         await self.brain.disconnect()
         self.settings.brain.project_dir = p
         self.current_project = p
+        # Reopen the chat we were last in for this project (else continue-latest).
+        self._pending_resume = self.settings.brain.sessions.get(p)
         self.brain = self._make_brain()
         await self.brain.connect()
+        self._active_session = getattr(self.brain, "session_id", None)
         # Remember the choice for next launch.
         try:
             self._persist_project(p)
         except Exception:
             pass
         self._publish_project()
+        self._publish_session()
         self._status("idle", f"Ready · {Path(p).name}")
         await self.say(f"Switched to {Path(p).name}.")
 
@@ -254,6 +271,122 @@ class Orchestrator:
         data = data or {}
         data.setdefault("brain", {})["project_dir"] = path
         save_config(data)
+
+    # -- chats (Claude sessions within the current project) ----------------
+    def _current_chat_title(self) -> str:
+        """Human label for the active chat (or 'New chat' before its first turn)."""
+        sid = getattr(self.brain, "session_id", None) or self._active_session
+        if not sid:
+            return "New chat"
+        for s in sessions.list_sessions(self.current_project, current_id=sid):
+            if s.session_id == sid:
+                return s.title
+        return sid[:8]
+
+    def _publish_session(self) -> None:
+        sid = getattr(self.brain, "session_id", None) or self._active_session
+        self.bus.publish({"type": "session", "session_id": sid,
+                          "title": self._current_chat_title()})
+
+    def _persist_session(self, project: str, session_id: str) -> None:
+        import yaml
+        from .config import config_path
+        cfg_file = config_path()
+        data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+        data = data or {}
+        data.setdefault("brain", {}).setdefault("sessions", {})[project] = session_id
+        save_config(data)
+
+    async def switch_session(self, session_id: str) -> None:
+        """Re-bind the brain to a specific chat (session) in the current project."""
+        session_id = (session_id or "").strip()
+        if not session_id or session_id == (self._active_session or ""):
+            return
+        self._status("thinking", "Switching chat…")
+        await self.brain.disconnect()
+        self._pending_resume = session_id
+        self.brain = self._make_brain()
+        await self.brain.connect()
+        self._active_session = session_id
+        try:
+            self._persist_session(self.current_project, session_id)
+        except Exception:
+            pass
+        self._publish_session()
+        self._status("idle", "Ready")
+        await self.say("Switched chats.")
+
+    async def new_chat(self) -> None:
+        """Start a fresh chat in the current project (a new Claude session)."""
+        self._status("thinking", "Starting a new chat…")
+        await self.brain.disconnect()
+        self._pending_new = True
+        self.brain = self._make_brain()
+        await self.brain.connect()
+        # The id isn't minted until the first turn completes; _handle_turn will persist it.
+        self._active_session = None
+        self._publish_session()
+        self._status("idle", "Ready")
+        await self.say("Started a new chat.")
+
+    async def rename_chat(self, title: str) -> None:
+        """Rename the active chat. Needs at least one completed turn (an id to rename)."""
+        title = (title or "").strip()
+        if not title:
+            return
+        sid = getattr(self.brain, "session_id", None) or self._active_session
+        if not sid:
+            await self.say("Send a message first, then I can name this chat.")
+            return
+        try:
+            sessions.rename_session_title(self.current_project, sid, title)
+        except Exception as e:
+            self.bus.notify("Rename failed", str(e))
+            return
+        self._publish_session()
+        await self.say(f"Renamed the chat to {title}.")
+
+    # Voice/text chat commands, parsed BEFORE the brain turn (switching tears down the
+    # very brain that would answer, so it must be handled at the orchestrator level).
+    _RE_NEW_CHAT = re.compile(r"^(?:start|open|create|begin)\s+(?:a\s+)?new\s+chat\.?$", re.I)
+    _RE_SWITCH_CHAT = re.compile(
+        r"^switch\s+(?:to\s+)?(?:the\s+)?(?P<name>.+?)\s+chat\.?$", re.I)
+    _RE_RENAME_CHAT = re.compile(
+        r"^rename\s+(?:this\s+|the\s+|current\s+)?chat\s+to\s+(?P<title>.+?)\.?$", re.I)
+
+    def _maybe_chat_command(self, text: str) -> bool:
+        """If `text` is a chat command, act on it and return True (input consumed)."""
+        assert self._loop is not None
+        if self._RE_NEW_CHAT.match(text):
+            self.bus.transcript("user", text, final=True)
+            self._loop.create_task(self.new_chat())
+            return True
+        m = self._RE_RENAME_CHAT.match(text)
+        if m:
+            self.bus.transcript("user", text, final=True)
+            self._loop.create_task(self.rename_chat(m.group("title").strip()))
+            return True
+        m = self._RE_SWITCH_CHAT.match(text)
+        if m:
+            self.bus.transcript("user", text, final=True)
+            self._loop.create_task(self._switch_chat_by_name(m.group("name").strip()))
+            return True
+        return False
+
+    async def _switch_chat_by_name(self, name: str) -> None:
+        """Resolve a spoken chat name to a session and switch, or ask to disambiguate."""
+        needle = name.lower().strip()
+        chats = sessions.list_sessions(self.current_project,
+                                       current_id=self._active_session)
+        matches = [s for s in chats if needle in s.title.lower()]
+        if not matches:
+            await self.say(f"I couldn't find a chat matching “{name}”.")
+            return
+        if len(matches) > 1:
+            names = ", ".join(s.title for s in matches[:4])
+            await self.say(f"I found a few chats matching that: {names}. Which one?")
+            return
+        await self.switch_session(matches[0].session_id)
 
     # -- input routing -----------------------------------------------------
     def submit_user_input(self, text: str) -> None:
@@ -270,6 +403,10 @@ class Orchestrator:
         if text.strip().lower() == "/demo":
             self.bus.transcript("user", text, final=True)
             self._run_demo()
+            return
+        # Chat control ("switch to X chat", "start a new chat", "rename this chat to X").
+        # Handled here — before the brain turn — because switching rebuilds the brain.
+        if self._maybe_chat_command(text):
             return
         assert self._loop is not None
         self._loop.create_task(self._handle_turn(text))
@@ -482,6 +619,16 @@ class Orchestrator:
                                 "Brain error",
                                 ev.get("error_text") or "The model returned an error.",
                             )
+                        # A brand-new chat learns its id here (first completed turn); record
+                        # it so the chat is remembered and the HUD shows its title.
+                        sid = ev.get("session_id")
+                        if sid and sid != self._active_session:
+                            self._active_session = sid
+                            try:
+                                self._persist_session(self.current_project, sid)
+                            except Exception:
+                                pass
+                            self._publish_session()
             except Exception as e:
                 print(f"[otto] turn error: {e!r}", file=sys.stderr, flush=True)
                 self.bus.notify("Error", str(e))

@@ -76,6 +76,11 @@ function handle(ev) {
     case "ask_user": $("input").focus(); break;
     case "notify": bubble("assistant", `🔔 ${ev.title}${ev.body ? " — " + ev.body : ""}`); break;
     case "project": { const el = $("proj"); if (el) el.textContent = "📁 " + (ev.name || ev.path || "—"); break; }
+    case "session": {
+      const el = $("chat"); if (el) el.textContent = "💬 " + (ev.title || "New chat");
+      if (appEl.classList.contains("chats-open")) loadSessions();
+      break;
+    }
   }
 }
 
@@ -93,12 +98,69 @@ function mdToHtml(md) {
 }
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-// chat drawer
+// conversation drawer
 $("chatToggle").onclick = () => {
-  appEl.classList.remove("settings-open");
+  appEl.classList.remove("settings-open", "chats-open");
   appEl.classList.toggle("chat-open"); $("chatToggle").classList.remove("unread"); scroll();
 };
 $("chatClose").onclick = () => appEl.classList.remove("chat-open");
+
+// ---- Chats drawer (switch/create Claude chats in this project) ----
+function timeAgo(sec) {
+  if (!sec) return "";
+  const d = Math.max(0, Date.now() / 1000 - sec);
+  if (d < 60) return "just now";
+  if (d < 3600) return Math.floor(d / 60) + "m ago";
+  if (d < 86400) return Math.floor(d / 3600) + "h ago";
+  return Math.floor(d / 86400) + "d ago";
+}
+async function loadSessions() {
+  try {
+    const r = await (await fetch("/api/sessions")).json();
+    const el = $("chatList"); if (!el) return; el.innerHTML = "";
+    (r.sessions || []).forEach((s) => {
+      const row = document.createElement("div");
+      row.className = "prow" + (s.current ? " cur" : "");
+      const meta = document.createElement("div"); meta.className = "pmeta";
+      meta.innerHTML = `<b>${escapeHtml(s.title)}</b><span>${escapeHtml(timeAgo(s.updated_at))}` +
+        `${s.git_branch ? " · " + escapeHtml(s.git_branch) : ""}</span>`;
+      const actions = document.createElement("div"); actions.className = "crow-actions";
+      if (s.current) {
+        const ren = document.createElement("button"); ren.className = "rename"; ren.textContent = "Rename";
+        ren.onclick = async () => {
+          const t = prompt("Rename this chat to:", s.title); if (!t) return;
+          await fetch("/api/session/rename", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: t }) });
+          setTimeout(loadSessions, 800);
+        };
+        const cur = document.createElement("button"); cur.className = "ghost"; cur.textContent = "Current"; cur.disabled = true;
+        actions.append(ren, cur);
+      } else {
+        const btn = document.createElement("button"); btn.textContent = "Open";
+        btn.onclick = async () => {
+          await fetch("/api/session/switch", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: s.session_id }) });
+          setTimeout(loadSessions, 1400);
+        };
+        actions.append(btn);
+      }
+      row.append(meta, actions); el.appendChild(row);
+    });
+    if (!(r.sessions || []).length) el.innerHTML = '<p class="tiny">No chats yet — start one.</p>';
+  } catch (_) {}
+}
+function openChats() {
+  appEl.classList.remove("chat-open", "settings-open");
+  appEl.classList.add("chats-open");
+  loadSessions();
+}
+$("chatsToggle").onclick = () =>
+  appEl.classList.contains("chats-open") ? appEl.classList.remove("chats-open") : openChats();
+$("chatsClose").onclick = () => appEl.classList.remove("chats-open");
+$("newChat").onclick = async () => {
+  await fetch("/api/session/new", { method: "POST" });
+  setTimeout(loadSessions, 1200);
+};
 
 // ---- Settings (inline, same dashboard) ----
 let cfg = {};
@@ -149,7 +211,7 @@ async function loadProjects() {
   } catch (_) {}
 }
 function openSettings() {
-  appEl.classList.remove("chat-open");
+  appEl.classList.remove("chat-open", "chats-open");
   appEl.classList.add("settings-open");
   loadConfig(); loadProjects();
 }
