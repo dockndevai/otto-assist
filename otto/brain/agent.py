@@ -70,10 +70,14 @@ about how you work — your tools, subagents, project instructions — is unchan
 
 class ClaudeBrain:
     def __init__(self, ctx: AssistantContext, settings: Settings, *,
-                 resume: str | None = None, new_chat: bool = False) -> None:
+                 resume: str | None = None, new_chat: bool = False,
+                 cwd: str | None = None) -> None:
         self.ctx = ctx
         self.settings = settings
         self.client: ClaudeSDKClient | None = None
+        # Per-workspace working directory (overrides the global settings.project_path so
+        # several workspaces can run in different project dirs concurrently).
+        self._cwd = cwd
         # Which chat (Claude session) this brain is bound to:
         #   resume=<id> -> attach to that existing chat; new_chat=True -> a fresh chat;
         #   neither -> honor the global continue_conversation setting (today's behavior).
@@ -105,7 +109,7 @@ class ClaudeBrain:
             # colliding with an externally-registered "otto" MCP the user's Claude may load).
             mcp_servers={"voice": build_server(self.ctx)},
             can_use_tool=self._permission,
-            cwd=str(self.settings.project_path),
+            cwd=(self._cwd or str(self.settings.project_path)),
             add_dirs=self.settings.add_dirs,
             include_partial_messages=True,
             permission_mode="default",

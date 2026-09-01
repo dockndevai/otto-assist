@@ -75,6 +75,39 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.switch_project(path))
         return JSONResponse({"ok": True})
 
+    # -- parallel workspaces (each a project running its own Claude) -------
+    @app.get("/api/workspaces")
+    async def get_workspaces() -> JSONResponse:
+        items = [{"project": ws.project, "name": ws.name, "state": ws.state,
+                  "focused": ws.project == orch.focused, "session_id": ws.session_id}
+                 for ws in orch.workspaces.values()]
+        return JSONResponse({"workspaces": items, "focused": orch.focused,
+                             "max": orch.max_workspaces})
+
+    @app.post("/api/workspace/open")
+    async def open_workspace(payload: dict) -> JSONResponse:
+        path = payload.get("path", "")
+        if not path:
+            return JSONResponse({"ok": False, "error": "path required"}, status_code=400)
+        asyncio.create_task(orch.open_workspace(path, focus=payload.get("focus", True)))
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/workspace/focus")
+    async def focus_workspace(payload: dict) -> JSONResponse:
+        path = payload.get("path", "")
+        if not path:
+            return JSONResponse({"ok": False, "error": "path required"}, status_code=400)
+        orch.focus_workspace(path)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/workspace/close")
+    async def close_workspace(payload: dict) -> JSONResponse:
+        path = payload.get("path", "")
+        if not path:
+            return JSONResponse({"ok": False, "error": "path required"}, status_code=400)
+        asyncio.create_task(orch.close_workspace(path))
+        return JSONResponse({"ok": True})
+
     # -- chats (Claude sessions within the current project) ----------------
     @app.get("/api/sessions")
     async def get_sessions() -> JSONResponse:
@@ -115,9 +148,11 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
             for ev in history:
                 await websocket.send_json(ev)
             await websocket.send_json({"type": "history_end"})
-        # Send the current project + chat immediately so a fresh page shows context.
+        # Send the current project + chat + workspace pool immediately so a fresh page
+        # shows context.
         orch._publish_project()
         orch._publish_session()
+        orch._publish_workspaces()
 
         async def pump() -> None:
             while True:
@@ -140,6 +175,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     asyncio.create_task(orch.new_chat())
                 elif data.get("type") == "rename_chat":
                     asyncio.create_task(orch.rename_chat(data.get("title", "")))
+                elif data.get("type") == "open_workspace":
+                    asyncio.create_task(orch.open_workspace(
+                        data.get("path", ""), focus=data.get("focus", True)))
+                elif data.get("type") == "focus_workspace":
+                    orch.focus_workspace(data.get("path", ""))
+                elif data.get("type") == "close_workspace":
+                    asyncio.create_task(orch.close_workspace(data.get("path", "")))
         except WebSocketDisconnect:
             pass
         finally:

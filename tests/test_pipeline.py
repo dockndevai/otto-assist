@@ -156,6 +156,9 @@ def test_app_routes_and_mcp():
     # chat (session) switcher endpoints
     assert {"/api/sessions", "/api/session/switch", "/api/session/new",
             "/api/session/rename"} <= paths
+    # parallel-workspace endpoints
+    assert {"/api/workspaces", "/api/workspace/open", "/api/workspace/focus",
+            "/api/workspace/close"} <= paths
     # MCP sub-app mounted when register_mcp is on.
     assert any("/mcp" in getattr(r, "path", "") for r in app.routes)
 
@@ -419,4 +422,116 @@ def test_voice_chat_commands_parsed():
         assert [c[0] for c in calls] == ["new", "rename", "switch"]   # no "turn"
         assert ("rename", "Auth work") in calls
         assert ("switch", "auth") in calls
+    asyncio.run(run())
+
+
+# ---- Parallel workspaces --------------------------------------------------
+
+class _FakeBrain:
+    """A brain that streams a canned reply without a `claude` subprocess."""
+    def __init__(self, reply="done", sid="s1"):
+        self.session_id = None
+        self._reply = reply
+        self._sid = sid
+    async def connect(self): ...
+    async def disconnect(self): ...
+    async def send(self, text):
+        yield {"type": "delta", "text": self._reply}
+        self.session_id = self._sid
+        yield {"type": "result", "is_error": False, "cost": 0.0,
+               "error_text": "", "session_id": self._sid}
+
+
+def _drain(q):
+    out = []
+    try:
+        while True:
+            out.append(q.get_nowait())
+    except Exception:
+        pass
+    return out
+
+
+def test_open_focus_and_cap(monkeypatch):
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.max_workspaces = 2
+        start = orch.focused
+        ws2 = await orch.open_workspace("/tmp/p2", focus=True)
+        assert ws2 is not None and orch.focused == "/tmp/p2"
+        assert set(orch.workspaces) == {start, "/tmp/p2"}
+        # cap reached -> the third open is refused, pool unchanged
+        ws3 = await orch.open_workspace("/tmp/p3", focus=True)
+        assert ws3 is None and "/tmp/p3" not in orch.workspaces
+        # focusing back keeps both alive and re-points brain/current_project
+        orch.focus_workspace(start)
+        assert orch.focused == start
+        assert orch.brain is orch.workspaces[start].brain
+        # closing the focused one falls back to the survivor
+        await orch.close_workspace(start)
+        assert orch.focused == "/tmp/p2" and start not in orch.workspaces
+    asyncio.run(run())
+
+
+def test_background_workspace_notifies_not_streams(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.workspace import Workspace
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        bg = Workspace(orch, orch.settings, "/tmp/billing-svc")
+        bg.brain = _FakeBrain(reply="all tests pass")
+        orch.workspaces["/tmp/billing-svc"] = bg
+        q = orch.bus.subscribe()
+        await orch._run_turn(bg, "run the tests")
+        evs = _drain(q)
+        types = [e["type"] for e in evs]
+        # background: nothing streams to the shared canvas/transcript/voice…
+        assert "assistant_delta" not in types
+        assert "canvas_render" not in types
+        assert not any(e["type"] == "transcript_final" and e.get("role") == "assistant"
+                       for e in evs)
+        # …but it fires a completion notification and remembers its reply
+        assert any(e["type"] == "notify" and "billing" in e["title"].lower() for e in evs)
+        assert bg.last_reply == "all tests pass" and bg.state == "idle"
+    asyncio.run(run())
+
+
+def test_focused_workspace_streams(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.focused_ws.brain = _FakeBrain(reply="hello world", sid="sX")
+        q = orch.bus.subscribe()
+        await orch._run_turn(orch.focused_ws, "hi")
+        evs = _drain(q)
+        types = [e["type"] for e in evs]
+        assert "assistant_delta" in types
+        assert any(e["type"] == "transcript_final" and e.get("role") == "assistant"
+                   for e in evs)
+        assert "canvas_render" in types              # answer-card guarantee
+        assert not any(e["type"] == "notify" for e in evs)   # focused doesn't self-notify
+    asyncio.run(run())
+
+
+def test_targeted_turn_routing(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.workspace import Workspace
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        bg = Workspace(orch, orch.settings, "/tmp/billing-svc")
+        bg.brain = _FakeBrain()
+        orch.workspaces["/tmp/billing-svc"] = bg
+        assert orch._resolve_workspace_name("billing") == "/tmp/billing-svc"
+        captured = []
+        async def _tt(name, cmd, original): captured.append((name, cmd, original))
+        orch._targeted_turn = _tt
+        orch.submit_user_input("in billing, run the tests")
+        await asyncio.sleep(0.05)
+        assert captured == [("billing", "run the tests", "in billing, run the tests")]
     asyncio.run(run())
