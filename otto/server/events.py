@@ -54,21 +54,24 @@ class EventBus:
                 pass
 
     # Convenience helpers ---------------------------------------------------
+    # `ws` tags an event with the workspace (project path) it came from, so the dashboard
+    # can keep a separate chat window per parallel workspace. None = the single/global view.
     def status(self, state: str, text: str = "") -> None:
         self.publish({"type": "status", "state": state, "text": text})
 
-    def transcript(self, role: str, text: str, final: bool = True) -> None:
+    def transcript(self, role: str, text: str, final: bool = True,
+                   ws: str | None = None) -> None:
         kind = "transcript_final" if final else "transcript_partial"
-        self.publish({"type": kind, "role": role, "text": text})
+        self.publish({"type": kind, "role": role, "text": text, "ws": ws})
 
-    def assistant_delta(self, text: str) -> None:
-        self.publish({"type": "assistant_delta", "text": text})
+    def assistant_delta(self, text: str, ws: str | None = None) -> None:
+        self.publish({"type": "assistant_delta", "text": text, "ws": ws})
 
-    def tool_use(self, name: str, detail: str = "") -> None:
-        self.publish({"type": "tool_use", "name": name, "detail": detail})
+    def tool_use(self, name: str, detail: str = "", ws: str | None = None) -> None:
+        self.publish({"type": "tool_use", "name": name, "detail": detail, "ws": ws})
 
-    def canvas(self, content: str, fmt: str = "html") -> None:
-        self.publish({"type": "canvas_render", "format": fmt, "content": content})
+    def canvas(self, content: str, fmt: str = "html", ws: str | None = None) -> None:
+        self.publish({"type": "canvas_render", "format": fmt, "content": content, "ws": ws})
 
     def notify(self, title: str, body: str = "") -> None:
         self.publish({"type": "notify", "title": title, "body": body})

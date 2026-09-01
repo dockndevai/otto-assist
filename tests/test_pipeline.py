@@ -64,7 +64,9 @@ def test_voice_tools_build():
 
 def test_defers_to_claude_config():
     # ClaudeBrain injects only voice manners; no custom persona/subagents/connectors.
-    assert "Otto" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    assert "Claude Code" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    # Coding work should stay in the chat, not be forced into a narrated canvas.
+    assert "render_canvas is OPTIONAL" in VOICE_WRAPPER
     import otto.brain as pkg
     assert not (Path(pkg.__file__).parent / "subagents.py").exists()
     assert not (Path(pkg.__file__).parent / "connectors.py").exists()
@@ -496,7 +498,7 @@ def test_open_focus_and_cap(monkeypatch):
     asyncio.run(run())
 
 
-def test_background_workspace_notifies_not_streams(monkeypatch):
+def test_background_workspace_streams_tagged_and_notifies(monkeypatch):
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
     async def run():
         from otto.workspace import Workspace
@@ -508,13 +510,13 @@ def test_background_workspace_notifies_not_streams(monkeypatch):
         q = orch.bus.subscribe()
         await orch._run_turn(bg, "run the tests")
         evs = _drain(q)
-        types = [e["type"] for e in evs]
-        # background: nothing streams to the shared canvas/transcript/voice…
-        assert "assistant_delta" not in types
-        assert "canvas_render" not in types
-        assert not any(e["type"] == "transcript_final" and e.get("role") == "assistant"
-                       for e in evs)
-        # …but it fires a completion notification and remembers its reply
+        # A background workspace streams into its OWN window — chat events tagged with its
+        # path (so the dashboard can show it as a separate chat you switch to)…
+        streamed = [e for e in evs if e["type"] in
+                    ("assistant_delta", "transcript_final", "tool_use")]
+        assert streamed and all(e.get("ws") == "/tmp/billing-svc" for e in streamed)
+        assert any(e["type"] == "assistant_delta" for e in evs)
+        # …and it still fires a completion notification (the background "done" signal).
         assert any(e["type"] == "notify" and "billing" in e["title"].lower() for e in evs)
         assert bg.last_reply == "all tests pass" and bg.state == "idle"
     asyncio.run(run())
@@ -525,15 +527,17 @@ def test_focused_workspace_streams(monkeypatch):
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
+        focused = orch.focused
         orch.focused_ws.brain = _FakeBrain(reply="hello world", sid="sX")
         q = orch.bus.subscribe()
         await orch._run_turn(orch.focused_ws, "hi")
         evs = _drain(q)
         types = [e["type"] for e in evs]
         assert "assistant_delta" in types
+        assert all(e.get("ws") == focused for e in evs if e["type"] == "assistant_delta")
         assert any(e["type"] == "transcript_final" and e.get("role") == "assistant"
-                   for e in evs)
-        assert "canvas_render" in types              # answer-card guarantee
+                   and e.get("ws") == focused for e in evs)
+        assert "canvas_render" not in types        # coding/plain answers no longer forced onto a canvas
         assert not any(e["type"] == "notify" for e in evs)   # focused doesn't self-notify
     asyncio.run(run())
 
