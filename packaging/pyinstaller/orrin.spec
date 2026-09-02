@@ -27,9 +27,17 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openw
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
-hiddenimports += ["otto.menubar", "otto.server.app", "uvicorn.logging",
+hiddenimports += ["otto.menubar", "otto.server.app", "otto.webview", "uvicorn.logging",
                   "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
                   "uvicorn.lifespan.on"]
+
+# In-app dashboard window (WKWebView) needs the WebKit PyObjC bridge collected.
+for pkg in ["WebKit", "Cocoa", "objc"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d; binaries += b; hiddenimports += h
+    except Exception as e:
+        print(f"[orrin.spec] skip {pkg}: {e}")
 
 # The voice stack runs torch-free (ctranslate2 for Whisper, onnxruntime for VAD via
 # silero_use_onnx=True), so torch and friends are dead weight — excluding them drops ~1 GB.
@@ -65,5 +73,8 @@ app = BUNDLE(
         "NSMicrophoneUsageDescription":
             "Orrin listens to your voice when you talk to it.",
         "NSHighResolutionCapable": True,
+        # The in-app dashboard (WKWebView) loads the local server over http://127.0.0.1 —
+        # allow loopback/local networking under App Transport Security.
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     },
 )
