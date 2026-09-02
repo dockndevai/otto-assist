@@ -108,6 +108,14 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.close_workspace(path))
         return JSONResponse({"ok": True})
 
+    @app.post("/api/workspace/clone")
+    async def clone_workspace(payload: dict) -> JSONResponse:
+        url = payload.get("url", "")
+        if not url:
+            return JSONResponse({"ok": False, "error": "url required"}, status_code=400)
+        asyncio.create_task(orch.clone_workspace(url, payload.get("branch")))
+        return JSONResponse({"ok": True})
+
     # -- chats (Claude sessions within the current project) ----------------
     @app.get("/api/sessions")
     async def get_sessions() -> JSONResponse:
@@ -182,6 +190,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     orch.focus_workspace(data.get("path", ""))
                 elif data.get("type") == "close_workspace":
                     asyncio.create_task(orch.close_workspace(data.get("path", "")))
+                elif data.get("type") == "clone_workspace":
+                    asyncio.create_task(orch.clone_workspace(
+                        data.get("url", ""), data.get("branch")))
         except WebSocketDisconnect:
             pass
         finally:

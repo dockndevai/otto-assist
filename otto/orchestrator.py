@@ -8,6 +8,7 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
 import subprocess
@@ -309,6 +310,60 @@ class Orchestrator:
         else:
             self._publish_workspaces()
 
+    # Base directory for repos Otto clones itself (override with OTTO_WORKSPACES_DIR).
+    def _workspaces_dir(self):
+        from pathlib import Path
+        return Path(os.environ.get("OTTO_WORKSPACES_DIR",
+                                   str(Path.home() / "otto-workspaces"))).expanduser()
+
+    async def clone_workspace(self, url: str, branch: str | None = None) -> Workspace | None:
+        """Clone a git repo into a fresh directory and open it as a focused workspace —
+        Otto making its own code space to work in. Reuses an existing clone of the same URL."""
+        from pathlib import Path
+        url = (url or "").strip().rstrip("/")
+        if not re.match(r"^(https?://|git@)", url):
+            await self.say("I can only clone http(s) or git URLs.")
+            return None
+        name = re.sub(r"\.git$", "", url.split("/")[-1]) or "repo"
+        base = self._workspaces_dir()
+        target = base / name
+        tstr = str(target)
+        if tstr in self.workspaces:            # already open — just focus it
+            self.focus_workspace(tstr)
+            return self.workspaces[tstr]
+        if len(self.workspaces) >= self.max_workspaces:
+            await self.say(f"I can run up to {self.max_workspaces} workspaces at once. "
+                           "Close one first.")
+            return None
+        if (target / ".git").exists():         # already cloned before — reuse it
+            await self.say(f"{name} is already cloned — opening it.")
+            return await self.open_workspace(tstr, focus=True)
+        self._status("thinking", f"Cloning {name}…")
+        await self.say(f"Cloning {name}…")
+        base.mkdir(parents=True, exist_ok=True)
+        args = ["git", "clone", "--depth", "1"]
+        if branch:
+            args += ["--branch", branch]
+        args += ["--", url, tstr]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                msg = (out or b"").decode(errors="replace").strip().splitlines()[-1:] or ["git clone failed"]
+                self.notify("Clone failed", msg[0][:160])
+                await self.say(f"Cloning {name} failed. {msg[0][:120]}")
+                self._status("idle", "Ready")
+                return None
+        except Exception as e:
+            await self.say(f"Cloning {name} failed: {e}")
+            self._status("idle", "Ready")
+            return None
+        ws = await self.open_workspace(tstr, focus=True)
+        if ws is not None:
+            await self.say(f"{name} is ready — I'm in it now.")
+        return ws
+
     async def switch_project(self, path: str) -> None:
         """Focus another project, keeping any parallel workspaces alive. Unlike opening a
         parallel workspace, *switching* always succeeds: at the cap it swaps out the
@@ -408,6 +463,22 @@ class Orchestrator:
     # "in <name>, <command>" / "in the <name> workspace: <command>" — target another workspace.
     _RE_TARGET = re.compile(
         r"^in\s+(?:the\s+)?(?P<name>.+?)(?:\s+workspace)?\s*[,:]\s*(?P<cmd>.+)$", re.I)
+    # "clone <url> [branch <b>]" / "set up a workspace from <url>" — Otto makes its own code space.
+    _RE_CLONE = re.compile(
+        r"^(?:clone|check\s?out|set\s*up|open|create)\s+(?:a\s+)?(?:new\s+)?(?:workspace\s+"
+        r"(?:from|for)\s+|repo(?:sitory)?\s+|the\s+repo(?:sitory)?\s+)?"
+        r"(?P<url>(?:https?://|git@)\S+?)(?:\.git)?/?"
+        r"(?:\s+(?:on\s+|from\s+|using\s+)?branch\s+(?P<branch>[\w./-]+))?\.?$", re.I)
+
+    def _maybe_clone_command(self, text: str) -> bool:
+        """If `text` asks to clone a repo into a new workspace, do it. Returns True if consumed."""
+        m = self._RE_CLONE.match(text.strip())
+        if not m:
+            return False
+        assert self._loop is not None
+        self.bus.transcript("user", text, final=True)
+        self._loop.create_task(self.clone_workspace(m.group("url"), m.group("branch")))
+        return True
 
     def _maybe_chat_command(self, text: str) -> bool:
         """If `text` is a chat command, act on it and return True (input consumed)."""
@@ -500,6 +571,9 @@ class Orchestrator:
         # Chat control ("switch to X chat", "start a new chat", "rename this chat to X").
         # Handled here — before the brain turn — because switching rebuilds the brain.
         if self._maybe_chat_command(text):
+            return
+        # "clone <url>" — Otto sets up a new code space (clone → open as a workspace).
+        if self._maybe_clone_command(text):
             return
         assert self._loop is not None
         # Workspace targeting: "in <name>, <command>" runs the command in another workspace
