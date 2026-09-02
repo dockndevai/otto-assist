@@ -124,10 +124,12 @@ class Ears:
             # burns CPU on an always-on app; we only need final transcripts for the wake
             # phrase, so keep it off.
             enable_realtime_transcription=False,
-            # Run the Silero VAD through onnxruntime instead of torch. Keeps the whole voice
-            # stack torch-free (faster-whisper already uses ctranslate2), which lets the
-            # standalone app bundle drop torch — ~1 GB smaller — and starts faster.
-            silero_use_onnx=True,
+            # Leave silero_use_onnx UNSET. It is RealtimeSTT's legacy switch and both True
+            # and False resolve to SILERO_BACKEND_LEGACY, which loads the VAD over
+            # torch.hub — a GitHub download on first run that needs a CA store and an
+            # interactive trust prompt, so it fails outright in a bundled app. Unset means
+            # silero_backend="auto", which uses the .onnx weights shipped inside the
+            # silero_vad package via onnxruntime: offline, no download, no prompt.
             on_recording_start=lambda: self._post(self._on_speech_start),
         )
         # Prime Whisper with the wake word so it actually transcribes the name (small
