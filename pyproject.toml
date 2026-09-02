@@ -35,7 +35,8 @@ voice = [
 ]
 # macOS menu bar app
 app = [
-    "rumps>=0.4",           # menu bar UI
+    "rumps>=0.4",                    # menu bar UI
+    "pyobjc-framework-WebKit>=10",   # in-app dashboard window (WKWebView) instead of a browser
 ]
 
 [project.scripts]

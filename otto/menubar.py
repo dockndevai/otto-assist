@@ -73,6 +73,7 @@ class OttoApp(rumps.App):
         self.url = f"http://{self.settings.server.host}:{self.settings.server.port}"
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
+        self._dash = None       # in-app dashboard window (lazy)
 
         self.status_item = rumps.MenuItem("Starting…")
         self.project_menu = rumps.MenuItem("Project")
@@ -262,11 +263,25 @@ class OttoApp(rumps.App):
             self._loop.call_soon_threadsafe(self.orch.arm_ptt)
 
     def open_dashboard(self, _) -> None:
-        webbrowser.open(self.url)
+        self._open_dash("")
 
     def open_settings(self, _) -> None:
-        # Open the dashboard's inline settings drawer (falls back to the standalone page too).
-        webbrowser.open(self.url + "/#settings")
+        # Open the dashboard's inline settings drawer (in-app, or browser fallback).
+        self._open_dash("#settings")
+
+    def _open_dash(self, suffix: str) -> None:
+        """Show the dashboard in a native in-app window (WKWebView); fall back to the browser."""
+        try:
+            from .webview import DashboardWindow, available
+            if available():
+                if self._dash is None:
+                    self._dash = DashboardWindow(self.url, title="Orrin")
+                self._dash.show(suffix)
+                return
+        except Exception as e:
+            print(f"[otto] in-app dashboard unavailable, using browser: {e}",
+                  file=sys.stderr, flush=True)
+        webbrowser.open(self.url + ("/" + suffix if suffix else ""))
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted
