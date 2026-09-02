@@ -88,7 +88,10 @@ class ClaudeBrain:
         if self._new_chat:
             session_opts: dict[str, Any] = {}
         elif self._resume:
-            session_opts = {"resume": self._resume}
+            # fork_session=False → keep writing to the SAME session id instead of forking a
+            # new one on resume. Otherwise Otto's turns land in a fresh session file and never
+            # show up in the chat the user reopens in Claude Code for that project.
+            session_opts = {"resume": self._resume, "fork_session": False}
         else:
             session_opts = {"continue_conversation": b.continue_conversation}
         options = ClaudeAgentOptions(
