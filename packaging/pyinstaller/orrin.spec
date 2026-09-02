@@ -39,9 +39,13 @@ for pkg in ["WebKit", "Cocoa", "objc"]:
     except Exception as e:
         print(f"[orrin.spec] skip {pkg}: {e}")
 
-# The voice stack runs torch-free (ctranslate2 for Whisper, onnxruntime for VAD via
-# silero_use_onnx=True), so torch and friends are dead weight — excluding them drops ~1 GB.
-EXCLUDES = ["torch", "torchaudio", "torchvision", "tensorboard", "triton",
+# torch CANNOT be excluded: RealtimeSTT imports it at module scope
+# (RealtimeSTT/core/initialization.py:13), so dropping it makes `from RealtimeSTT import
+# AudioToTextRecorder` raise ImportError and kills voice input in the bundle entirely.
+# silero_use_onnx=True picks the VAD backend; it does not remove the import. torchaudio comes
+# with it because silero_vad/utils_vad.py imports it. This costs ~1 GB — measure before
+# trying to shave it again, and smoke-test the built bundle's imports.
+EXCLUDES = ["torchvision", "tensorboard", "triton",
             "matplotlib", "scipy.spatial.cKDTree"]
 
 a = Analysis(
