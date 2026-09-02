@@ -63,8 +63,53 @@ if [ -n "${SIGN_ID:-}" ]; then
 fi
 
 echo "==> Creating DMG"
-rm -f "$DMG"
-hdiutil create -volname "Orrin" -srcfolder "$APP" -ov -format UDZO "$DMG"
+# A proper installer window: the app beside an /Applications symlink, on a background
+# image, with the window size and icon positions baked into the volume's .DS_Store.
+# That layout can only be written by Finder while the image is mounted read-write, so
+# build UDRW first, arrange it, then compress to UDZO.
+VOL="Orrin"
+RW="dist/.Orrin-rw.dmg"
+STAGE="$(mktemp -d)"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+mkdir "$STAGE/.background"
+"$PY" packaging/pyinstaller/make_dmg_background.py "$STAGE/.background/bg.png"
+
+rm -f "$RW" "$DMG"
+# HFS+, not APFS: Finder's icon layout does not persist reliably on an APFS image.
+hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDRW -fs HFS+ "$RW"
+rm -rf "$STAGE"
+hdiutil detach "/Volumes/$VOL" 2>/dev/null || true
+hdiutil attach -readwrite -noverify -noautoopen "$RW" >/dev/null
+
+echo "==> Arranging the installer window (Finder)"
+# Needs Automation permission for the terminal to control Finder; if it is denied the
+# layout is skipped and the DMG still works, just without the background.
+osascript <<'AS' || echo "    Finder layout skipped (grant Automation -> Finder to enable)"
+tell application "Finder"
+  tell disk "Orrin"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set the bounds of container window to {300, 140, 940, 580}
+    set opts to the icon view options of container window
+    set arrangement of opts to not arranged
+    set icon size of opts to 112
+    set text size of opts to 12
+    set background picture of opts to file ".background:bg.png"
+    set position of item "Orrin.app" of container window to {160, 205}
+    set position of item "Applications" of container window to {480, 205}
+    update without registering applications
+    delay 1
+    close
+  end tell
+end tell
+AS
+sync
+hdiutil detach "/Volumes/$VOL" >/dev/null
+hdiutil convert "$RW" -format UDZO -ov -o "$DMG"
+rm -f "$RW"
 
 if [ -n "${SIGN_ID:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
   echo "==> Notarizing DMG (this uploads to Apple and can take a few minutes)"
