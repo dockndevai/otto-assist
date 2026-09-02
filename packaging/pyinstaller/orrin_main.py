@@ -2,7 +2,13 @@
 
 PyInstaller freezes this module; it boots the same menu-bar app the CLI runs.
 """
+import multiprocessing
 import os
+
+# RealtimeSTT runs its recorder in a spawned child process. In a frozen bundle a spawned
+# child re-executes THIS binary, so without freeze_support() it boots a second copy of the
+# app instead of the worker — the mic never opens and macOS never shows a permission prompt.
+multiprocessing.freeze_support()
 
 # Launched from Finder/Spotlight, a .app inherits a minimal PATH (/usr/bin:/bin:…) that omits
 # Homebrew — so the Claude Agent SDK can't find the user's `claude` CLI (or ffmpeg). Prepend the
