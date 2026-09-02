@@ -360,7 +360,8 @@ class Orchestrator:
             return
         ws = self.focused_ws
         self._status("thinking", "Switching chat…")
-        await ws.rebind(self.settings, resume=session_id)
+        async with ws.lock:                 # don't swap the brain mid-turn (or let a turn
+            await ws.rebind(self.settings, resume=session_id)   # race the swap)
         try:
             self._persist_session(ws.project, session_id)
         except Exception:
@@ -373,7 +374,8 @@ class Orchestrator:
         """Start a fresh chat in the focused workspace's project (a new Claude session)."""
         ws = self.focused_ws
         self._status("thinking", "Starting a new chat…")
-        await ws.rebind(self.settings, new_chat=True)
+        async with ws.lock:                 # serialize with turns so a command fired right
+            await ws.rebind(self.settings, new_chat=True)   # after lands on the NEW chat
         # The id isn't minted until the first turn completes; _run_turn will persist it.
         self._publish_session()
         self._status("idle", "Ready")
