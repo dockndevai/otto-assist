@@ -542,6 +542,34 @@ def test_focused_workspace_streams(monkeypatch):
     asyncio.run(run())
 
 
+def test_new_chat_then_immediate_turn_uses_new_brain(monkeypatch):
+    """A command fired right after 'new chat' must land on the NEW chat, not race the swap
+    and hit the old session (found via the JARVIS battery: fresh chat 'remembered' old work)."""
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ws = orch.focused_ws
+        ws.brain = _FakeBrain(reply="OLD-CHAT-MEMORY")
+        new = _FakeBrain(reply="NEW-CHAT")
+
+        async def fake_rebind(settings, *, resume=None, new_chat=False):
+            await asyncio.sleep(0.1)     # rebind (disconnect+reconnect) takes real time
+            ws.brain = new
+        ws.rebind = fake_rebind
+
+        q = orch.bus.subscribe()
+        # exactly what the WS handler does: schedule new_chat, then the turn, back to back
+        t1 = asyncio.create_task(orch.new_chat())
+        t2 = asyncio.create_task(orch._run_turn(ws, "which chat is this?"))
+        await asyncio.gather(t1, t2)
+        replies = [e["text"] for e in _drain(q)
+                   if e["type"] == "transcript_final" and e.get("role") == "assistant"]
+        assert any("NEW-CHAT" in r for r in replies)          # ran on the new brain
+        assert not any("OLD-CHAT-MEMORY" in r for r in replies)
+    asyncio.run(run())
+
+
 def test_targeted_turn_routing(monkeypatch):
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
     async def run():
