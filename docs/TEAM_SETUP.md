@@ -86,6 +86,9 @@ Developer account; the script supports it via `SIGN_ID` + `NOTARY_PROFILE`.)
     enable Orrin/your terminal. (The menu "🎤 Talk to Otto" and the dashboard mic don't need it.)
 - **Type:** use the composer box in the dashboard — same thing, no mic needed.
 - **Pick the project (workspace):** menu bar → **Project**, or dashboard **⚙ Settings → Projects**.
+- **Clone a repo into a new workspace:** say/type **"clone `<github-url>` [branch `<name>`]"** —
+  Otto clones it into `~/otto-workspaces/<repo>` (override with `OTTO_WORKSPACES_DIR`) and drops
+  you into it as a focused workspace, ready to work.
 - **Run projects in parallel:** in Settings → Projects, click **⇄ Parallel** to open another
   project alongside; or say **"in <project>, <command>"** to send work to another window while
   you keep going. The strip under the header shows every workspace; click one to switch to it.

@@ -570,6 +570,45 @@ def test_new_chat_then_immediate_turn_uses_new_brain(monkeypatch):
     asyncio.run(run())
 
 
+def test_clone_command_parsed():
+    orch = Orchestrator(load_settings(), EventBus())
+    m = orch._RE_CLONE.match("clone https://github.com/acme/widget.git")
+    assert m and m.group("url").endswith("acme/widget")
+    m2 = orch._RE_CLONE.match("clone https://github.com/acme/widget on branch dev")
+    assert m2 and m2.group("branch") == "dev"
+    m3 = orch._RE_CLONE.match("set up a new workspace from https://github.com/acme/widget")
+    assert m3 and m3.group("url").endswith("acme/widget")
+    assert orch._RE_CLONE.match("create a function that adds two numbers") is None
+
+
+def test_clone_workspace_opens_new_space(tmp_path, monkeypatch):
+    """Otto making its own code space: clone a URL -> a fresh focused workspace."""
+    monkeypatch.setenv("OTTO_WORKSPACES_DIR", str(tmp_path / "ws"))
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    import os as _os
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self): return (b"", None)
+
+    async def fake_exec(*args, **kw):          # stand in for `git clone …`
+        target = args[-1]
+        _os.makedirs(_os.path.join(target, ".git"), exist_ok=True)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ws = await orch.clone_workspace("https://example.com/acme/widget.git")
+        target = str(tmp_path / "ws" / "widget")
+        assert ws is not None
+        assert target in orch.workspaces and orch.focused == target
+        assert _os.path.isdir(_os.path.join(target, ".git"))
+    asyncio.run(run())
+
+
 def test_targeted_turn_routing(monkeypatch):
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
     async def run():
