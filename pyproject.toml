@@ -1,6 +1,6 @@
 [project]
 name = "otto-assist"
-version = "0.1.0"
+version = "0.2.0"
 description = "A realtime, voice-driven personal assistant that wraps Claude as its brain."
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
@@ -35,7 +35,8 @@ voice = [
 ]
 # macOS menu bar app
 app = [
-    "rumps>=0.4",           # menu bar UI
+    "rumps>=0.4",                    # menu bar UI
+    "pyobjc-framework-WebKit>=10",   # in-app dashboard window (WKWebView) instead of a browser
 ]
 
 [project.scripts]

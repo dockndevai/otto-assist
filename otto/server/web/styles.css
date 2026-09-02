@@ -19,7 +19,7 @@ body {
     var(--bg);
 }
 
-.app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+.app { display: grid; grid-template-rows: auto auto 1fr auto; height: 100vh; }
 
 /* ---- Top HUD ---- */
 .hud {
@@ -179,3 +179,27 @@ body {
   border-radius: 8px; padding: 6px 9px; font-size: 12px; cursor: pointer; }
 .prow .rename:hover { color: var(--text); border-color: rgba(34,211,238,.4); }
 .crow-actions { display: flex; gap: 6px; flex: none; }
+
+/* Parallel-workspaces strip under the HUD */
+.wsbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 20px; border-bottom: 1px solid var(--line); position: relative; z-index: 29;
+  background: rgba(255,255,255,.015); }
+.wsbar.empty { padding: 0; height: 0; border: none; overflow: hidden; }
+.wslbl { font-size: 9px; letter-spacing: 2px; color: var(--muted); opacity: .8; }
+.wspill { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px;
+  color: var(--muted); background: rgba(255,255,255,.03); transition: all .15s; }
+.wspill:hover { color: var(--text); border-color: rgba(34,211,238,.4); }
+.wspill.foc { color: var(--text); border-color: rgba(34,211,238,.55);
+  background: rgba(34,211,238,.10); cursor: default; }
+.wspill .wsname { font-weight: 600; }
+.wspill.unread { border-color: rgba(168,85,247,.6); box-shadow: 0 0 10px rgba(168,85,247,.25); }
+.wspill.unread .wsname::after { content: " •"; color: var(--purple); }
+.wsact { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--cyan); opacity: .75; }
+.wsdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #55627a; }
+.wsdot.idle { background: #55627a; }
+.wsdot.busy { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: wspulse 1s infinite; }
+@keyframes wspulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.wsx { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px;
+  padding: 0 0 0 2px; line-height: 1; opacity: .6; }
+.wsx:hover { color: var(--purple); opacity: 1; }

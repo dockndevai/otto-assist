@@ -64,7 +64,9 @@ def test_voice_tools_build():
 
 def test_defers_to_claude_config():
     # ClaudeBrain injects only voice manners; no custom persona/subagents/connectors.
-    assert "Otto" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    assert "Claude Code" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    # Coding work should stay in the chat, not be forced into a narrated canvas.
+    assert "render_canvas is OPTIONAL" in VOICE_WRAPPER
     import otto.brain as pkg
     assert not (Path(pkg.__file__).parent / "subagents.py").exists()
     assert not (Path(pkg.__file__).parent / "connectors.py").exists()
@@ -156,6 +158,9 @@ def test_app_routes_and_mcp():
     # chat (session) switcher endpoints
     assert {"/api/sessions", "/api/session/switch", "/api/session/new",
             "/api/session/rename"} <= paths
+    # parallel-workspace endpoints
+    assert {"/api/workspaces", "/api/workspace/open", "/api/workspace/focus",
+            "/api/workspace/close"} <= paths
     # MCP sub-app mounted when register_mcp is on.
     assert any("/mcp" in getattr(r, "path", "") for r in app.routes)
 
@@ -227,6 +232,26 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("Auto, what is the time?") == (True, "what is the time")  # misheard
     assert orch._match_wake("what's the weather") == (False, "")              # no wake word
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
+
+
+def test_pretrust_silero_vad_skips_prompt():
+    """The ears must not hang on torch.hub's 'trust this repo? (y/N)' prompt in a
+    non-interactive process (launchd/service) — that EOFErrors and leaves Otto deaf."""
+    import torch.hub as hub
+    from otto.voice.stt import _pretrust_silero_vad
+
+    def _boom(owner, name, *a, **k):
+        raise EOFError("EOF when reading a line")   # what the interactive prompt does headless
+
+    hub._check_repo_is_trusted = _boom
+    _pretrust_silero_vad()
+    # Silero VAD is now trusted (no raise); unrelated repos still defer to the original check.
+    assert hub._check_repo_is_trusted("snakers4", "silero-vad") is None
+    import pytest
+    with pytest.raises(EOFError):
+        hub._check_repo_is_trusted("someone", "other-repo")
+    _pretrust_silero_vad()          # idempotent — doesn't stack wrappers
+    assert hub._check_repo_is_trusted("snakers4", "silero-vad") is None
 
 
 def test_porcupine_custom_keyword_shim(monkeypatch):
@@ -419,4 +444,185 @@ def test_voice_chat_commands_parsed():
         assert [c[0] for c in calls] == ["new", "rename", "switch"]   # no "turn"
         assert ("rename", "Auth work") in calls
         assert ("switch", "auth") in calls
+    asyncio.run(run())
+
+
+# ---- Parallel workspaces --------------------------------------------------
+
+class _FakeBrain:
+    """A brain that streams a canned reply without a `claude` subprocess."""
+    def __init__(self, reply="done", sid="s1"):
+        self.session_id = None
+        self._reply = reply
+        self._sid = sid
+    async def connect(self): ...
+    async def disconnect(self): ...
+    async def send(self, text):
+        yield {"type": "delta", "text": self._reply}
+        self.session_id = self._sid
+        yield {"type": "result", "is_error": False, "cost": 0.0,
+               "error_text": "", "session_id": self._sid}
+
+
+def _drain(q):
+    out = []
+    try:
+        while True:
+            out.append(q.get_nowait())
+    except Exception:
+        pass
+    return out
+
+
+def test_open_focus_and_cap(monkeypatch):
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.max_workspaces = 2
+        start = orch.focused
+        ws2 = await orch.open_workspace("/tmp/p2", focus=True)
+        assert ws2 is not None and orch.focused == "/tmp/p2"
+        assert set(orch.workspaces) == {start, "/tmp/p2"}
+        # cap reached -> the third open is refused, pool unchanged
+        ws3 = await orch.open_workspace("/tmp/p3", focus=True)
+        assert ws3 is None and "/tmp/p3" not in orch.workspaces
+        # focusing back keeps both alive and re-points brain/current_project
+        orch.focus_workspace(start)
+        assert orch.focused == start
+        assert orch.brain is orch.workspaces[start].brain
+        # closing the focused one falls back to the survivor
+        await orch.close_workspace(start)
+        assert orch.focused == "/tmp/p2" and start not in orch.workspaces
+    asyncio.run(run())
+
+
+def test_background_workspace_streams_tagged_and_notifies(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.workspace import Workspace
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        bg = Workspace(orch, orch.settings, "/tmp/billing-svc")
+        bg.brain = _FakeBrain(reply="all tests pass")
+        orch.workspaces["/tmp/billing-svc"] = bg
+        q = orch.bus.subscribe()
+        await orch._run_turn(bg, "run the tests")
+        evs = _drain(q)
+        # A background workspace streams into its OWN window — chat events tagged with its
+        # path (so the dashboard can show it as a separate chat you switch to)…
+        streamed = [e for e in evs if e["type"] in
+                    ("assistant_delta", "transcript_final", "tool_use")]
+        assert streamed and all(e.get("ws") == "/tmp/billing-svc" for e in streamed)
+        assert any(e["type"] == "assistant_delta" for e in evs)
+        # …and it still fires a completion notification (the background "done" signal).
+        assert any(e["type"] == "notify" and "billing" in e["title"].lower() for e in evs)
+        assert bg.last_reply == "all tests pass" and bg.state == "idle"
+    asyncio.run(run())
+
+
+def test_focused_workspace_streams(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        focused = orch.focused
+        orch.focused_ws.brain = _FakeBrain(reply="hello world", sid="sX")
+        q = orch.bus.subscribe()
+        await orch._run_turn(orch.focused_ws, "hi")
+        evs = _drain(q)
+        types = [e["type"] for e in evs]
+        assert "assistant_delta" in types
+        assert all(e.get("ws") == focused for e in evs if e["type"] == "assistant_delta")
+        assert any(e["type"] == "transcript_final" and e.get("role") == "assistant"
+                   and e.get("ws") == focused for e in evs)
+        assert "canvas_render" not in types        # coding/plain answers no longer forced onto a canvas
+        assert not any(e["type"] == "notify" for e in evs)   # focused doesn't self-notify
+    asyncio.run(run())
+
+
+def test_new_chat_then_immediate_turn_uses_new_brain(monkeypatch):
+    """A command fired right after 'new chat' must land on the NEW chat, not race the swap
+    and hit the old session (found via the JARVIS battery: fresh chat 'remembered' old work)."""
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ws = orch.focused_ws
+        ws.brain = _FakeBrain(reply="OLD-CHAT-MEMORY")
+        new = _FakeBrain(reply="NEW-CHAT")
+
+        async def fake_rebind(settings, *, resume=None, new_chat=False):
+            await asyncio.sleep(0.1)     # rebind (disconnect+reconnect) takes real time
+            ws.brain = new
+        ws.rebind = fake_rebind
+
+        q = orch.bus.subscribe()
+        # exactly what the WS handler does: schedule new_chat, then the turn, back to back
+        t1 = asyncio.create_task(orch.new_chat())
+        t2 = asyncio.create_task(orch._run_turn(ws, "which chat is this?"))
+        await asyncio.gather(t1, t2)
+        replies = [e["text"] for e in _drain(q)
+                   if e["type"] == "transcript_final" and e.get("role") == "assistant"]
+        assert any("NEW-CHAT" in r for r in replies)          # ran on the new brain
+        assert not any("OLD-CHAT-MEMORY" in r for r in replies)
+    asyncio.run(run())
+
+
+def test_clone_command_parsed():
+    orch = Orchestrator(load_settings(), EventBus())
+    m = orch._RE_CLONE.match("clone https://github.com/acme/widget.git")
+    assert m and m.group("url").endswith("acme/widget")
+    m2 = orch._RE_CLONE.match("clone https://github.com/acme/widget on branch dev")
+    assert m2 and m2.group("branch") == "dev"
+    m3 = orch._RE_CLONE.match("set up a new workspace from https://github.com/acme/widget")
+    assert m3 and m3.group("url").endswith("acme/widget")
+    assert orch._RE_CLONE.match("create a function that adds two numbers") is None
+
+
+def test_clone_workspace_opens_new_space(tmp_path, monkeypatch):
+    """Otto making its own code space: clone a URL -> a fresh focused workspace."""
+    monkeypatch.setenv("OTTO_WORKSPACES_DIR", str(tmp_path / "ws"))
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    import os as _os
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self): return (b"", None)
+
+    async def fake_exec(*args, **kw):          # stand in for `git clone …`
+        target = args[-1]
+        _os.makedirs(_os.path.join(target, ".git"), exist_ok=True)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ws = await orch.clone_workspace("https://example.com/acme/widget.git")
+        target = str(tmp_path / "ws" / "widget")
+        assert ws is not None
+        assert target in orch.workspaces and orch.focused == target
+        assert _os.path.isdir(_os.path.join(target, ".git"))
+    asyncio.run(run())
+
+
+def test_targeted_turn_routing(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.workspace import Workspace
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        bg = Workspace(orch, orch.settings, "/tmp/billing-svc")
+        bg.brain = _FakeBrain()
+        orch.workspaces["/tmp/billing-svc"] = bg
+        assert orch._resolve_workspace_name("billing") == "/tmp/billing-svc"
+        captured = []
+        async def _tt(name, cmd, original): captured.append((name, cmd, original))
+        orch._targeted_turn = _tt
+        orch.submit_user_input("in billing, run the tests")
+        await asyncio.sleep(0.05)
+        assert captured == [("billing", "run the tests", "in billing, run the tests")]
     asyncio.run(run())

@@ -73,9 +73,11 @@ class OttoApp(rumps.App):
         self.url = f"http://{self.settings.server.host}:{self.settings.server.port}"
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
+        self._dash = None       # in-app dashboard window (lazy)
 
         self.status_item = rumps.MenuItem("Starting…")
         self.project_menu = rumps.MenuItem("Project")
+        self.workspace_menu = rumps.MenuItem("Workspaces")
         self.chat_menu = rumps.MenuItem("Chat")
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
@@ -86,6 +88,7 @@ class OttoApp(rumps.App):
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
+            self.workspace_menu,
             self.chat_menu,
             self.mic_item,
             self.voice_item,
@@ -95,6 +98,7 @@ class OttoApp(rumps.App):
         ]
         self._proj_tick = 0
         self._refresh_projects()
+        self._refresh_workspaces()
         self._refresh_chats()
 
         threading.Thread(target=self._run_backend, daemon=True).start()
@@ -126,6 +130,38 @@ class OttoApp(rumps.App):
             if self._loop is not None:
                 self._loop.call_soon_threadsafe(
                     lambda: asyncio.ensure_future(self.orch.switch_project(path))
+                )
+        return _cb
+
+    # -- parallel workspaces (focus one; each runs its own Claude) ---------
+    def _refresh_workspaces(self) -> None:
+        try:
+            pool = list(getattr(self.orch, "workspaces", {}).values())
+            focused = getattr(self.orch, "focused", None)
+        except Exception:
+            return
+        if getattr(self.workspace_menu, "_menu", None) is not None:
+            try:
+                self.workspace_menu.clear()
+            except Exception:
+                pass
+        # Only meaningful with more than one open; still show the single one for clarity.
+        state_dot = {"idle": "○", "thinking": "●", "working": "●", "speaking": "●"}
+        for ws in pool:
+            try:
+                dot = state_dot.get(ws.state, "○")
+                item = rumps.MenuItem(f"{dot} {ws.name}",
+                                      callback=self._make_focus_ws(ws.project))
+                item.state = 1 if ws.project == focused else 0
+                self.workspace_menu.add(item)
+            except Exception:
+                pass
+
+    def _make_focus_ws(self, path: str):
+        def _cb(_):
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(
+                    lambda: self.orch.focus_workspace(path)
                 )
         return _cb
 
@@ -219,6 +255,7 @@ class OttoApp(rumps.App):
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
             self._refresh_projects()
+            self._refresh_workspaces()
             self._refresh_chats()
 
     def talk(self, _) -> None:
@@ -226,11 +263,25 @@ class OttoApp(rumps.App):
             self._loop.call_soon_threadsafe(self.orch.arm_ptt)
 
     def open_dashboard(self, _) -> None:
-        webbrowser.open(self.url)
+        self._open_dash("")
 
     def open_settings(self, _) -> None:
-        # Open the dashboard's inline settings drawer (falls back to the standalone page too).
-        webbrowser.open(self.url + "/#settings")
+        # Open the dashboard's inline settings drawer (in-app, or browser fallback).
+        self._open_dash("#settings")
+
+    def _open_dash(self, suffix: str) -> None:
+        """Show the dashboard in a native in-app window (WKWebView); fall back to the browser."""
+        try:
+            from .webview import DashboardWindow, available
+            if available():
+                if self._dash is None:
+                    self._dash = DashboardWindow(self.url, title="Orrin")
+                self._dash.show(suffix)
+                return
+        except Exception as e:
+            print(f"[otto] in-app dashboard unavailable, using browser: {e}",
+                  file=sys.stderr, flush=True)
+        webbrowser.open(self.url + ("/" + suffix if suffix else ""))
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted
