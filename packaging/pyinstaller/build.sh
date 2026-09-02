@@ -18,6 +18,7 @@ DMG="dist/Orrin.dmg"
 
 echo "==> Ensuring build tooling (pyinstaller) in the venv"
 [ -x .venv/bin/python ] || { echo "Run scripts/setup.sh first (.venv missing)"; exit 1; }
+PY=".venv/bin/python"          # used to draw the DMG background (make_dmg_background.py)
 .venv/bin/pip install -q --upgrade pyinstaller
 
 echo "==> Metadata fixups (so PyInstaller's stdhooks don't crash)"
