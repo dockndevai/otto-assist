@@ -178,13 +178,17 @@ class Orchestrator:
                     on_recording_stop=self._on_recording_stop,
                 )
                 self.ears.start()
-                from .voice.hotkey import PushToTalk
-                self._ptt = PushToTalk(
-                    self.settings, self._loop,
-                    on_press=self._on_ptt_press,
-                    on_release=self._on_ptt_release,
-                )
-                self._ptt.start()
+                # Global push-to-talk hotkey is opt-in: pynput's macOS input-source calls run
+                # off the main thread and hard-abort (SIGTRAP) in the packaged app, and it needs
+                # Accessibility permission anyway. The dashboard mic button + wake word cover PTT.
+                if self.settings.voice.hotkey.enabled:
+                    from .voice.hotkey import PushToTalk
+                    self._ptt = PushToTalk(
+                        self.settings, self._loop,
+                        on_press=self._on_ptt_press,
+                        on_release=self._on_ptt_release,
+                    )
+                    self._ptt.start()
             except Exception as e:
                 self.ears = None
                 self.bus.notify("Voice input off", str(e))
