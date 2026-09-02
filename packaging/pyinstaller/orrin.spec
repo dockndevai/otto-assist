@@ -27,13 +27,25 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openw
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
-hiddenimports += ["otto.menubar", "otto.server.app", "uvicorn.logging",
+hiddenimports += ["otto.menubar", "otto.server.app", "otto.webview", "uvicorn.logging",
                   "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
                   "uvicorn.lifespan.on"]
 
-# The voice stack runs torch-free (ctranslate2 for Whisper, onnxruntime for VAD via
-# silero_use_onnx=True), so torch and friends are dead weight — excluding them drops ~1 GB.
-EXCLUDES = ["torch", "torchaudio", "torchvision", "tensorboard", "triton",
+# In-app dashboard window (WKWebView) needs the WebKit PyObjC bridge collected.
+for pkg in ["WebKit", "Cocoa", "objc"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d; binaries += b; hiddenimports += h
+    except Exception as e:
+        print(f"[orrin.spec] skip {pkg}: {e}")
+
+# torch CANNOT be excluded: RealtimeSTT imports it at module scope
+# (RealtimeSTT/core/initialization.py:13), so dropping it makes `from RealtimeSTT import
+# AudioToTextRecorder` raise ImportError and kills voice input in the bundle entirely.
+# silero_use_onnx=True picks the VAD backend; it does not remove the import. torchaudio comes
+# with it because silero_vad/utils_vad.py imports it. This costs ~1 GB — measure before
+# trying to shave it again, and smoke-test the built bundle's imports.
+EXCLUDES = ["torchvision", "tensorboard", "triton",
             "matplotlib", "scipy.spatial.cKDTree"]
 
 a = Analysis(
@@ -58,12 +70,15 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Orrin",
         "CFBundleDisplayName": "Orrin",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": "0.2.0",
+        "CFBundleVersion": "0.2.0",
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,                     # menu-bar agent: no Dock icon
         "NSMicrophoneUsageDescription":
             "Orrin listens to your voice when you talk to it.",
         "NSHighResolutionCapable": True,
+        # The in-app dashboard (WKWebView) loads the local server over http://127.0.0.1 —
+        # allow loopback/local networking under App Transport Security.
+        "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
     },
 )

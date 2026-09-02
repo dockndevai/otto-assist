@@ -8,7 +8,7 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
-import html as _html
+import os
 import random
 import re
 import subprocess
@@ -16,25 +16,12 @@ import sys
 from typing import Any
 
 
-def _answer_card(question: str, answer: str) -> str:
-    """A clean dark card shown on the canvas when the model didn't render its own visual."""
-    q, a = _html.escape(question), _html.escape(answer)
-    return (
-        '<!doctype html><meta charset="utf-8">'
-        "<style>body{margin:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
-        "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:6vh 8vw;"
-        "background:radial-gradient(800px 500px at 20% 0%,rgba(34,211,238,.10),transparent),#0a0f1c;color:#e6ecf6}"
-        ".card{max-width:820px}.q{font-size:14px;letter-spacing:1px;text-transform:uppercase;"
-        "color:#22d3ee;margin-bottom:16px}.a{font-size:30px;line-height:1.5;font-weight:400}</style>"
-        f'<div class="card"><div class="q">{q}</div><div class="a">{a}</div></div>'
-    )
-
 from . import sessions
-from .brain.agent import ClaudeBrain
 from .brain.base import Brain
 from .config import OTTO_HOME, Settings, save_config
 from .history import History
 from .server.events import EventBus
+from .workspace import Workspace
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
@@ -112,20 +99,20 @@ class Orchestrator:
         self.bus = bus
         self.history = History(OTTO_HOME / "history.jsonl")
         bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
-        self.current_project = str(settings.project_path)
-        # Chat (Claude session) binding intent, consumed by _make_brain():
-        #   _pending_resume=<id> -> attach to that chat; _pending_new=True -> a fresh chat.
-        # On startup, reopen this project's last-used chat (if we recorded one).
-        self._pending_resume: str | None = settings.brain.sessions.get(self.current_project)
-        self._pending_new: bool = False
-        self.brain: Brain = self._make_brain()
-        self._active_session: str | None = getattr(self.brain, "session_id", None)
+        # Parallel workspaces: a bounded pool of projects, each running its own Claude
+        # (its own subprocess), one of them focused. Only the focused workspace streams to
+        # the screen and speaks; background ones run headless and notify when they finish.
+        self.max_workspaces = 3
+        self.focused: str = str(settings.project_path)
+        self.workspaces: dict[str, Workspace] = {
+            self.focused: Workspace(self, settings, self.focused,
+                                    resume=settings.brain.sessions.get(self.focused)),
+        }
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
         self._eff = None        # EfficientWord-Net custom wake-word listener
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._turn_lock = asyncio.Lock()
         self._pending_answer: asyncio.Future[str] | None = None
         self._speech_buf = ""
         self._speaking = False
@@ -137,19 +124,28 @@ class Orchestrator:
         self._awaiting_command = False
         self._await_handle = None
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
-        self._canvas_this_turn = False   # did the model render to the canvas this turn?
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
         self._ptt_handle = None
 
-    def _make_brain(self) -> Brain:
-        # Only Claude today; the Brain protocol lets other agents drop in later.
-        # Consume the pending chat-binding intent, then reset it to the default (continue).
-        brain = ClaudeBrain(self, self.settings,
-                            resume=self._pending_resume, new_chat=self._pending_new)
-        self._pending_resume = None
-        self._pending_new = False
-        return brain
+    # -- workspace pool accessors -----------------------------------------
+    # Most existing code operates on the *focused* workspace; these keep that code
+    # (and the REST/menu-bar callers) working unchanged while the pool holds several.
+    @property
+    def focused_ws(self) -> Workspace:
+        return self.workspaces[self.focused]
+
+    @property
+    def brain(self) -> Brain:
+        return self.focused_ws.brain
+
+    @property
+    def current_project(self) -> str:
+        return self.focused
+
+    @property
+    def _active_session(self) -> str | None:
+        return self.focused_ws.session_id
 
     def _status(self, state: str, text: str = "") -> None:
         self.state = state
@@ -232,36 +228,151 @@ class Orchestrator:
             self._ptt.stop()
         if self._eff:
             self._eff.stop()
-        await self.brain.disconnect()
+        for ws in list(self.workspaces.values()):
+            await ws.brain.disconnect()
 
     def _publish_project(self) -> None:
         self.bus.publish({"type": "project", "path": self.current_project,
                           "name": self.current_project.rstrip("/").split("/")[-1]})
+        self._publish_workspaces()
 
-    async def switch_project(self, path: str) -> None:
-        """Re-bind the brain to another project directory, reopening its last-used chat."""
+    def _publish_workspaces(self) -> None:
+        """Broadcast the live pool so the dashboard can show every workspace + its state."""
+        items = [{"project": ws.project, "name": ws.name, "state": ws.state,
+                  "focused": ws.project == self.focused,
+                  "session_id": ws.session_id}
+                 for ws in self.workspaces.values()]
+        self.bus.publish({"type": "workspaces", "items": items,
+                          "focused": self.focused, "max": self.max_workspaces})
+
+    # -- workspace pool (parallel projects) --------------------------------
+    async def open_workspace(self, path: str, *, focus: bool = True) -> Workspace | None:
+        """Open a project as a live workspace (its own Claude), optionally focusing it.
+
+        Keeps any already-open workspaces running. Capped at ``max_workspaces``.
+        """
         from pathlib import Path
         p = str(Path(path).expanduser())
-        if p == self.current_project:
+        if p in self.workspaces:
+            if focus:
+                self.focus_workspace(p)
+            return self.workspaces[p]
+        if len(self.workspaces) >= self.max_workspaces:
+            await self.say(f"I can run up to {self.max_workspaces} workspaces at once. "
+                           "Close one first.")
+            return None
+        self._status("thinking", f"Opening {Path(p).name}…")
+        ws = Workspace(self, self.settings, p,
+                       resume=self.settings.brain.sessions.get(p))
+        await ws.brain.connect()
+        self.workspaces[p] = ws
+        if focus:
+            self.focus_workspace(p)
+        else:
+            self._publish_workspaces()
+            self._status("idle", "Ready")
+        return ws
+
+    def focus_workspace(self, path: str) -> None:
+        """Make an open workspace the focused one — it now streams to the screen + voice."""
+        from pathlib import Path
+        if path not in self.workspaces:
             return
-        self._status("thinking", f"Switching to {Path(p).name}…")
-        await self.brain.disconnect()
-        self.settings.brain.project_dir = p
-        self.current_project = p
-        # Reopen the chat we were last in for this project (else continue-latest).
-        self._pending_resume = self.settings.brain.sessions.get(p)
-        self.brain = self._make_brain()
-        await self.brain.connect()
-        self._active_session = getattr(self.brain, "session_id", None)
-        # Remember the choice for next launch.
+        self.focused = path
         try:
-            self._persist_project(p)
+            self.settings.brain.project_dir = path
+            self._persist_project(path)
         except Exception:
             pass
         self._publish_project()
         self._publish_session()
-        self._status("idle", f"Ready · {Path(p).name}")
-        await self.say(f"Switched to {Path(p).name}.")
+        # Re-show whatever this workspace last drew, so the canvas reflects the focus.
+        ws = self.workspaces[path]
+        if ws.last_canvas:
+            self.bus.canvas(ws.last_canvas, "html", ws=path)
+        self._status("idle", f"Ready · {Path(path).name}")
+
+    async def close_workspace(self, path: str) -> None:
+        """Shut down a workspace's Claude and drop it from the pool."""
+        ws = self.workspaces.pop(path, None)
+        if ws is None:
+            return
+        try:
+            await ws.brain.disconnect()
+        except Exception:
+            pass
+        if self.focused == path:
+            # Focus whatever remains (or reopen the default project if the pool emptied).
+            if self.workspaces:
+                self.focus_workspace(next(iter(self.workspaces)))
+            else:
+                await self.open_workspace(str(self.settings.project_path), focus=True)
+        else:
+            self._publish_workspaces()
+
+    # Base directory for repos Otto clones itself (override with OTTO_WORKSPACES_DIR).
+    def _workspaces_dir(self):
+        from pathlib import Path
+        return Path(os.environ.get("OTTO_WORKSPACES_DIR",
+                                   str(Path.home() / "otto-workspaces"))).expanduser()
+
+    async def clone_workspace(self, url: str, branch: str | None = None) -> Workspace | None:
+        """Clone a git repo into a fresh directory and open it as a focused workspace —
+        Otto making its own code space to work in. Reuses an existing clone of the same URL."""
+        from pathlib import Path
+        url = (url or "").strip().rstrip("/")
+        if not re.match(r"^(https?://|git@)", url):
+            await self.say("I can only clone http(s) or git URLs.")
+            return None
+        name = re.sub(r"\.git$", "", url.split("/")[-1]) or "repo"
+        base = self._workspaces_dir()
+        target = base / name
+        tstr = str(target)
+        if tstr in self.workspaces:            # already open — just focus it
+            self.focus_workspace(tstr)
+            return self.workspaces[tstr]
+        if len(self.workspaces) >= self.max_workspaces:
+            await self.say(f"I can run up to {self.max_workspaces} workspaces at once. "
+                           "Close one first.")
+            return None
+        if (target / ".git").exists():         # already cloned before — reuse it
+            await self.say(f"{name} is already cloned — opening it.")
+            return await self.open_workspace(tstr, focus=True)
+        self._status("thinking", f"Cloning {name}…")
+        await self.say(f"Cloning {name}…")
+        base.mkdir(parents=True, exist_ok=True)
+        args = ["git", "clone", "--depth", "1"]
+        if branch:
+            args += ["--branch", branch]
+        args += ["--", url, tstr]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                msg = (out or b"").decode(errors="replace").strip().splitlines()[-1:] or ["git clone failed"]
+                self.notify("Clone failed", msg[0][:160])
+                await self.say(f"Cloning {name} failed. {msg[0][:120]}")
+                self._status("idle", "Ready")
+                return None
+        except Exception as e:
+            await self.say(f"Cloning {name} failed: {e}")
+            self._status("idle", "Ready")
+            return None
+        ws = await self.open_workspace(tstr, focus=True)
+        if ws is not None:
+            await self.say(f"{name} is ready — I'm in it now.")
+        return ws
+
+    async def switch_project(self, path: str) -> None:
+        """Focus another project, keeping any parallel workspaces alive. Unlike opening a
+        parallel workspace, *switching* always succeeds: at the cap it swaps out the
+        currently-focused workspace rather than refusing."""
+        from pathlib import Path
+        p = str(Path(path).expanduser())
+        if p not in self.workspaces and len(self.workspaces) >= self.max_workspaces:
+            await self.close_workspace(self.focused)
+        await self.open_workspace(p, focus=True)
 
     def _persist_project(self, path: str) -> None:
         import yaml
@@ -298,18 +409,16 @@ class Orchestrator:
         save_config(data)
 
     async def switch_session(self, session_id: str) -> None:
-        """Re-bind the brain to a specific chat (session) in the current project."""
+        """Re-bind the focused workspace to a specific chat (session) in its project."""
         session_id = (session_id or "").strip()
         if not session_id or session_id == (self._active_session or ""):
             return
+        ws = self.focused_ws
         self._status("thinking", "Switching chat…")
-        await self.brain.disconnect()
-        self._pending_resume = session_id
-        self.brain = self._make_brain()
-        await self.brain.connect()
-        self._active_session = session_id
+        async with ws.lock:                 # don't swap the brain mid-turn (or let a turn
+            await ws.rebind(self.settings, resume=session_id)   # race the swap)
         try:
-            self._persist_session(self.current_project, session_id)
+            self._persist_session(ws.project, session_id)
         except Exception:
             pass
         self._publish_session()
@@ -317,14 +426,12 @@ class Orchestrator:
         await self.say("Switched chats.")
 
     async def new_chat(self) -> None:
-        """Start a fresh chat in the current project (a new Claude session)."""
+        """Start a fresh chat in the focused workspace's project (a new Claude session)."""
+        ws = self.focused_ws
         self._status("thinking", "Starting a new chat…")
-        await self.brain.disconnect()
-        self._pending_new = True
-        self.brain = self._make_brain()
-        await self.brain.connect()
-        # The id isn't minted until the first turn completes; _handle_turn will persist it.
-        self._active_session = None
+        async with ws.lock:                 # serialize with turns so a command fired right
+            await ws.rebind(self.settings, new_chat=True)   # after lands on the NEW chat
+        # The id isn't minted until the first turn completes; _run_turn will persist it.
         self._publish_session()
         self._status("idle", "Ready")
         await self.say("Started a new chat.")
@@ -353,6 +460,25 @@ class Orchestrator:
         r"^switch\s+(?:to\s+)?(?:the\s+)?(?P<name>.+?)\s+chat\.?$", re.I)
     _RE_RENAME_CHAT = re.compile(
         r"^rename\s+(?:this\s+|the\s+|current\s+)?chat\s+to\s+(?P<title>.+?)\.?$", re.I)
+    # "in <name>, <command>" / "in the <name> workspace: <command>" — target another workspace.
+    _RE_TARGET = re.compile(
+        r"^in\s+(?:the\s+)?(?P<name>.+?)(?:\s+workspace)?\s*[,:]\s*(?P<cmd>.+)$", re.I)
+    # "clone <url> [branch <b>]" / "set up a workspace from <url>" — Otto makes its own code space.
+    _RE_CLONE = re.compile(
+        r"^(?:clone|check\s?out|set\s*up|open|create)\s+(?:a\s+)?(?:new\s+)?(?:workspace\s+"
+        r"(?:from|for)\s+|repo(?:sitory)?\s+|the\s+repo(?:sitory)?\s+)?"
+        r"(?P<url>(?:https?://|git@)\S+?)(?:\.git)?/?"
+        r"(?:\s+(?:on\s+|from\s+|using\s+)?branch\s+(?P<branch>[\w./-]+))?\.?$", re.I)
+
+    def _maybe_clone_command(self, text: str) -> bool:
+        """If `text` asks to clone a repo into a new workspace, do it. Returns True if consumed."""
+        m = self._RE_CLONE.match(text.strip())
+        if not m:
+            return False
+        assert self._loop is not None
+        self.bus.transcript("user", text, final=True)
+        self._loop.create_task(self.clone_workspace(m.group("url"), m.group("branch")))
+        return True
 
     def _maybe_chat_command(self, text: str) -> bool:
         """If `text` is a chat command, act on it and return True (input consumed)."""
@@ -388,6 +514,44 @@ class Orchestrator:
             return
         await self.switch_session(matches[0].session_id)
 
+    def _resolve_workspace_name(self, name: str) -> str | None:
+        """Map a spoken workspace name to a project path: an open workspace first, then a
+        known project. Returns the project path, or None if nothing matches."""
+        needle = name.lower().strip()
+        for ws in self.workspaces.values():
+            if needle in ws.name.lower():
+                return ws.project
+        try:
+            from .projects import list_projects
+            for p in list_projects(current=self.focused,
+                                   pinned=self.settings.brain.projects):
+                if needle in p.name.lower():
+                    return p.path
+        except Exception:
+            pass
+        return None
+
+    async def _targeted_turn(self, name: str, cmd: str, original: str) -> None:
+        """Run a command in the named workspace (opening it if needed), in the background.
+
+        If the name doesn't resolve to a workspace, this wasn't really targeting — treat the
+        whole utterance as a normal command in the focused workspace.
+        """
+        path = self._resolve_workspace_name(name)
+        if not path:
+            await self._run_turn(self.focused_ws, original)
+            return
+        ws = self.workspaces.get(path)
+        if ws is None:
+            ws = await self.open_workspace(path, focus=False)
+            if ws is None:
+                return   # pool full — open_workspace already explained
+        if ws.project == self.focused:
+            await self._run_turn(ws, cmd)          # _run_turn echoes the focused command
+        else:
+            self.bus.transcript("user", original, final=True)   # show it before it runs quietly
+            await self._run_turn(ws, cmd)
+
     # -- input routing -----------------------------------------------------
     def submit_user_input(self, text: str) -> None:
         """Entry point for both typed and spoken input."""
@@ -408,7 +572,18 @@ class Orchestrator:
         # Handled here — before the brain turn — because switching rebuilds the brain.
         if self._maybe_chat_command(text):
             return
+        # "clone <url>" — Otto sets up a new code space (clone → open as a workspace).
+        if self._maybe_clone_command(text):
+            return
         assert self._loop is not None
+        # Workspace targeting: "in <name>, <command>" runs the command in another workspace
+        # (opening it if needed), concurrently, in the background. Only the focused workspace
+        # streams to the screen + voice; a background one works silently and notifies on done.
+        m = self._RE_TARGET.match(text)
+        if m:
+            self._loop.create_task(self._targeted_turn(
+                m.group("name").strip(), m.group("cmd").strip(), text))
+            return
         self._loop.create_task(self._handle_turn(text))
 
     def _run_demo(self) -> None:
@@ -589,68 +764,77 @@ class Orchestrator:
 
     # -- the turn ----------------------------------------------------------
     async def _handle_turn(self, text: str) -> None:
-        async with self._turn_lock:
-            print(f"[otto] turn -> brain: {text!r}", file=sys.stderr, flush=True)
-            self.bus.transcript("user", text, final=True)
-            self._status("thinking", "Thinking…")
-            self._speech_buf = ""
+        """Run a turn in the focused workspace (compat entry point)."""
+        await self._run_turn(self.focused_ws, text)
+
+    async def _run_turn(self, ws: Workspace, text: str) -> None:
+        """Run one turn for a workspace. Different workspaces run concurrently (per-workspace
+        lock). EVERY workspace streams its real work — the user's turn, tool calls, and reply —
+        to its OWN chat window in the dashboard (events tagged with the workspace). Only the
+        *focused* workspace is spoken aloud; the others work in the background and post a
+        completion notification when done. This mirrors having several Claude windows open."""
+        async with ws.lock:
+            p = ws.project
+            focused = p == self.focused
+            print(f"[otto] turn -> {ws.name} (focused={focused}): {text!r}",
+                  file=sys.stderr, flush=True)
+            self.bus.transcript("user", text, final=True, ws=p)   # show it in this window
+            if focused:
+                self._status("thinking", "Thinking…")
+                self._speech_buf = ""
+            ws.state = "thinking"
+            self._publish_workspaces()
             assistant_text = ""
-            acknowledged = False
-            self._canvas_this_turn = False
             try:
-                async for ev in self.brain.send(text):
+                async for ev in ws.brain.send(text):
+                    live = p == self.focused   # focus can change mid-turn
                     if ev["type"] == "delta":
                         chunk = ev["text"]
                         assistant_text += chunk
-                        self.bus.assistant_delta(chunk)
-                        self._feed_speech(chunk)
-                        acknowledged = True
-                        self._status("speaking", "Speaking…")
+                        self.bus.assistant_delta(chunk, ws=p)     # into this window
+                        if live:
+                            self._feed_speech(chunk)              # ...but only speak the focused
+                            self._status("speaking", "Speaking…")
+                        ws.state = "speaking"
                     elif ev["type"] == "tool_use":
-                        # Acknowledge out loud before going quiet into a tool, so the user
-                        # always hears Otto is on it (unless it already said something).
-                        if not acknowledged:
-                            self._acknowledge()
-                            acknowledged = True
-                        self._announce_tool(ev["name"], ev.get("detail", ""))
+                        ws.state = "working"
+                        # The tool call itself IS the visible work — show it in the window
+                        # (that's the "chat window" feel). No spoken narration of tools.
+                        self._announce_tool(ev["name"], ev.get("detail", ""), ws=p)
+                        if live:
+                            self._status("working", ev["name"])
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
                             self.bus.notify(
                                 "Brain error",
-                                ev.get("error_text") or "The model returned an error.",
-                            )
-                        # A brand-new chat learns its id here (first completed turn); record
-                        # it so the chat is remembered and the HUD shows its title.
-                        sid = ev.get("session_id")
-                        if sid and sid != self._active_session:
-                            self._active_session = sid
+                                ev.get("error_text") or "The model returned an error.")
+                        sid = ev.get("session_id")   # a new chat mints its id on turn 1
+                        if sid:
                             try:
-                                self._persist_session(self.current_project, sid)
+                                self._persist_session(p, sid)
                             except Exception:
                                 pass
-                            self._publish_session()
+                            if p == self.focused:
+                                self._publish_session()
             except Exception as e:
-                print(f"[otto] turn error: {e!r}", file=sys.stderr, flush=True)
+                print(f"[otto] turn error ({ws.name}): {e!r}", file=sys.stderr, flush=True)
                 self.bus.notify("Error", str(e))
             finally:
-                print(f"[otto] turn done, reply len={len(assistant_text)}",
+                reply = assistant_text.strip()
+                print(f"[otto] turn done ({ws.name}), reply len={len(reply)}",
                       file=sys.stderr, flush=True)
-                self._flush_speech()
-                if assistant_text.strip():
-                    self.bus.transcript("assistant", assistant_text.strip(), final=True)
-                    # Guarantee the canvas reflects the answer: if the model didn't render
-                    # a visual this turn, show the reply as a clean card.
-                    if not self._canvas_this_turn:
-                        self.render_canvas(_answer_card(text, assistant_text.strip()))
-                self._status("idle", "Ready")
-
-    def _acknowledge(self) -> None:
-        """Speak a brief filler when Otto starts working, so it's never silent."""
-        import random
-        line = random.choice(["On it.", "One sec.", "Let me check.", "Sure, checking now."])
-        self.bus.assistant_delta(line + " ")
-        if self.mouth and not self.voice_muted:
-            self.mouth.speak(line)
+                ws.state = "idle"
+                ws.last_reply = reply
+                if reply:
+                    self.bus.transcript("assistant", reply, final=True, ws=p)
+                if focused:
+                    self._flush_speech()
+                    self._status("idle", "Ready")
+                else:
+                    # Background window finished — nudge the user; its chat is there to switch to.
+                    summary = reply.split("\n", 1)[0][:140] if reply else "Done."
+                    self.notify(f"{ws.name} finished", summary)
+                self._publish_workspaces()
 
     def _feed_speech(self, chunk: str) -> None:
         """Buffer deltas and speak whole sentences for natural prosody."""
@@ -670,13 +854,13 @@ class Orchestrator:
             self.mouth.speak(self._speech_buf.strip())
         self._speech_buf = ""
 
-    def _announce_tool(self, name: str, detail: str) -> None:
+    def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":
-            self.bus.tool_use("subagent", detail)
+            self.bus.tool_use("subagent", detail, ws=ws)
         elif name.startswith("mcp__"):
-            self.bus.tool_use(name.split("__")[-1], detail)
+            self.bus.tool_use(name.split("__")[-1], detail, ws=ws)
         else:
-            self.bus.tool_use(name, detail)
+            self.bus.tool_use(name, detail, ws=ws)
 
     # -- AssistantContext (called by the agent's tools) --------------------
     async def say(self, text: str) -> None:
@@ -705,11 +889,55 @@ class Orchestrator:
                    for a in _AFFIRMATIVE)
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:
-        self._canvas_this_turn = True
-        self.bus.canvas(content, fmt)
+        self.focused_ws.last_canvas = content
+        self.bus.canvas(content, fmt, ws=self.focused)
 
     def set_status(self, text: str) -> None:
         self._status("working", text)
+
+    # -- per-workspace routing (called by each workspace's tools via WorkspaceContext) -----
+    # Every workspace streams into its OWN chat window (events tagged with the project); only
+    # the focused workspace is spoken aloud.
+    async def _ws_say(self, project: str, text: str) -> None:
+        ws = self.workspaces.get(project)
+        if ws is not None:
+            ws.last_reply = text
+        self.bus.transcript("assistant", text, final=True, ws=project)
+        if project == self.focused and self.mouth and not self.voice_muted:
+            self.mouth.speak(text)
+
+    def _ws_render(self, project: str, content: str, fmt: str = "html") -> None:
+        ws = self.workspaces.get(project)
+        if ws is not None:
+            ws.last_canvas = content
+        self.bus.canvas(content, fmt, ws=project)
+
+    def _ws_set_status(self, project: str, text: str) -> None:
+        ws = self.workspaces.get(project)
+        if ws is not None:
+            ws.state = "working"
+        if project == self.focused:
+            self._status("working", text)
+        else:
+            self._publish_workspaces()
+
+    async def _ws_ask_user(self, project: str, question: str) -> str:
+        if project == self.focused:
+            return await self.ask_user(question)
+        name = self.workspaces[project].name if project in self.workspaces else project
+        self.notify(f"{name} needs your input", question)
+        return ("The user isn't watching this workspace right now. If you can proceed with a "
+                "sensible default, do so; otherwise stop and leave this for when they focus it.")
+
+    async def _ws_confirm(self, project: str, action: str) -> bool:
+        if project == self.focused:
+            return await self.confirm(action)
+        # A background workspace can't get a spoken yes/no — decline and flag it. (With the
+        # permission setting on "auto", this path isn't reached; consequential actions there
+        # are auto-approved, so background workspaces run fully unattended.)
+        name = self.workspaces[project].name if project in self.workspaces else project
+        self.notify(f"{name} needs approval", f"It wants to {action}. Focus it to approve.")
+        return False
 
     def notify(self, title: str, body: str = "") -> None:
         self.bus.notify(title, body)
