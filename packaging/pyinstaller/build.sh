@@ -84,9 +84,12 @@ hdiutil detach "/Volumes/$VOL" 2>/dev/null || true
 hdiutil attach -readwrite -noverify -noautoopen "$RW" >/dev/null
 
 echo "==> Arranging the installer window (Finder)"
-# Needs Automation permission for the terminal to control Finder; if it is denied the
-# layout is skipped and the DMG still works, just without the background.
-osascript <<'AS' || echo "    Finder layout skipped (grant Automation -> Finder to enable)"
+# Needs Automation permission for the terminal to control Finder. If it is DENIED the script
+# gets a non-zero exit and skips; but if the TCC prompt is never answered (headless / CI /
+# background build) the Apple event BLOCKS forever, hanging the build. Bound it with a hard
+# 25s timeout (perl alarm) so it degrades to "skipped" — the DMG still ships with the
+# /Applications symlink, just without the arranged background.
+perl -e 'alarm 25; exec @ARGV' osascript <<'AS' || echo "    Finder layout skipped (Automation->Finder not granted; DMG still has the /Applications symlink)"
 tell application "Finder"
   tell disk "Orrin"
     open
@@ -108,7 +111,8 @@ tell application "Finder"
 end tell
 AS
 sync
-hdiutil detach "/Volumes/$VOL" >/dev/null
+# Detach may need a retry if a (possibly timed-out) Finder still holds the volume.
+hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1 || { sleep 2; hdiutil detach "/Volumes/$VOL" -force >/dev/null 2>&1 || true; }
 hdiutil convert "$RW" -format UDZO -ov -o "$DMG"
 rm -f "$RW"
 
