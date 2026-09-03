@@ -94,6 +94,43 @@ def request_mic_access(timeout: float = 90.0) -> str:
     return mic_authorization_status()
 
 
+def request_mic_access_async(callback) -> None:
+    """Fire the microphone prompt WITHOUT blocking; call ``callback(granted: bool)`` when the
+    user responds (or immediately if already decided).
+
+    Must be called on the app's **main thread with an active run loop** (the menu-bar/AppKit
+    thread) — that's the only context where macOS will actually present the prompt for a
+    menu-bar agent, and where the resulting grant is real. Calling AVFoundation's request from a
+    background worker thread instead resolves to a *false* "authorized" with no UI and leaves
+    capture denied. The main app must hold the grant so the recorder child (a re-exec of the
+    same signed binary, which TCC won't prompt for on its own) inherits it.
+    """
+    if not _IS_MAC:
+        callback(False)
+        return
+    try:
+        import AVFoundation  # type: ignore
+        st = mic_authorization_status()
+        if st == "authorized":
+            callback(True)
+            return
+        if st in ("denied", "restricted"):
+            callback(False)
+            return
+
+        def _handler(granted: bool) -> None:      # block: void(^)(BOOL)
+            try:
+                callback(bool(granted))
+            except Exception:
+                pass
+
+        AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            AVFoundation.AVMediaTypeAudio, _handler)
+    except Exception as e:
+        print(f"[otto] async mic request failed: {e}", file=sys.stderr, flush=True)
+        callback(False)
+
+
 def accessibility_trusted() -> bool:
     """Is this process trusted for Accessibility (needed for the global PTT hotkey)?"""
     if not _IS_MAC:

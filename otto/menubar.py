@@ -97,6 +97,7 @@ class OttoApp(rumps.App):
             rumps.MenuItem("Quit Otto", callback=self.quit_app),
         ]
         self._proj_tick = 0
+        self._mic_asked = False    # one-shot: request mic on the main thread once booted
         self._refresh_projects()
         self._refresh_workspaces()
         self._refresh_chats()
@@ -251,12 +252,34 @@ class OttoApp(rumps.App):
         except Exception:
             if not self._has_icon:
                 self.title = "Otto"
+        # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
+        # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
+        # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
+        # its own prompt. When the user answers, tell the orchestrator to bring the ears up.
+        if not self._mic_asked and self._loop is not None:
+            self._mic_asked = True
+            self._ask_microphone()
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
             self._refresh_projects()
             self._refresh_workspaces()
             self._refresh_chats()
+
+    def _ask_microphone(self) -> None:
+        """Fire the macOS mic prompt from the main thread; hand the result to the orchestrator."""
+        if not self.settings.voice.input_enabled:
+            return
+        try:
+            from .preflight import request_mic_access_async
+
+            def _cb(granted: bool) -> None:
+                if self._loop is not None:
+                    self._loop.call_soon_threadsafe(
+                        lambda: self.orch.on_mic_decision(granted))
+            request_mic_access_async(_cb)
+        except Exception as e:
+            print(f"[otto] mic request error: {e}", file=sys.stderr, flush=True)
 
     def talk(self, _) -> None:
         if self._loop is not None:

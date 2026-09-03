@@ -174,23 +174,25 @@ class Orchestrator:
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
 
-        # Microphone. Start the ears UNLESS macOS is explicitly blocking the mic. Do NOT call
-        # AVFoundation's requestAccessForMediaType here: in a menu-bar agent app (LSUIElement,
-        # no Dock icon) on a background thread it resolves an undecided permission to a *false*
-        # "authorized" with no UI — which suppresses the real prompt AND leaves capture denied.
-        # The reliable trigger is the recorder itself opening the input device: that makes macOS
-        # show its own microphone prompt when access is undecided. So just start the ears and let
-        # CoreAudio do the asking. Only "denied"/"restricted" is a hard stop.
+        # Microphone. The recorder runs in a multiprocessing CHILD (a re-exec of the signed
+        # binary) that TCC will NOT prompt for on its own — so the MAIN app must hold the grant
+        # and the child inherits it. The menu-bar (AppKit main thread) asks for it via
+        # on_mic_decision(); we only start the ears once we have access. If it's already granted
+        # we start immediately; if it's undecided we wait for the prompt result; if it's blocked
+        # we say so. (The mic prompt only renders from the main run loop, which is why the ask
+        # lives in the menu-bar, not here on the backend thread.)
         if v.input_enabled:
             from . import preflight
-            if preflight.mic_authorization_status() in ("denied", "restricted"):
+            st = preflight.mic_authorization_status()
+            if st == "authorized":
+                self._start_ears()
+            elif st in ("denied", "restricted"):
                 self.ears = None
                 self.bus.notify(
                     "Microphone blocked",
                     "Enable Orrin under System Settings → Privacy & Security → Microphone, "
                     "then click Recheck.")
-            else:
-                self._start_ears()      # recorder opening the mic triggers the OS prompt if undecided
+            # notDetermined/unknown: wait for the menu-bar's main-thread prompt (on_mic_decision).
 
         self._publish_project()
         self._publish_session()
@@ -200,8 +202,28 @@ class Orchestrator:
         self._status("idle", "Ready")
         self._loop.create_task(self.run_preflight(request=False))
 
+    def on_mic_decision(self, granted: bool) -> None:
+        """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
+        grant in hand the recorder child can open the input device, so start the ears now."""
+        if not self.settings.voice.input_enabled:
+            return
+        if granted:
+            if self.ears is None:
+                self._start_ears()
+        else:
+            self.ears = None
+            self.bus.notify(
+                "Microphone blocked",
+                "Enable Orrin under System Settings → Privacy & Security → Microphone, "
+                "then click Recheck.")
+        # Reflect the new mic state (and readiness) in the dashboard panel.
+        if self._loop is not None:
+            self._loop.create_task(self.run_preflight())
+
     def _start_ears(self) -> None:
-        """Bring up the ears (+ optional wake-word listener / push-to-talk hotkey)."""
+        """Bring up the ears (+ optional wake-word listener / push-to-talk hotkey). Idempotent."""
+        if self.ears is not None:
+            return
         v = self.settings.voice
         try:
             from .voice.stt import Ears
