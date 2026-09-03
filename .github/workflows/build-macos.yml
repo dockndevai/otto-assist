@@ -65,6 +65,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release view "$TAG" >/dev/null 2>&1 \
-            && gh release upload "$TAG" dist/Orrin.dmg --clobber \
-            || gh release create "$TAG" dist/Orrin.dmg --title "Orrin $TAG" --notes "Automated build from CI."
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "Orrin.dmg"; then
+            echo "Release $TAG already has Orrin.dmg (e.g. a local build with the Finder-arranged window) — leaving it."
+          elif gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/Orrin.dmg
+          else
+            gh release create "$TAG" dist/Orrin.dmg --title "Orrin $TAG" --notes "Automated build from CI."
+          fi
