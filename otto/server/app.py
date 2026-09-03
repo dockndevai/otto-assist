@@ -149,6 +149,25 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.rename_chat(title))
         return JSONResponse({"ok": True})
 
+    # -- preflight / readiness (first-run permissions + health check) ------
+    @app.get("/api/preflight")
+    async def get_preflight() -> JSONResponse:
+        return JSONResponse({
+            "checks": [c.as_dict() for c in orch.preflight_checks],
+            "ready": orch.ready,
+        })
+
+    @app.post("/api/preflight/recheck")
+    async def recheck_preflight() -> JSONResponse:
+        asyncio.create_task(orch.run_preflight(request=True))
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/system/open-pane")
+    async def open_pane(payload: dict) -> JSONResponse:
+        which = payload.get("pane", "")
+        ok = orch.open_privacy_pane(which)
+        return JSONResponse({"ok": ok})
+
     # -- event stream ------------------------------------------------------
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
@@ -166,6 +185,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         orch._publish_project()
         orch._publish_session()
         orch._publish_workspaces()
+        # Show the setup/health panel state (mic, Claude test run, …) to a fresh page.
+        if orch.preflight_checks:
+            orch._publish_preflight(done=orch.preflight_done)
         # Replay recent log lines so the Logs drawer isn't empty on a fresh page.
         for ev in list(log_buffer):
             await websocket.send_json(ev)
@@ -201,6 +223,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                 elif data.get("type") == "clone_workspace":
                     asyncio.create_task(orch.clone_workspace(
                         data.get("url", ""), data.get("branch")))
+                elif data.get("type") == "recheck":
+                    asyncio.create_task(orch.run_preflight(request=True))
+                elif data.get("type") == "open_pane":
+                    orch.open_privacy_pane(data.get("pane", ""))
         except WebSocketDisconnect:
             pass
         finally:

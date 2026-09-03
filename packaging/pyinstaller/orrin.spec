@@ -31,8 +31,10 @@ hiddenimports += ["otto.menubar", "otto.server.app", "otto.webview", "uvicorn.lo
                   "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
                   "uvicorn.lifespan.on"]
 
-# In-app dashboard window (WKWebView) needs the WebKit PyObjC bridge collected.
-for pkg in ["WebKit", "Cocoa", "objc"]:
+# In-app dashboard window (WKWebView) needs the WebKit PyObjC bridge; the first-run preflight
+# needs AVFoundation (microphone permission) + ApplicationServices/Quartz (Accessibility).
+for pkg in ["WebKit", "Cocoa", "objc", "AVFoundation", "CoreMedia",
+            "Quartz", "ApplicationServices", "HIServices"]:
     try:
         d, b, h = collect_all(pkg)
         datas += d; binaries += b; hiddenimports += h
