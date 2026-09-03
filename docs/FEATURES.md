@@ -58,6 +58,15 @@ several projects at once, each as its own chat.
 - Otto can **ask you a question** mid-task (`ask_user`) and wait for your answer, then act on it —
   a real back-and-forth, by voice or text.
 
+## Setup & health check
+- **First-run permissions** — on launch Otto asks macOS for **microphone** access up front (the
+  system prompt), and only starts listening once it's granted — no more silent "can't hear you".
+- **"Otto ready" panel** — a dashboard checklist that validates everything on every start/restart:
+  Microphone, the **Claude CLI**, a real **Claude test turn** (proves it's installed, logged in and
+  can complete a turn), Voice output, and Accessibility. Each failing item offers **Open Settings**;
+  a **Recheck** button re-runs the checks (and brings the ears up the moment the mic is granted, no
+  restart). A ✓ Ready / ⚠ Setup pill in the HUD shows status at a glance.
+
 ## Menu-bar app
 - Lives in the macOS menu bar (no Dock icon): status, **Talk**, **Open Dashboard**, **Project /
   Workspaces / Chat** switchers, mute mic/voice, Restart, Quit. Auto-starts at login (launchd).

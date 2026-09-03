@@ -16,6 +16,8 @@ subscriber) receives them. Events are plain dicts with a "type" field:
     workspaces          {"items": [{project,name,state,focused,session_id}], "focused": str,
                          "max": int}                  # the parallel-workspace pool
     log                 {"level": str, "logger": str, "msg": str, "ts": float}  # dashboard Logs drawer
+    preflight           {"checks": [{key,label,status,detail,required,fix,pane}],
+                         "ready": bool, "done": bool, "first_run": bool}  # setup/health panel
 """
 
 from __future__ import annotations

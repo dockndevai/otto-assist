@@ -123,6 +123,10 @@ class Orchestrator:
         self.state = "starting"
         self.mic_muted = False
         self.voice_muted = False
+        # First-run permissions + startup/restart health check ("is Otto ready?").
+        self.ready = False
+        self.preflight_done = False
+        self.preflight_checks: list = []
         # Software ("phrase") wake word: await the command after "hey otto".
         self._awaiting_command = False
         self._await_handle = None
@@ -157,6 +161,7 @@ class Orchestrator:
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
+        self._status("starting", "Checking setup…")
         await self.brain.connect()
 
         v = self.settings.voice
@@ -169,54 +174,140 @@ class Orchestrator:
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
 
+        # Microphone permission FIRST. On first run this shows the macOS mic prompt up front
+        # (instead of letting the recorder subprocess trip a silent denial). Only start the
+        # ears once we actually have access — otherwise they can't open the input device and
+        # Otto silently can't hear you. Requesting can block on the prompt, so do it off-loop.
         if v.input_enabled:
-            try:
-                from .voice.stt import Ears
-                self.ears = Ears(
-                    self.settings, self._loop,
-                    on_final=self._on_voice_final,
-                    on_partial=lambda t: self.bus.transcript("user", t, final=False),
-                    on_speech_start=self._on_speech_start,
-                    on_wake=self._on_speech_start,
-                    on_recording_stop=self._on_recording_stop,
-                )
-                self.ears.start()
-                # Global push-to-talk hotkey is opt-in: pynput's macOS input-source calls run
-                # off the main thread and hard-abort (SIGTRAP) in the packaged app, and it needs
-                # Accessibility permission anyway. The dashboard mic button + wake word cover PTT.
-                if self.settings.voice.hotkey.enabled:
-                    from .voice.hotkey import PushToTalk
-                    self._ptt = PushToTalk(
-                        self.settings, self._loop,
-                        on_press=self._on_ptt_press,
-                        on_release=self._on_ptt_release,
-                    )
-                    self._ptt.start()
-            except Exception as e:
+            from . import preflight
+            status = await self._loop.run_in_executor(None, preflight.request_mic_access)
+            if status == "authorized":
+                self._start_ears()
+            else:
                 self.ears = None
-                self.bus.notify("Voice input off", str(e))
-
-            # Custom few-shot wake word (EfficientWord-Net): a separate acoustic listener
-            # that arms capture on detection — reliable, and any phrase the user enrolled.
-            stt = v.stt
-            if stt.wakeword_backend == "efficientword" and stt.eff_reference:
-                try:
-                    from .voice.wakeword_eff import EffWakeWord
-                    slug = "".join(c if c.isalnum() else "_"
-                                   for c in stt.wake_words.lower()).strip("_")
-                    self._eff = EffWakeWord(
-                        reference_file=stt.eff_reference, hotword=slug,
-                        threshold=stt.eff_threshold, loop=self._loop,
-                        on_wake=self._on_eff_wake,
-                    )
-                    self._eff.start()
-                except Exception as e:
-                    self._eff = None
-                    self.bus.notify("Wake word off", f"{type(e).__name__}: {e}")
+                self.bus.notify(
+                    "Microphone not enabled",
+                    "Grant Orrin microphone access in System Settings, then click Recheck.")
 
         self._publish_project()
         self._publish_session()
+        # Usable immediately; the full health check (incl. a real Claude test turn) runs in the
+        # background and flips the dashboard's "Otto ready" panel to green when it passes. This
+        # runs on every start(), so it re-validates on each restart too.
         self._status("idle", "Ready")
+        self._loop.create_task(self.run_preflight(request=False))
+
+    def _start_ears(self) -> None:
+        """Bring up the ears (+ optional wake-word listener / push-to-talk hotkey)."""
+        v = self.settings.voice
+        try:
+            from .voice.stt import Ears
+            self.ears = Ears(
+                self.settings, self._loop,
+                on_final=self._on_voice_final,
+                on_partial=lambda t: self.bus.transcript("user", t, final=False),
+                on_speech_start=self._on_speech_start,
+                on_wake=self._on_speech_start,
+                on_recording_stop=self._on_recording_stop,
+            )
+            self.ears.start()
+            # Global push-to-talk hotkey is opt-in: pynput's macOS input-source calls run
+            # off the main thread and hard-abort (SIGTRAP) in the packaged app, and it needs
+            # Accessibility permission anyway. The dashboard mic button + wake word cover PTT.
+            if v.hotkey.enabled:
+                from .voice.hotkey import PushToTalk
+                self._ptt = PushToTalk(
+                    self.settings, self._loop,
+                    on_press=self._on_ptt_press,
+                    on_release=self._on_ptt_release,
+                )
+                self._ptt.start()
+        except Exception as e:
+            self.ears = None
+            self.bus.notify("Voice input off", str(e))
+
+        # Custom few-shot wake word (EfficientWord-Net): a separate acoustic listener
+        # that arms capture on detection — reliable, and any phrase the user enrolled.
+        stt = v.stt
+        if stt.wakeword_backend == "efficientword" and stt.eff_reference:
+            try:
+                from .voice.wakeword_eff import EffWakeWord
+                slug = "".join(c if c.isalnum() else "_"
+                               for c in stt.wake_words.lower()).strip("_")
+                self._eff = EffWakeWord(
+                    reference_file=stt.eff_reference, hotword=slug,
+                    threshold=stt.eff_threshold, loop=self._loop,
+                    on_wake=self._on_eff_wake,
+                )
+                self._eff.start()
+            except Exception as e:
+                self._eff = None
+                self.bus.notify("Wake word off", f"{type(e).__name__}: {e}")
+
+    # -- preflight / readiness --------------------------------------------
+    def _publish_preflight(self, done: bool) -> None:
+        from . import preflight
+        self.bus.publish({
+            "type": "preflight",
+            "checks": [c.as_dict() for c in self.preflight_checks],
+            "ready": self.ready,
+            "done": done,
+            "first_run": preflight.is_first_run(),
+        })
+
+    async def run_preflight(self, *, request: bool = False) -> None:
+        """Validate everything Otto needs and publish the results, streaming each check as it
+        resolves so the dashboard animates. ``request=True`` also (re-)asks for the mic prompt
+        (used by the dashboard's Recheck button after the user grants access)."""
+        from . import preflight
+        assert self._loop is not None
+        self.preflight_done = False
+        self.preflight_checks = [
+            preflight.Check("microphone", "Microphone access",
+                            required=self.settings.voice.input_enabled, pane="microphone"),
+            preflight.Check("claude_cli", "Claude CLI found"),
+            preflight.Check("claude_test", "Claude connection (test run)"),
+            preflight.Check("voice_output", "Voice output", required=False),
+            preflight.Check("accessibility", "Accessibility (global hotkey)",
+                            required=self.settings.voice.hotkey.enabled, pane="accessibility"),
+        ]
+        self._publish_preflight(done=False)
+
+        if request and self.settings.voice.input_enabled:
+            await self._loop.run_in_executor(None, preflight.request_mic_access)
+
+        def _set(c) -> None:
+            for i, x in enumerate(self.preflight_checks):
+                if x.key == c.key:
+                    self.preflight_checks[i] = c
+                    break
+            self._publish_preflight(done=False)
+
+        _set(preflight.check_microphone(self.settings))
+        _set(preflight.check_claude_cli(self.settings))
+        _set(preflight.check_voice_output(self.settings))
+        _set(preflight.check_accessibility(self.settings))
+        _set(await preflight.check_claude_test(self.settings))   # the slow one, last
+
+        # If the mic is now authorized but the ears never came up (e.g. permission granted
+        # after launch, then Recheck), start them now — no restart needed.
+        if (self.ears is None and self.settings.voice.input_enabled
+                and preflight.mic_authorization_status() == "authorized"):
+            self._start_ears()
+            _set(preflight.check_microphone(self.settings))
+
+        self.ready = preflight.summarize(self.preflight_checks)
+        self.preflight_done = True
+        if self.ready:
+            preflight.mark_setup_complete()
+        self._publish_preflight(done=True)
+
+    def open_privacy_pane(self, which: str) -> bool:
+        from . import preflight
+        if which == "accessibility":
+            preflight.prompt_accessibility()
+            return True
+        return preflight.open_privacy_pane(which)
 
     def _on_eff_wake(self) -> None:
         # Echo guard: the wake listener also hears Otto's own voice through the speaker —
