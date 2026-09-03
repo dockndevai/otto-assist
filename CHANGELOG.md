@@ -3,7 +3,7 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
-## Unreleased
+## v0.2.4 — 2026-09-03
 
 **Setup & reliability**
 - **First-run permissions + "Otto ready" health check** — on launch Otto now *asks* macOS for
