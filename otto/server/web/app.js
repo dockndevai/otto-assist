@@ -107,6 +107,7 @@ function handle(ev) {
     case "ask_user": $("input").focus(); return;
     case "project": setFocused(ev.path, ev.name || ev.path); return;
     case "workspaces": setFocused(ev.focused); renderWorkspaces(ev.items || [], ev.focused, ev.max); return;
+    case "log": ingestLog(ev); return;
     case "session": {
       const el = $("chat"); if (el) el.textContent = "💬 " + (ev.title || "New chat");
       if (appEl.classList.contains("chats-open")) loadSessions();
@@ -189,6 +190,39 @@ function renderWorkspaces(items, focused, max) {
   });
 }
 
+// ---- Logs drawer (warnings/errors + Otto diagnostics, for debugging failures) ----
+function fmtLogTime(ts) {
+  const d = ts ? new Date(ts * 1000) : new Date();
+  return d.toLocaleTimeString([], { hour12: false });
+}
+function ingestLog(ev) {
+  const list = $("logList"); if (!list) return;
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  const row = document.createElement("div");
+  row.className = "logline " + (ev.level || "info");
+  const t = document.createElement("span"); t.className = "lt"; t.textContent = fmtLogTime(ev.ts);
+  const lv = document.createElement("span"); lv.className = "lv"; lv.textContent = (ev.level || "info").toUpperCase();
+  const m = document.createElement("span"); m.className = "lm";
+  m.textContent = (ev.logger && ev.logger !== "otto" ? ev.logger + ": " : "") + (ev.msg || "");
+  row.append(t, lv, m);
+  list.appendChild(row);
+  while (list.childElementCount > 600) list.removeChild(list.firstChild);
+  if (atBottom) list.scrollTop = list.scrollHeight;
+  // Nudge the toggle when a warning/error arrives and the drawer is closed.
+  if (!appEl.classList.contains("logs-open") && (ev.level === "error" || ev.level === "warning" || ev.level === "critical"))
+    $("logsToggle").classList.add("unread");
+}
+function openLogs() {
+  appEl.classList.remove("chat-open", "chats-open", "settings-open");
+  appEl.classList.add("logs-open");
+  $("logsToggle").classList.remove("unread");
+  const list = $("logList"); if (list) list.scrollTop = list.scrollHeight;
+}
+$("logsToggle").onclick = () =>
+  appEl.classList.contains("logs-open") ? appEl.classList.remove("logs-open") : openLogs();
+$("logsClose").onclick = () => appEl.classList.remove("logs-open");
+$("logsClear").onclick = () => { const l = $("logList"); if (l) l.innerHTML = ""; };
+
 function showCanvas(content, format) {
   canvasEl.srcdoc = format === "markdown" ? mdToHtml(content) : content;
   stageEl.classList.add("has-content");
@@ -205,7 +239,7 @@ function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&am
 
 // conversation drawer
 $("chatToggle").onclick = () => {
-  appEl.classList.remove("settings-open", "chats-open");
+  appEl.classList.remove("settings-open", "chats-open", "logs-open");
   appEl.classList.toggle("chat-open"); $("chatToggle").classList.remove("unread"); scroll();
 };
 $("chatClose").onclick = () => appEl.classList.remove("chat-open");
@@ -255,7 +289,7 @@ async function loadSessions() {
   } catch (_) {}
 }
 function openChats() {
-  appEl.classList.remove("chat-open", "settings-open");
+  appEl.classList.remove("chat-open", "settings-open", "logs-open");
   appEl.classList.add("chats-open");
   loadSessions();
 }
@@ -328,7 +362,7 @@ async function loadProjects() {
   } catch (_) {}
 }
 function openSettings() {
-  appEl.classList.remove("chat-open", "chats-open");
+  appEl.classList.remove("chat-open", "chats-open", "logs-open");
   appEl.classList.add("settings-open");
   loadConfig(); loadProjects();
 }
