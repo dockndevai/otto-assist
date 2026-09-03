@@ -27,7 +27,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: System libraries (PortAudio for PyAudio, ffmpeg)
+        run: brew install portaudio ffmpeg
+
       - name: Set up venv and install dependencies
+        env:
+          # The runner's Python is universal2; Homebrew PortAudio is arm64-only, so build
+          # native wheels (pyaudio, ctranslate2…) for arm64 only to match the runner + libs.
+          ARCHFLAGS: "-arch arm64"
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
@@ -35,6 +42,8 @@ jobs:
           .venv/bin/pip install -e ".[voice,app]"
 
       - name: Build Orrin.app + Orrin.dmg
+        env:
+          ARCHFLAGS: "-arch arm64"
         run: bash packaging/pyinstaller/build.sh
 
       - name: Show build output
