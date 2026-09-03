@@ -70,8 +70,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Orrin",
         "CFBundleDisplayName": "Orrin",
-        "CFBundleShortVersionString": "0.2.1",
-        "CFBundleVersion": "0.2.1",
+        "CFBundleShortVersionString": "0.2.2",
+        "CFBundleVersion": "0.2.2",
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,                     # menu-bar agent: no Dock icon
         "NSMicrophoneUsageDescription":
