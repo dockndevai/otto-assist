@@ -134,6 +134,10 @@ class Orchestrator:
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
         self._ptt_handle = None
+        # Hands-free "sleep": in always-listen, saying "stop listening" pauses Otto until the
+        # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
+        # it can still hear the wake word; everything else is ignored while asleep.
+        self._sleeping = False
 
     # -- workspace pool accessors -----------------------------------------
     # Most existing code operates on the *focused* workspace; these keep that code
@@ -766,6 +770,29 @@ class Orchestrator:
         if self.mouth is not None and self.mouth.recently_active(self._echo_window()):
             print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
             return
+        # Asleep (paused by "stop listening"): ignore everything EXCEPT the wake word, which
+        # wakes Otto back into fully hands-free listening. If a command trails the wake word
+        # ("otto, what's the weather"), run it immediately.
+        if self._sleeping:
+            matched, remainder = self._match_wake(text)
+            if not matched:
+                print(f"[otto] asleep, ignoring: {text!r}", file=sys.stderr, flush=True)
+                return
+            self._sleeping = False
+            print(f"[otto] woke from sleep: {text!r}", file=sys.stderr, flush=True)
+            if remainder.strip():
+                self.submit_user_input(remainder)
+            else:
+                ack = random.choice(_WAKE_ACKS)
+                self.bus.transcript("assistant", ack, final=True)
+                self._status("listening", "Listening…")
+                if self.mouth and not self.voice_muted:
+                    self.mouth.speak(ack)
+            return
+        # "stop listening" — go quiet until the wake word (works while always-listening).
+        if self._is_sleep_command(text):
+            self._enter_sleep()
+            return
         # Always-listen: no wake word, just respond to whatever you say (self-echo already
         # filtered above). Mute the mic when you don't want Otto listening.
         if self.settings.voice.stt.always_listen:
@@ -790,6 +817,32 @@ class Orchestrator:
         if self.settings.voice.stt.wakeword_backend == "efficientword":
             return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
         self.submit_user_input(text)
+
+    # Utterances that put Otto to sleep (checked after stripping a leading greeting/wake word,
+    # so "otto, stop listening" works too). Whole-utterance match to avoid false triggers.
+    _SLEEP_PHRASES = {
+        "stop listening", "stop listning", "stop listen", "go to sleep", "goto sleep",
+        "go to sleep now", "pause listening", "stand by", "standby", "mute yourself",
+        "go quiet", "be quiet", "stop for now", "sleep", "sleep now", "take a break",
+    }
+
+    def _is_sleep_command(self, text: str) -> bool:
+        words = _norm_words(text)
+        trigger = (_norm_words(self.settings.voice.stt.wake_words)[-1:] or ["otto"])[0]
+        # peel a leading greeting and/or the wake word ("hey otto stop listening")
+        while words and (words[0] in _GREETINGS or _wordish(words[0], trigger)):
+            words = words[1:]
+        return " ".join(words) in self._SLEEP_PHRASES
+
+    def _enter_sleep(self) -> None:
+        """Pause hands-free listening until the wake word. The mic stays on for the wake word."""
+        self._sleeping = True
+        self._cancel_await()
+        ack = "Okay, going quiet. Say the wake word when you need me."
+        self.bus.transcript("assistant", ack, final=True)
+        self._status("idle", "Sleeping — say the wake word")
+        if self.mouth and not self.voice_muted:
+            self.mouth.speak(ack)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:
         """Does `text` start with the wake phrase (fuzzily)? -> (matched, command).

@@ -745,3 +745,31 @@ def test_preflight_routes_registered():
     paths = {r.path for r in app.routes}
     assert {"/api/preflight", "/api/preflight/recheck",
             "/api/system/open-pane"} <= paths
+
+
+def test_sleep_and_wake_hands_free(monkeypatch):
+    """Always-listen + 'stop listening' sleeps; only the wake word resumes hands-free."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.always_listen = True
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+        orch.settings.voice.stt.wake_words = "otto"
+        submitted = []
+        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        # sleep-command recognition (with/without a leading wake word or greeting)
+        assert orch._is_sleep_command("stop listening")
+        assert orch._is_sleep_command("otto stop listening")
+        assert orch._is_sleep_command("hey otto, go to sleep")
+        assert not orch._is_sleep_command("what time is it")
+        # a spoken "stop listening" puts Otto to sleep (not sent to the brain)
+        orch._on_voice_final("stop listening")
+        assert orch._sleeping is True and submitted == []
+        # while asleep, ordinary speech is ignored
+        orch._on_voice_final("what is the weather today")
+        assert submitted == [] and orch._sleeping is True
+        # the wake word resumes hands-free; a trailing command runs immediately
+        orch._on_voice_final("otto what is the weather")
+        assert orch._sleeping is False
+        assert submitted and submitted[-1].strip().lower().startswith("what is the weather")
+    asyncio.run(run())
