@@ -18,7 +18,6 @@ DMG="dist/Orrin.dmg"
 
 echo "==> Ensuring build tooling (pyinstaller) in the venv"
 [ -x .venv/bin/python ] || { echo "Run scripts/setup.sh first (.venv missing)"; exit 1; }
-PY=".venv/bin/python"          # used to draw the DMG background (make_dmg_background.py)
 .venv/bin/pip install -q --upgrade pyinstaller
 
 echo "==> Metadata fixups (so PyInstaller's stdhooks don't crash)"
@@ -74,7 +73,8 @@ STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 mkdir "$STAGE/.background"
-"$PY" packaging/pyinstaller/make_dmg_background.py "$STAGE/.background/bg.png"
+# Pre-baked background (checked in). Regenerate with make_dmg_background.py if you change it.
+cp packaging/pyinstaller/dmg-background.png "$STAGE/.background/bg.png"
 
 rm -f "$RW" "$DMG"
 # HFS+, not APFS: Finder's icon layout does not persist reliably on an APFS image.
