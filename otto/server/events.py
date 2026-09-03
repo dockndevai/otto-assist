@@ -15,6 +15,7 @@ subscriber) receives them. Events are plain dicts with a "type" field:
     session             {"session_id": str|None, "title": str}  # focused chat
     workspaces          {"items": [{project,name,state,focused,session_id}], "focused": str,
                          "max": int}                  # the parallel-workspace pool
+    log                 {"level": str, "logger": str, "msg": str, "ts": float}  # dashboard Logs drawer
 """
 
 from __future__ import annotations

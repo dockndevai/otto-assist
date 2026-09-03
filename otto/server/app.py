@@ -21,6 +21,11 @@ WEB_DIR = Path(__file__).parent / "web"
 
 
 def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
+    # Stream warnings/errors (and Otto's diagnostics) to the dashboard Logs drawer, and keep
+    # a ring buffer to replay to newly-connected dashboards.
+    from ..logbus import install_log_bus
+    log_buffer = install_log_bus(bus)
+
     # Build the MCP sub-app first so we can share its lifespan with FastAPI.
     mcp_app = None
     lifespan = None
@@ -161,6 +166,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         orch._publish_project()
         orch._publish_session()
         orch._publish_workspaces()
+        # Replay recent log lines so the Logs drawer isn't empty on a fresh page.
+        for ev in list(log_buffer):
+            await websocket.send_json(ev)
 
         async def pump() -> None:
             while True:
