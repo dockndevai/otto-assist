@@ -24,6 +24,7 @@
       <div class="hud-right">
         <span class="proj" id="proj">—</span>
         <span class="proj" id="chat" title="Current chat">—</span>
+        <button class="readypill bad" id="readyPill" title="Setup &amp; health">⚠ Setup</button>
         <button class="hbtn" id="chatsToggle" title="Chats">🗂</button>
         <button class="hbtn" id="chatToggle" title="Conversation">💬</button>
         <button class="hbtn" id="logsToggle" title="Logs">🐞</button>
@@ -131,6 +132,24 @@
       </div>
       <div class="logbody" id="logList"></div>
     </aside>
+
+    <div class="setup" id="setup" hidden>
+      <div class="setup-card">
+        <div class="setup-head">
+          <span class="setup-emoji" id="setupEmoji">🛠️</span>
+          <div class="setup-titles">
+            <h2 id="setupTitle">Setting up Otto…</h2>
+            <p class="setup-sub" id="setupSub">Checking permissions and your Claude connection.</p>
+          </div>
+          <button class="dclose" id="setupClose" title="Close">✕</button>
+        </div>
+        <div class="checks" id="checks"></div>
+        <div class="setup-bar">
+          <button id="recheckBtn">Recheck</button>
+          <span class="tiny" id="setupNote"></span>
+        </div>
+      </div>
+    </div>
 
   </div>
   <script src="/static/app.js"></script>

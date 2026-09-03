@@ -653,3 +653,93 @@ def test_targeted_turn_routing(monkeypatch):
         await asyncio.sleep(0.05)
         assert captured == [("billing", "run the tests", "in billing, run the tests")]
     asyncio.run(run())
+
+
+# ---- First-run permissions + preflight health check -----------------------
+def test_preflight_check_microphone_statuses(monkeypatch):
+    from otto import preflight
+    s = load_settings()
+    monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "authorized")
+    assert preflight.check_microphone(s).status == "ok"
+    monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "denied")
+    c = preflight.check_microphone(s)
+    assert c.status == "fail" and c.pane == "microphone" and c.fix
+    monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "notDetermined")
+    assert preflight.check_microphone(s).status == "fail"
+    s.voice.input_enabled = False              # voice off -> not required, just a warn
+    c = preflight.check_microphone(s)
+    assert c.status == "warn" and c.required is False
+
+
+def test_preflight_summarize_readiness():
+    from otto.preflight import Check, summarize
+    # a required check that only "warn"s does not block readiness
+    assert summarize([Check("a", "A", status="ok"), Check("b", "B", status="warn")]) is True
+    # a required "fail" blocks
+    assert summarize([Check("a", "A", status="ok"), Check("c", "C", status="fail")]) is False
+    # an optional "fail" does not block
+    assert summarize([Check("a", "A", status="ok"),
+                      Check("d", "D", status="fail", required=False)]) is True
+
+
+def test_run_preflight_publishes_and_starts_ears(monkeypatch):
+    from otto import preflight
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr(preflight, "request_mic_access", lambda *a, **k: "authorized")
+    monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "authorized")
+    monkeypatch.setattr(preflight, "accessibility_trusted", lambda: True)
+    monkeypatch.setattr(preflight, "mark_setup_complete", lambda: None)
+
+    async def _ok_test(settings, timeout=60.0):
+        return preflight.Check("claude_test", "Claude connection (test run)", status="ok")
+    monkeypatch.setattr(preflight, "check_claude_test", _ok_test)
+
+    async def run():
+        bus = EventBus(); events = []
+        bus.add_sink(events.append)
+        orch = Orchestrator(load_settings(), bus)
+        orch._loop = asyncio.get_running_loop()
+        started = {"n": 0}
+        monkeypatch.setattr(orch, "_start_ears",
+                            lambda: started.__setitem__("n", started["n"] + 1))
+        await orch.run_preflight(request=True)
+        assert orch.ready is True and orch.preflight_done is True
+        pf = [e for e in events if e["type"] == "preflight"]
+        assert pf and pf[-1]["done"] is True and pf[-1]["ready"] is True
+        keys = {c["key"] for c in pf[-1]["checks"]}
+        assert {"microphone", "claude_cli", "claude_test",
+                "voice_output", "accessibility"} <= keys
+        # mic authorized + no ears running yet -> preflight brings them up
+        assert started["n"] == 1
+    asyncio.run(run())
+
+
+def test_start_skips_ears_when_mic_denied(monkeypatch):
+    from otto import preflight
+    monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
+    monkeypatch.setattr(preflight, "request_mic_access", lambda *a, **k: "denied")
+
+    async def run():
+        s = load_settings()
+        s.voice.output_enabled = False          # don't spin up real TTS in the test
+        bus = EventBus(); notes = []
+        bus.add_sink(lambda e: notes.append(e) if e.get("type") == "notify" else None)
+        orch = Orchestrator(s, bus)
+        started = {"n": 0}
+        monkeypatch.setattr(orch, "_start_ears",
+                            lambda: started.__setitem__("n", 1))
+
+        async def _noop(**k):                   # skip the background health task
+            return None
+        monkeypatch.setattr(orch, "run_preflight", _noop)
+        await orch.start()
+        assert orch.ears is None and started["n"] == 0
+        assert any("Microphone" in (e.get("title") or "") for e in notes)
+    asyncio.run(run())
+
+
+def test_preflight_routes_registered():
+    app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
+    paths = {r.path for r in app.routes}
+    assert {"/api/preflight", "/api/preflight/recheck",
+            "/api/system/open-pane"} <= paths
