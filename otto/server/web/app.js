@@ -108,6 +108,7 @@ function handle(ev) {
     case "project": setFocused(ev.path, ev.name || ev.path); return;
     case "workspaces": setFocused(ev.focused); renderWorkspaces(ev.items || [], ev.focused, ev.max); return;
     case "log": ingestLog(ev); return;
+    case "preflight": renderPreflight(ev); return;
     case "session": {
       const el = $("chat"); if (el) el.textContent = "💬 " + (ev.title || "New chat");
       if (appEl.classList.contains("chats-open")) loadSessions();
@@ -222,6 +223,63 @@ $("logsToggle").onclick = () =>
   appEl.classList.contains("logs-open") ? appEl.classList.remove("logs-open") : openLogs();
 $("logsClose").onclick = () => appEl.classList.remove("logs-open");
 $("logsClear").onclick = () => { const l = $("logList"); if (l) l.innerHTML = ""; };
+
+// ---- Setup / readiness panel (first-run permissions + a real Claude test run) ----
+const CHK_ICON = { ok: "✓", fail: "✕", warn: "!", checking: "…", pending: "·" };
+let seenReady = false;
+
+function renderPreflight(ev) {
+  const list = $("checks");
+  if (list) {
+    list.innerHTML = "";
+    (ev.checks || []).forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "chk " + (c.status || "checking") + (c.required ? "" : " opt");
+      const ic = document.createElement("span"); ic.className = "chk-ic"; ic.textContent = CHK_ICON[c.status] || "·";
+      const meta = document.createElement("div"); meta.className = "chk-meta";
+      meta.innerHTML = `<b>${escapeHtml(c.label)}</b><span>${escapeHtml(c.detail || "")}</span>` +
+        (c.fix && c.status === "fail" ? `<span class="fix">${escapeHtml(c.fix)}</span>` : "");
+      row.append(ic, meta);
+      if (c.pane && (c.status === "fail" || c.status === "warn")) {
+        const b = document.createElement("button"); b.className = "ghost"; b.textContent = "Open Settings";
+        b.onclick = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: "open_pane", pane: c.pane }));
+        row.appendChild(b);
+      }
+      list.appendChild(row);
+    });
+  }
+  // HUD pill
+  const pill = $("readyPill");
+  if (pill) { pill.classList.toggle("ok", !!ev.ready); pill.classList.toggle("bad", !ev.ready);
+    pill.textContent = ev.ready ? "✓ Ready" : (ev.done ? "⚠ Setup" : "… Checking"); }
+  // Title / subtitle
+  if (ev.ready) {
+    $("setupEmoji").textContent = "✅"; $("setupTitle").textContent = "Otto is ready";
+    $("setupSub").textContent = "Everything checks out — say “hey Otto” or click the mic.";
+  } else if (!ev.done) {
+    $("setupEmoji").textContent = "🛠️"; $("setupTitle").textContent = "Setting up Otto…";
+    $("setupSub").textContent = "Checking permissions and your Claude connection.";
+  } else {
+    $("setupEmoji").textContent = "⚠️"; $("setupTitle").textContent = "Otto needs one more step";
+    $("setupSub").textContent = "Fix the items below, then click Recheck.";
+  }
+  $("recheckBtn").disabled = !ev.done;
+  $("setupNote").textContent = ev.done ? "" : "Working…";
+  // Auto-show while unfinished/blocked; auto-dismiss once it first goes green.
+  if (!ev.done) { if (ev.first_run) showSetup(); }
+  else if (!ev.ready) showSetup();
+  else if (!seenReady && (ev.first_run || appEl.classList.contains("setup-open"))) {
+    seenReady = true; setTimeout(hideSetup, 1800);
+  }
+}
+function showSetup() { appEl.classList.add("setup-open"); $("setup").hidden = false; }
+function hideSetup() { appEl.classList.remove("setup-open"); $("setup").hidden = true; }
+$("readyPill").onclick = () => ($("setup").hidden ? showSetup() : hideSetup());
+$("setupClose").onclick = hideSetup;
+$("recheckBtn").onclick = () => {
+  $("setupNote").textContent = "Rechecking…";
+  ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: "recheck" }));
+};
 
 function showCanvas(content, format) {
   canvasEl.srcdoc = format === "markdown" ? mdToHtml(content) : content;

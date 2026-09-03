@@ -3,6 +3,18 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## Unreleased
+
+**Setup & reliability**
+- **First-run permissions + "Otto ready" health check** — on launch Otto now *asks* macOS for
+  microphone access up front (the system prompt) instead of letting the recorder subprocess trip
+  a silent denial, and only starts the ears once access is actually granted. A setup panel in the
+  dashboard shows a live checklist — Microphone, Claude CLI, a real **Claude test turn**, Voice
+  output, Accessibility — with "Open Settings" and "Recheck" actions, and a ✓ Ready / ⚠ Setup pill
+  in the HUD. The checks re-run on every start/restart, so a missing permission is visible instead
+  of a silent "Otto isn't listening". Granting the mic then clicking Recheck brings the ears up with
+  no restart.
+
 ## v0.2.3 — 2026-09-03
 
 **Dashboard**
