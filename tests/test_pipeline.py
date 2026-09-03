@@ -665,7 +665,8 @@ def test_preflight_check_microphone_statuses(monkeypatch):
     c = preflight.check_microphone(s)
     assert c.status == "fail" and c.pane == "microphone" and c.fix
     monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "notDetermined")
-    assert preflight.check_microphone(s).status == "fail"
+    # undecided is non-blocking: the ears start anyway and opening the mic shows the OS prompt
+    assert preflight.check_microphone(s).status == "warn"
     s.voice.input_enabled = False              # voice off -> not required, just a warn
     c = preflight.check_microphone(s)
     assert c.status == "warn" and c.required is False
@@ -718,6 +719,7 @@ def test_start_skips_ears_when_mic_denied(monkeypatch):
     from otto import preflight
     monkeypatch.setattr("otto.brain.agent.ClaudeSDKClient", _FakeSDKClient)
     monkeypatch.setattr(preflight, "request_mic_access", lambda *a, **k: "denied")
+    monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "denied")
 
     async def run():
         s = load_settings()
