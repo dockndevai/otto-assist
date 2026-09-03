@@ -286,6 +286,33 @@ def test_history_persist_and_replay(tmp_path):
     assert "status" not in kinds
 
 
+def test_log_bus_streams_to_dashboard():
+    """The Logs drawer feed: Otto's INFO + anyone's WARNING/ERROR reach the bus; INFO from
+    third-party loggers and known RealtimeSTT poll noise are filtered out."""
+    import logging
+    from otto.logbus import install_log_bus
+    bus = EventBus()
+    buffer = install_log_bus(bus)
+    q = bus.subscribe()
+    logging.getLogger("otto").info("otto diagnostic here")     # kept (otto INFO)
+    logging.getLogger("thirdparty").info("chatty info")        # dropped (non-otto INFO)
+    logging.getLogger("thirdparty").error("a real failure")    # kept (WARNING+)
+    logging.getLogger("root").error("Error receiving data from connection: ")  # dropped (noise)
+    events = []
+    try:
+        while True:
+            events.append(q.get_nowait())
+    except Exception:
+        pass
+    msgs = [e["msg"] for e in events if e["type"] == "log"]
+    assert any("otto diagnostic here" in m for m in msgs)
+    assert any("a real failure" in m for m in msgs)
+    assert not any("chatty info" in m for m in msgs)
+    assert not any("Error receiving data" in m for m in msgs)
+    assert len(buffer) >= 2                                     # ring buffer for replay
+    logging.getLogger().removeHandler(logging.getLogger().handlers[-1])  # keep the suite clean
+
+
 def test_render_canvas_publishes():
     bus = EventBus()
     orch = Orchestrator(load_settings(), bus)

@@ -26,6 +26,7 @@
         <span class="proj" id="chat" title="Current chat">—</span>
         <button class="hbtn" id="chatsToggle" title="Chats">🗂</button>
         <button class="hbtn" id="chatToggle" title="Conversation">💬</button>
+        <button class="hbtn" id="logsToggle" title="Logs">🐞</button>
         <button class="hbtn" id="settingsToggle" title="Settings">⚙</button>
       </div>
     </header>
@@ -118,6 +119,17 @@
         <p class="tiny" style="margin:10px 0 4px">Chats in this project — switch, or start a new one.</p>
         <div id="chatList" class="projlist"></div>
       </div>
+    </aside>
+
+    <aside class="ldrawer" id="ldrawer">
+      <div class="drawer-head">
+        <span>LOGS</span>
+        <span class="logtools">
+          <button class="lbtn" id="logsClear" title="Clear">clear</button>
+          <button class="dclose" id="logsClose" title="Close">✕</button>
+        </span>
+      </div>
+      <div class="logbody" id="logList"></div>
     </aside>
 
   </div>

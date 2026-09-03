@@ -8,6 +8,7 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import random
 import re
@@ -22,6 +23,8 @@ from .config import OTTO_HOME, Settings, save_config
 from .history import History
 from .server.events import EventBus
 from .workspace import Workspace
+
+_log = logging.getLogger("otto")
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
@@ -822,6 +825,7 @@ class Orchestrator:
                                 self._publish_session()
             except Exception as e:
                 print(f"[otto] turn error ({ws.name}): {e!r}", file=sys.stderr, flush=True)
+                _log.exception("Turn failed in workspace %s", ws.name)
                 self.bus.notify("Error", str(e))
             finally:
                 reply = assistant_text.strip()
@@ -945,6 +949,7 @@ class Orchestrator:
 
     def notify(self, title: str, body: str = "") -> None:
         self.bus.notify(title, body)
+        _log.warning("%s — %s", title, body) if body else _log.warning("%s", title)
         # Best-effort native macOS notification.
         try:
             safe = (body or "").replace('"', "'")
