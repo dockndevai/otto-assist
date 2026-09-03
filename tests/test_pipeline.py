@@ -773,3 +773,32 @@ def test_sleep_and_wake_hands_free(monkeypatch):
         assert orch._sleeping is False
         assert submitted and submitted[-1].strip().lower().startswith("what is the weather")
     asyncio.run(run())
+
+
+def test_half_duplex_suppresses_self_echo(monkeypatch):
+    """On a speaker, Otto must drop mic input while it's speaking (and a cooldown after) so it
+    doesn't transcribe and answer its own voice in a loop."""
+    import time as _t
+
+    class _Mouth:
+        def __init__(self): self.said = []
+        def is_playing(self): return False
+        def speak(self, t): self.said.append(t)
+
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.always_listen = True
+        orch.mouth = _Mouth()
+        submitted = []
+        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        # speaking a line pushes the mute window out; input is dropped during it
+        orch._voice_out("Here is a spoken reply that takes a moment to say out loud.")
+        assert orch._output_suppressing() is True
+        orch._on_voice_final("Here is a spoken reply that takes a moment to say out loud.")
+        assert submitted == []                      # its own echo, dropped
+        # once the cooldown passes, real input flows again
+        orch._mute_input_until = _t.monotonic() - 1
+        orch._on_voice_final("what time is it")
+        assert submitted == ["what time is it"]
+    asyncio.run(run())
