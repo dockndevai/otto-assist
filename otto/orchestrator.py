@@ -14,6 +14,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -138,6 +139,10 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        # Half-duplex guard: on a laptop speaker the mic hears Otto's OWN voice and would
+        # answer itself in a loop. We drop ALL mic input while Otto is speaking and for a
+        # cooldown after — `_mute_input_until` is pushed out by the length of each spoken line.
+        self._mute_input_until = 0.0
 
     # -- workspace pool accessors -----------------------------------------
     # Most existing code operates on the *focused* workspace; these keep that code
@@ -161,6 +166,29 @@ class Orchestrator:
     def _status(self, state: str, text: str = "") -> None:
         self.state = state
         self.bus.status(state, text)
+
+    # -- half-duplex voice output -----------------------------------------
+    def _voice_out(self, text: str) -> None:
+        """Speak `text` (when voice is on) and push out the input-mute window by roughly how
+        long it takes to say it, plus a cooldown — so Otto never transcribes its own voice."""
+        t = (text or "").strip()
+        if not t or self.mouth is None or self.voice_muted:
+            return
+        self.mouth.speak(t)
+        # ~14 chars/sec for macOS `say`, + 2.5s cooldown for the mic/transcription tail.
+        secs = max(1.5, len(t) / 14.0) + 2.5
+        self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
+
+    def _output_suppressing(self) -> bool:
+        """True while Otto is speaking (or in the cooldown after) — drop mic input then."""
+        if self.mouth is None:
+            return False
+        try:
+            if self.mouth.is_playing():
+                return True
+        except Exception:
+            pass
+        return time.monotonic() < self._mute_input_until
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
@@ -726,6 +754,7 @@ class Orchestrator:
         """Push-to-talk: capture the NEXT spoken utterance as a command (skip wake word)."""
         self._ptt_armed = True
         self._status("listening", "Listening… speak now")
+        self._mute_input_until = 0.0     # explicit Talk press bypasses the half-duplex mute
         if self.mouth:
             self.mouth.stop()
             self.mouth._last_end = 0.0   # allow immediate capture (bypass echo guard)
@@ -765,10 +794,11 @@ class Orchestrator:
             print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
             self.submit_user_input(command)
             return
-        # Echo guard: while Otto is speaking (and for the transcription lag after), the mic
-        # hears Otto's own voice — ignore it so it doesn't answer itself in a loop.
-        if self.mouth is not None and self.mouth.recently_active(self._echo_window()):
-            print(f"[otto] ignoring self-echo: {text!r}", file=sys.stderr, flush=True)
+        # Half-duplex echo guard: while Otto is speaking (and for a content-length-based
+        # cooldown after), the mic hears Otto's own voice — drop it so Otto doesn't answer
+        # itself in a loop. This is essential on a laptop speaker (no headphones).
+        if self._output_suppressing():
+            print(f"[otto] ignoring self-echo (speaking): {text!r}", file=sys.stderr, flush=True)
             return
         # Asleep (paused by "stop listening"): ignore everything EXCEPT the wake word, which
         # wakes Otto back into fully hands-free listening. If a command trails the wake word
@@ -786,8 +816,7 @@ class Orchestrator:
                 ack = random.choice(_WAKE_ACKS)
                 self.bus.transcript("assistant", ack, final=True)
                 self._status("listening", "Listening…")
-                if self.mouth and not self.voice_muted:
-                    self.mouth.speak(ack)
+                self._voice_out(ack)
             return
         # "stop listening" — go quiet until the wake word (works while always-listening).
         if self._is_sleep_command(text):
@@ -841,8 +870,7 @@ class Orchestrator:
         ack = "Okay, going quiet. Say the wake word when you need me."
         self.bus.transcript("assistant", ack, final=True)
         self._status("idle", "Sleeping — say the wake word")
-        if self.mouth and not self.voice_muted:
-            self.mouth.speak(ack)
+        self._voice_out(ack)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:
         """Does `text` start with the wake phrase (fuzzily)? -> (matched, command).
@@ -874,8 +902,7 @@ class Orchestrator:
         ack = random.choice(_WAKE_ACKS)
         self._last_ack = ack
         self.bus.transcript("assistant", ack, final=True)
-        if self.mouth and not self.voice_muted:
-            self.mouth.speak(ack)
+        self._voice_out(ack)
         if self._loop is not None:
             if self._await_handle is not None:
                 self._await_handle.cancel()
@@ -915,7 +942,7 @@ class Orchestrator:
         if self.mic_muted:
             return
         # Otto hearing its own voice through the speaker — don't treat it as user speech.
-        if self.mouth is not None and self.mouth.recently_active(self._echo_window()):
+        if self._output_suppressing():
             return
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")
@@ -1023,11 +1050,11 @@ class Orchestrator:
                 break
             sentence = m.group(0)
             self._speech_buf = self._speech_buf[m.end():]
-            self.mouth.speak(sentence.strip())
+            self._voice_out(sentence.strip())
 
     def _flush_speech(self) -> None:
-        if self.mouth and not self.voice_muted and self._speech_buf.strip():
-            self.mouth.speak(self._speech_buf.strip())
+        if self._speech_buf.strip():
+            self._voice_out(self._speech_buf.strip())
         self._speech_buf = ""
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
@@ -1041,8 +1068,7 @@ class Orchestrator:
     # -- AssistantContext (called by the agent's tools) --------------------
     async def say(self, text: str) -> None:
         self.bus.transcript("assistant", text, final=True)
-        if self.mouth and not self.voice_muted:
-            self.mouth.speak(text)
+        self._voice_out(text)
 
     async def ask_user(self, question: str) -> str:
         self.bus.publish({"type": "ask_user", "question": question})
@@ -1079,8 +1105,8 @@ class Orchestrator:
         if ws is not None:
             ws.last_reply = text
         self.bus.transcript("assistant", text, final=True, ws=project)
-        if project == self.focused and self.mouth and not self.voice_muted:
-            self.mouth.speak(text)
+        if project == self.focused:
+            self._voice_out(text)
 
     def _ws_render(self, project: str, content: str, fmt: str = "html") -> None:
         ws = self.workspaces.get(project)
