@@ -174,17 +174,16 @@ class Orchestrator:
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
 
-        # Microphone. Best-effort ask for access up front, then start the ears UNLESS macOS is
-        # explicitly blocking the mic. We must not gate on "authorized": when access is
-        # undecided (notDetermined), the macOS prompt only appears once a process actually
-        # opens the input device — so the recorder starting IS what triggers the prompt. Gating
-        # on "authorized" would skip the recorder and deadlock (no prompt ever shows). Only
-        # "denied"/"restricted" is a hard stop where trying is futile.
+        # Microphone. Start the ears UNLESS macOS is explicitly blocking the mic. Do NOT call
+        # AVFoundation's requestAccessForMediaType here: in a menu-bar agent app (LSUIElement,
+        # no Dock icon) on a background thread it resolves an undecided permission to a *false*
+        # "authorized" with no UI — which suppresses the real prompt AND leaves capture denied.
+        # The reliable trigger is the recorder itself opening the input device: that makes macOS
+        # show its own microphone prompt when access is undecided. So just start the ears and let
+        # CoreAudio do the asking. Only "denied"/"restricted" is a hard stop.
         if v.input_enabled:
             from . import preflight
-            preflight.request_mic_access(timeout=0.5)   # non-blocking nudge; may prompt on a clean install
-            status = preflight.mic_authorization_status()
-            if status in ("denied", "restricted"):
+            if preflight.mic_authorization_status() in ("denied", "restricted"):
                 self.ears = None
                 self.bus.notify(
                     "Microphone blocked",
@@ -276,9 +275,8 @@ class Orchestrator:
                             required=self.settings.voice.hotkey.enabled, pane="accessibility"),
         ]
         self._publish_preflight(done=False)
-
-        if request and self.settings.voice.input_enabled:
-            await self._loop.run_in_executor(None, preflight.request_mic_access)
+        # NB: we deliberately do NOT call AVFoundation requestAccess (see start()); the recorder
+        # opening the mic is what triggers the real prompt. `request` is kept for API compat.
 
         def _set(c) -> None:
             for i, x in enumerate(self.preflight_checks):
