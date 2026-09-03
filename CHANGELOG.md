@@ -3,6 +3,13 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## v0.2.3 — 2026-09-03
+
+**Dashboard**
+- **Logs drawer** — warnings/errors and Otto's own diagnostics stream to the dashboard (with a
+  replayable buffer), so failures are visible without opening a log file. Level-colored, the
+  toggle flags unread on a problem, and known RealtimeSTT poll-noise is filtered out.
+
 ## v0.2.2 — 2026-09-03
 
 **Distribution & CI**
