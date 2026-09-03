@@ -153,8 +153,10 @@ def check_microphone(settings: Settings) -> Check:
     if st == "authorized":
         c.status, c.detail = "ok", "Granted."
     elif st == "notDetermined":
-        c.status, c.detail = "fail", "Not decided yet — approve the microphone prompt."
-        c.fix = "Approve the microphone prompt (or enable Orrin under Microphone)."
+        # Not blocking: the ears start anyway, and opening the mic shows the OS prompt.
+        c.status = "warn"
+        c.detail = "Approve the microphone prompt when it appears (Otto is asking now)."
+        c.fix = "Click Allow on the microphone prompt, then Recheck."
     elif st == "unknown":
         c.status, c.detail = "warn", "Couldn't read microphone permission."
     else:  # denied / restricted

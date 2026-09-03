@@ -174,20 +174,24 @@ class Orchestrator:
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
 
-        # Microphone permission FIRST. On first run this shows the macOS mic prompt up front
-        # (instead of letting the recorder subprocess trip a silent denial). Only start the
-        # ears once we actually have access — otherwise they can't open the input device and
-        # Otto silently can't hear you. Requesting can block on the prompt, so do it off-loop.
+        # Microphone. Best-effort ask for access up front, then start the ears UNLESS macOS is
+        # explicitly blocking the mic. We must not gate on "authorized": when access is
+        # undecided (notDetermined), the macOS prompt only appears once a process actually
+        # opens the input device — so the recorder starting IS what triggers the prompt. Gating
+        # on "authorized" would skip the recorder and deadlock (no prompt ever shows). Only
+        # "denied"/"restricted" is a hard stop where trying is futile.
         if v.input_enabled:
             from . import preflight
-            status = await self._loop.run_in_executor(None, preflight.request_mic_access)
-            if status == "authorized":
-                self._start_ears()
-            else:
+            preflight.request_mic_access(timeout=0.5)   # non-blocking nudge; may prompt on a clean install
+            status = preflight.mic_authorization_status()
+            if status in ("denied", "restricted"):
                 self.ears = None
                 self.bus.notify(
-                    "Microphone not enabled",
-                    "Grant Orrin microphone access in System Settings, then click Recheck.")
+                    "Microphone blocked",
+                    "Enable Orrin under System Settings → Privacy & Security → Microphone, "
+                    "then click Recheck.")
+            else:
+                self._start_ears()      # recorder opening the mic triggers the OS prompt if undecided
 
         self._publish_project()
         self._publish_session()
@@ -289,10 +293,10 @@ class Orchestrator:
         _set(preflight.check_accessibility(self.settings))
         _set(await preflight.check_claude_test(self.settings))   # the slow one, last
 
-        # If the mic is now authorized but the ears never came up (e.g. permission granted
-        # after launch, then Recheck), start them now — no restart needed.
+        # If the ears never came up and the mic isn't explicitly blocked, (re)start them now —
+        # e.g. permission granted after launch, then Recheck. No restart needed.
         if (self.ears is None and self.settings.voice.input_enabled
-                and preflight.mic_authorization_status() == "authorized"):
+                and preflight.mic_authorization_status() not in ("denied", "restricted")):
             self._start_ears()
             _set(preflight.check_microphone(self.settings))
 
