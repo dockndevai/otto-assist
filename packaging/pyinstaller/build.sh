@@ -51,15 +51,21 @@ rm -rf build dist
 echo "    Built $APP"
 
 if [ -n "${SIGN_ID:-}" ]; then
-  echo "==> Code-signing (hardened runtime)"
-  # Sign nested code first, then the app, with an entitlements file allowing the mic + JIT.
-  find "$APP" -name "*.dylib" -o -name "*.so" | while read -r f; do
-    codesign --force --timestamp --options runtime --sign "$SIGN_ID" "$f" || true
-  done
-  codesign --force --deep --timestamp --options runtime \
+  echo "==> Code-signing (hardened runtime, inside-out)"
+  # Notarization requires EVERY Mach-O in the bundle to be signed with a secure timestamp and
+  # the hardened runtime. Sign the nested binaries deepest-first (reverse path sort), detecting
+  # Mach-O by content so unsuffixed binaries are covered too, then sign the app bundle itself
+  # with the entitlements (mic + calendar + Python/hardened-runtime exceptions).
+  while IFS= read -r -d '' f; do
+    if file "$f" | grep -q "Mach-O"; then
+      codesign --force --timestamp --options runtime --sign "$SIGN_ID" "$f" 2>/dev/null || true
+    fi
+  done < <(find "$APP" -type f -print0 | sort -rz)
+  codesign --force --timestamp --options runtime \
     --entitlements packaging/pyinstaller/entitlements.plist \
     --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
+  echo "    Signed with: $SIGN_ID"
 fi
 
 echo "==> Creating DMG"
