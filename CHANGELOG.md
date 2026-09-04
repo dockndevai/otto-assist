@@ -27,6 +27,15 @@ is `otto-assist`.
   a short cooldown after), so on a laptop speaker it no longer hears its own voice and answer
   itself. The dashboard Talk button still bypasses this for push-to-talk.
 
+## v0.2.6 — 2026-09-05
+
+- **Seamless-install signing wired** — `build.sh` now signs the app inside-out (hardened runtime,
+  secure timestamp) and notarizes + staples the DMG when `SIGN_ID` + `NOTARY_PROFILE` are set;
+  `entitlements.plist` + `SIGNING.md` document the one-time Apple Developer setup for a warning-free,
+  permission-persistent install.
+- **Removed the Calendar/Upcoming card** — it was permission-gated (EventKit) and unreliable; Home
+  is now Weather + GitHub Activity + Quick Actions.
+
 ## v0.2.5 — 2026-09-04
 
 **Rename**
