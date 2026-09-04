@@ -17,6 +17,27 @@ const curKey = () => focusedWs || "__main__";
 function win(k) { return wins[k] || (wins[k] = { msgs: [], cur: null, canvas: null, unread: false }); }
 function keyOf(ev) { return ev.ws || focusedWs || "__main__"; }
 
+// ---- Theme (light/dark, system-aware, remembered) ----
+function currentTheme() {
+  const forced = document.documentElement.getAttribute("data-theme");
+  if (forced === "light" || forced === "dark") return forced;
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+function applyThemeIcon() {
+  const b = $("themeToggle"); if (!b) return;
+  const t = currentTheme();
+  b.textContent = t === "light" ? "☀️" : "🌙";
+  b.title = t === "light" ? "Switch to dark" : "Switch to light";
+}
+applyThemeIcon();
+if (window.matchMedia) { try { window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyThemeIcon); } catch (_) {} }
+$("themeToggle").onclick = () => {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("otto-theme", next); } catch (_) {}
+  applyThemeIcon();
+};
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
