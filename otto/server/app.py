@@ -176,11 +176,6 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         from . import data
         return JSONResponse({"github": data.github_activity(orch.focused)})
 
-    @app.get("/api/events")
-    def get_events() -> JSONResponse:
-        from . import data
-        return JSONResponse({"events": data.calendar_events()})
-
     @app.get("/api/system")
     def get_system() -> JSONResponse:
         from . import data

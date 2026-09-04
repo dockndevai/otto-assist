@@ -127,61 +127,6 @@ def github_activity(cwd: str) -> dict | None:
             "open_prs": prs, "issues_assigned": issues, "recent_commits": commits}
 
 
-# ---- Calendar (EventKit, macOS) ----------------------------------------------
-def calendar_events(limit: int = 3) -> list[dict] | None:
-    """Upcoming events for the rest of today. None if EventKit is unavailable or access isn't
-    granted (the dashboard then hides the card). Access is requested on the main thread."""
-    try:
-        import EventKit  # type: ignore
-        from Foundation import NSDate  # type: ignore
-    except Exception:
-        return None
-    try:
-        store = EventKit.EKEventStore.alloc().init()
-        status = EventKit.EKEventStore.authorizationStatusForEntityType_(0)  # 0 = .event
-        if int(status) != 3:      # 3 = authorized / fullAccess
-            return None
-        now = NSDate.date()
-        end = NSDate.dateWithTimeIntervalSinceNow_(60 * 60 * 24)  # next 24h
-        cals = store.calendarsForEntityType_(0)
-        pred = store.predicateForEventsWithStartDate_endDate_calendars_(now, end, cals)
-        evs = store.eventsMatchingPredicate_(pred) or []
-        out = []
-        for e in sorted(evs, key=lambda x: x.startDate().timeIntervalSince1970()):
-            if e.isAllDay():
-                continue
-            title = str(e.title() or "Event")
-            start = e.startDate().timeIntervalSince1970()
-            loc = str(e.location() or "")
-            col = None
-            try:
-                c = e.calendar().color()
-                if c is not None:
-                    col = "#%02x%02x%02x" % (int(c.redComponent() * 255),
-                                             int(c.greenComponent() * 255), int(c.blueComponent() * 255))
-            except Exception:
-                pass
-            out.append({"title": title, "start": start, "location": loc, "color": col})
-            if len(out) >= limit:
-                break
-        return out
-    except Exception:
-        return None
-
-
-def request_calendar_access() -> None:
-    """Fire the Calendar permission prompt (call from the main thread)."""
-    try:
-        import EventKit  # type: ignore
-        store = EventKit.EKEventStore.alloc().init()
-        if hasattr(store, "requestFullAccessToEventsWithCompletion_"):
-            store.requestFullAccessToEventsWithCompletion_(lambda granted, err: None)
-        else:
-            store.requestAccessToEntityType_completion_(0, lambda granted, err: None)
-    except Exception:
-        pass
-
-
 # ---- MCP connector count (from the user's Claude config) ---------------------
 def mcp_count(cwd: str | None = None) -> int:
     """Best-effort count of MCP servers the user's Claude has configured (user + project)."""

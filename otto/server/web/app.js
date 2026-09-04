@@ -188,16 +188,9 @@ async function renderWeather() {
 async function renderHome() {
   renderWeather();
   const grid = $("homeGrid"); if (!grid) return;
-  let events = null, gh = null;
-  try { events = (await (await fetch("/api/events")).json()).events; } catch (_) {}
+  let gh = null;
   try { gh = (await (await fetch("/api/github")).json()).github; } catch (_) {}
   let html = "";
-  if (events && events.length) {
-    html += `<div class="card"><div class="card-head"><b>📅 Upcoming</b></div><div class="ph">` +
-      events.map((e) => { const tm = new Date(e.start * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        return `<div class="ph-row"><i style="background:${e.color || "var(--cyan)"}"></i><div><b>${escapeHtml(e.title)}</b><span>${tm}${e.location ? " · " + escapeHtml(e.location) : ""}</span></div></div>`; }).join("") +
-      `</div></div>`;
-  }
   if (gh) {
     html += `<div class="card"><div class="card-head"><b>🐙 GitHub Activity</b></div><div class="ph">` +
       `<div class="ph-row"><span class="gh-n">${gh.open_prs}</span><div><b>Open PRs</b><span>${escapeHtml(gh.repo)}</span></div></div>` +
