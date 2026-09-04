@@ -2,10 +2,16 @@ name: Build macOS app (Orrin.dmg)
 
 # Builds the standalone Orrin.app + Orrin.dmg on a macOS (Apple Silicon) runner.
 # - Manual: Actions tab → "Run workflow".
-# - Automatic: pushing a tag like v0.2.2 builds and attaches the DMG to that release.
+# - Automatic: pushing a tag like v0.2.6 builds and attaches the DMG to that release.
 #
-# The build is UNSIGNED (no Apple Developer account wired up yet): to sign + notarize,
-# add SIGN_ID + a notarization keychain profile and pass them through to build.sh.
+# SIGNING (optional, for a seamless notarized DMG): add these repo secrets and every build
+# signs + notarizes automatically. Without them, the build is unsigned (Gatekeeper warns).
+#   MACOS_SIGN_ID          e.g. "Developer ID Application: Your Name (TEAMID)"
+#   MACOS_CERT_P12_BASE64  base64 of your exported Developer ID .p12  (base64 -i cert.p12 | pbcopy)
+#   MACOS_CERT_PASSWORD    the password you set when exporting the .p12
+#   APPLE_ID               your Apple ID email (for notarization)
+#   APPLE_TEAM_ID          your 10-char Team ID
+#   APPLE_APP_PASSWORD     an app-specific password (appleid.apple.com)
 
 on:
   workflow_dispatch: {}
@@ -20,6 +26,9 @@ jobs:
   build:
     runs-on: macos-14    # Apple Silicon (arm64), matches the target machines
     timeout-minutes: 60
+    env:
+      SIGN_ID: ${{ secrets.MACOS_SIGN_ID }}
+      NOTARY_PROFILE: orrin-notary
     steps:
       - uses: actions/checkout@v4
 
@@ -41,15 +50,46 @@ jobs:
           # build.sh expects the app to run from .venv (voice + menu-bar extras).
           .venv/bin/pip install -e ".[voice,app]"
 
+      - name: Import Developer ID certificate (only if signing secrets are set)
+        if: env.SIGN_ID != ''
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/orrin-build.keychain-db"
+          KC_PW="ci-$(uuidgen)"
+          echo "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PW" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PW" "$KC"
+          # Keep the login keychain in the search list too; make ours the default for signing.
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PW" -T /usr/bin/codesign -A
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PW" "$KC" >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KC"
+
+      - name: Store notarization credential (only if signing secrets are set)
+        if: env.SIGN_ID != ''
+        run: |
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}"
+
       - name: Build Orrin.app + Orrin.dmg
         env:
           ARCHFLAGS: "-arch arm64"
+          # build.sh signs + notarizes when SIGN_ID + NOTARY_PROFILE are set; NOTARY_PROFILE is
+          # only meaningful once the cert is imported, so clear it when unsigned.
+          NOTARY_PROFILE: ${{ env.SIGN_ID != '' && env.NOTARY_PROFILE || '' }}
         run: bash packaging/pyinstaller/build.sh
 
       - name: Show build output
         run: |
           ls -lh dist
           echo "app: $(du -sh dist/Orrin.app | cut -f1) · dmg: $(du -sh dist/Orrin.dmg | cut -f1)"
+          echo "signed:" && (codesign -dvv dist/Orrin.app 2>&1 | grep -E "Authority|Signature" | head -3 || echo "  (unsigned)")
 
       - name: Upload DMG as a workflow artifact
         uses: actions/upload-artifact@v4
@@ -66,7 +106,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "Orrin.dmg"; then
-            echo "Release $TAG already has Orrin.dmg (e.g. a local build with the Finder-arranged window) — leaving it."
+            echo "Release $TAG already has Orrin.dmg (e.g. a local signed build) — leaving it."
           elif gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/Orrin.dmg
           else
