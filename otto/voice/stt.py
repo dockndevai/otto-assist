@@ -193,6 +193,16 @@ class Ears:
             if text and self._running:
                 self._post(self._on_final, text.strip())
 
+    def set_mic(self, on: bool) -> None:
+        """Enable/disable microphone capture at the recorder. Used for strict half-duplex:
+        turn the mic OFF while Otto is speaking so it never captures (and transcribes) its own
+        voice through the speaker — the reliable cure for the self-echo loop."""
+        if self._recorder is not None:
+            try:
+                self._recorder.set_microphone(on)
+            except Exception:
+                pass
+
     def trigger_ptt_start(self) -> None:
         """Push-to-talk pressed: begin capturing immediately (bypass wake word)."""
         if self._recorder is not None:

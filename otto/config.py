@@ -81,8 +81,8 @@ class STTConfig(BaseModel):
     language: str = "en"
     # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
-    # ~1.0s is a good balance: responsive without clipping normal pauses.
-    silence_seconds: float = 1.0
+    # ~1.3s is a good balance: responsive without clipping normal pauses.
+    silence_seconds: float = 1.3
     # Live captions: stream partial words to the dashboard as you speak (so you can SEE it's
     # hearing you), using a small fast model. Turn off to save CPU on an always-on machine.
     realtime_partials: bool = True
