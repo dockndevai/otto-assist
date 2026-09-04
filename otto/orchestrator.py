@@ -266,6 +266,7 @@ class Orchestrator:
                 on_speech_start=self._on_speech_start,
                 on_wake=self._on_speech_start,
                 on_recording_stop=self._on_recording_stop,
+                on_realtime=self._on_voice_partial,
             )
             self.ears.start()
             # Global push-to-talk hotkey is opt-in: pynput's macOS input-source calls run
@@ -1010,6 +1011,17 @@ class Orchestrator:
         # Cover the whole pipeline after Otto stops: VAD end (silence_seconds) +
         # transcription lag + margin, so Otto's own reply doesn't come back as a command.
         return self.settings.voice.stt.silence_seconds + 2.5
+
+    def _on_voice_partial(self, text: str) -> None:
+        """Live caption while you speak — stream partial words to the dashboard. Suppressed
+        while Otto is speaking (echo) or muted/asleep."""
+        if self.mic_muted or self._sleeping:
+            return
+        if self._output_suppressing():
+            return
+        t = (text or "").strip()
+        if t:
+            self.bus.transcript("user", t, final=False)
 
     def _on_speech_start(self) -> None:
         if self.mic_muted:
