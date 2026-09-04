@@ -64,9 +64,9 @@ class OttoApp(rumps.App):
         self._has_icon = _icon("idle") is not None
         self._current_icon = "idle"
         if self._has_icon:
-            super().__init__("Otto", icon=_icon("idle"), template=False, quit_button=None)
+            super().__init__("Orrin", icon=_icon("idle"), template=False, quit_button=None)
         else:
-            super().__init__("Otto", title="Otto", quit_button=None)
+            super().__init__("Orrin", title="Orrin", quit_button=None)
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
@@ -84,7 +84,7 @@ class OttoApp(rumps.App):
         self.menu = [
             self.status_item,
             None,
-            rumps.MenuItem("🎤 Talk to Otto", callback=self.talk),
+            rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -94,7 +94,7 @@ class OttoApp(rumps.App):
             self.voice_item,
             None,
             rumps.MenuItem("Restart", callback=self.restart),
-            rumps.MenuItem("Quit Otto", callback=self.quit_app),
+            rumps.MenuItem("Quit Orrin", callback=self.quit_app),
         ]
         self._proj_tick = 0
         self._mic_asked = False    # one-shot: request mic on the main thread once booted
@@ -248,10 +248,10 @@ class OttoApp(rumps.App):
                         self._current_icon = name
                 self.title = ""     # icon carries the state; no text needed
             else:
-                self.title = "Otto"
+                self.title = "Orrin"
         except Exception:
             if not self._has_icon:
-                self.title = "Otto"
+                self.title = "Orrin"
         # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
         # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
         # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
