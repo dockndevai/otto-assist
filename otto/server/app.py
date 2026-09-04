@@ -165,6 +165,29 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.rename_chat(title))
         return JSONResponse({"ok": True})
 
+    # -- live dashboard data (weather / github / calendar / mcp) ----------
+    @app.get("/api/weather")
+    def get_weather() -> JSONResponse:            # sync -> runs in a threadpool
+        from . import data
+        return JSONResponse({"weather": data.weather()})
+
+    @app.get("/api/github")
+    def get_github() -> JSONResponse:
+        from . import data
+        return JSONResponse({"github": data.github_activity(orch.focused)})
+
+    @app.get("/api/events")
+    def get_events() -> JSONResponse:
+        from . import data
+        return JSONResponse({"events": data.calendar_events()})
+
+    @app.get("/api/system")
+    def get_system() -> JSONResponse:
+        from . import data
+        b = orch.settings.brain
+        return JSONResponse({"mcp_count": data.mcp_count(orch.focused),
+                             "register_mcp": b.register_mcp})
+
     # -- voices (pick Otto's spoken voice) --------------------------------
     @app.get("/api/voices")
     async def get_voices() -> JSONResponse:

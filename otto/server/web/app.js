@@ -67,8 +67,9 @@ function connect() {
 function setStatus(state, text) {
   const M = { listening: "Listening…", thinking: "Thinking…", working: "Working…", speaking: "Speaking…" };
   const label = M[state] || "Ready";
-  $("heroState").textContent = label; $("talkState").textContent = label; $("lbState").textContent = label;
-  $("lbSub").textContent = state === "listening" ? "tap to stop" : state ? "one moment…" : "say “Otto” or click Talk";
+  const setT = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  setT("heroState", label); setT("talkState", label); setT("lbState", label);
+  setT("lbSub", state === "listening" ? "tap to stop" : state ? "one moment…" : "say “Otto” or click Talk");
   const dot = $("talkDot"); if (dot) dot.style.background = state === "listening" ? "var(--cyan)" : state === "speaking" ? "var(--purple)" : (state === "thinking" || state === "working") ? "var(--warn)" : "var(--ok)";
   ["state-listening", "state-thinking", "state-speaking", "is-active"].forEach((c) => appEl.classList.remove(c));
   if (state === "listening") appEl.classList.add("state-listening", "is-active");
@@ -162,22 +163,60 @@ const QUICK = [
   { i: "📁", t: "Open my recent files", p: "List the files I've recently worked on." },
   { i: "📣", t: "Run my daily briefing", p: "Give me my daily briefing." },
 ];
+async function renderWeather() {
+  const hero = $("hero"); if (!hero) return;
+  let w = null; try { w = (await (await fetch("/api/weather")).json()).weather; } catch (_) {}
+  if (!w) {   // fallback: greeting/state hero (no empty box)
+    hero.className = "hero hero-fallback";
+    hero.innerHTML = `<div class="hero-body"><div class="hero-state-big">${escapeHtml(greeting())}</div>` +
+      `<div class="hero-topic">How can I help you today?</div></div>`;
+    return;
+  }
+  hero.className = "hero weather cond-" + (w.condition || "").toLowerCase().split(" ")[0];
+  const aqi = (w.aqi != null) ? ` · AQI ${w.aqi} (${escapeHtml(w.aqi_label)})` : "";
+  const now = new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  hero.innerHTML =
+    `<div class="wx-body">
+       <div class="wx-loc">${escapeHtml(w.city)} <span class="wx-date">${now}</span></div>
+       <div class="wx-main"><div class="wx-temp">${w.temp}°</div><div class="wx-ic">${w.icon}</div></div>
+       <div class="wx-cond">${escapeHtml(w.condition)}</div>
+       <div class="wx-meta"><span>↑ ${w.hi}°</span><span>↓ ${w.lo}°</span><span>💧 ${w.precip}%</span></div>
+       <div class="wx-foot">🍃 ${w.wind} km/h${aqi}</div>
+     </div>`;
+}
+
 async function renderHome() {
+  renderWeather();
   const grid = $("homeGrid"); if (!grid) return;
-  let recent = "";
-  try { const r = await (await fetch("/api/sessions")).json(); const rows = (r.sessions || []).slice(0, 5);
-    if (rows.length) recent = `<div class="card"><div class="card-head"><b>🗂 Recent chats</b></div><div class="rlist">` +
-      rows.map((s) => `<div class="ritem" data-sid="${escapeHtml(s.session_id)}" data-cur="${s.current ? 1 : 0}"><span class="ri-ic">💬</span><div class="ri-t"><b>${escapeHtml(s.title)}</b><span>${escapeHtml(s.git_branch || "chat")}</span></div><span class="ri-time">${escapeHtml(timeAgo(s.updated_at))}</span></div>`).join("") + `</div></div>`;
-  } catch (_) {}
-  grid.innerHTML =
-    `<div class="card"><div class="card-head"><b>⚡ Quick Actions</b></div><div class="qlist" id="qactions"></div></div>` +
-    `<div class="card"><div class="card-head"><b>🩺 Orrin Status</b></div><div class="slist" id="statusListHome"></div></div>` +
-    recent;
+  let events = null, gh = null;
+  try { events = (await (await fetch("/api/events")).json()).events; } catch (_) {}
+  try { gh = (await (await fetch("/api/github")).json()).github; } catch (_) {}
+  let html = "";
+  if (events && events.length) {
+    html += `<div class="card"><div class="card-head"><b>📅 Upcoming</b></div><div class="ph">` +
+      events.map((e) => { const tm = new Date(e.start * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        return `<div class="ph-row"><i style="background:${e.color || "var(--cyan)"}"></i><div><b>${escapeHtml(e.title)}</b><span>${tm}${e.location ? " · " + escapeHtml(e.location) : ""}</span></div></div>`; }).join("") +
+      `</div></div>`;
+  }
+  if (gh) {
+    html += `<div class="card"><div class="card-head"><b>🐙 GitHub Activity</b></div><div class="ph">` +
+      `<div class="ph-row"><span class="gh-n">${gh.open_prs}</span><div><b>Open PRs</b><span>${escapeHtml(gh.repo)}</span></div></div>` +
+      `<div class="ph-row"><span class="gh-n">${gh.issues_assigned}</span><div><b>Issues assigned to you</b><span>this week</span></div></div>` +
+      `<div class="ph-row"><span class="gh-n">${gh.recent_commits}</span><div><b>Recent commits</b><span>last 7 days</span></div></div>` +
+      `</div><a class="cardbtn" href="${escapeHtml(gh.url)}" target="_blank" rel="noopener">Open GitHub ↗</a></div>`;
+  }
+  html += `<div class="card"><div class="card-head"><b>⚡ Quick Actions</b></div><div class="qlist" id="qactions"></div></div>`;
+  grid.innerHTML = html;
   const qa = $("qactions");
   QUICK.forEach((q) => { const b = document.createElement("button"); b.className = "qbtn"; b.innerHTML = `<span class="qi">${q.i}</span>${escapeHtml(q.t)}`;
     b.onclick = () => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: q.p })); openChat(); } }; qa.appendChild(b); });
-  grid.querySelectorAll(".ritem").forEach((it) => it.onclick = async () => { if (it.dataset.cur !== "1") await postJSON("/api/session/switch", { session_id: it.dataset.sid }); openChat(); });
-  renderStats();
+}
+
+async function renderSystem() {
+  try { const s = await (await fetch("/api/system")).json();
+    const n = s.mcp_count || 0; $("sbMcp").textContent = n ? `${n} connectors active` : (s.register_mcp ? "Orrin MCP on" : "off");
+    const am = $("actMcp"); if (am) am.textContent = n ? `${n} connectors` : "—";
+  } catch (_) {}
 }
 
 // ---- Stats (hero pills + status rows + status bar) ----
@@ -210,9 +249,6 @@ function renderStats() {
   $("sbClaudeDot").classList.toggle("on", s.claude === "ok");
   $("sbMode").textContent = s.mode;
   $("sbTts").textContent = s.outOn ? "On" : "Off";
-  const reg = (cfg.brain || {}).register_mcp !== false;
-  $("sbMcp").textContent = reg ? "Orrin MCP on" : "off";
-  $("actMcp") && ($("actMcp").textContent = reg ? "Orrin exposed as MCP" : "MCP off");
 }
 
 // ---- Logs ----
@@ -360,7 +396,10 @@ tick(); setInterval(tick, 30000);
 
 // ---- Init ----
 loadConfig();
+renderSystem();
 showView("home");
+setInterval(renderWeather, 600000);   // refresh weather every 10 min
+setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
