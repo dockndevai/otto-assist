@@ -358,6 +358,36 @@ class Orchestrator:
             preflight.mark_setup_complete()
         self._publish_preflight(done=True)
 
+    # -- voice selection ---------------------------------------------------
+    def set_voice(self, voice: str) -> None:
+        """Switch Otto's spoken voice live (macOS `say`) and persist it to config."""
+        voice = (voice or "").strip()
+        self.settings.voice.tts.voice = voice
+        if self.mouth is not None:
+            try:
+                self.mouth.set_voice(voice)
+            except Exception:
+                pass
+        try:
+            import yaml
+            from .config import config_path
+            cfg_file = config_path()
+            data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+            data = data or {}
+            data.setdefault("voice", {}).setdefault("tts", {})["voice"] = voice
+            save_config(data)
+        except Exception:
+            pass
+
+    def preview_voice(self, voice: str) -> None:
+        """Speak a short sample in `voice` so the user can hear it before choosing."""
+        sample = "Hi, I'm Otto. This is how I'll sound."
+        if self.mouth is not None:
+            try:
+                self.mouth.preview(sample, (voice or "").strip())
+            except Exception:
+                pass
+
     def open_privacy_pane(self, which: str) -> bool:
         from . import preflight
         if which == "accessibility":

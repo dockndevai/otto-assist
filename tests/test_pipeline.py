@@ -802,3 +802,36 @@ def test_half_duplex_suppresses_self_echo(monkeypatch):
         orch._on_voice_final("what time is it")
         assert submitted == ["what time is it"]
     asyncio.run(run())
+
+
+def test_list_system_voices_parses(monkeypatch):
+    import otto.voice.tts as tts
+    sample = ("Alex                en_US    # Most people recognize me by my voice.\n"
+              "Samantha            en_US    # Hi, I'm Samantha!\n"
+              "Amelie              fr_CA    # Bonjour, je m'appelle Amelie.\n"
+              "Zarvox              en_US    # Beep boop.\n")
+
+    class _R:
+        stdout = sample
+    monkeypatch.setattr(tts.subprocess, "run", lambda *a, **k: _R())
+    voices = tts.list_system_voices()
+    names = [v["name"] for v in voices]
+    assert {"Alex", "Samantha", "Amelie", "Zarvox"} <= set(names)
+    assert voices[0]["locale"].startswith("en")     # English first
+    assert voices[-1]["name"] == "Amelie"           # non-English sorted last
+    assert voices[0]["sample"]                        # description captured
+
+
+def test_voice_routes_registered():
+    app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert {"/api/voices", "/api/voice/select", "/api/voice/preview"} <= paths
+
+
+def test_set_voice_applies_and_persists(monkeypatch):
+    saved = {}
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: saved.update(d))
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.set_voice("Samantha")
+    assert orch.settings.voice.tts.voice == "Samantha"
+    assert saved.get("voice", {}).get("tts", {}).get("voice") == "Samantha"

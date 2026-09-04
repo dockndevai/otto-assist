@@ -149,6 +149,26 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.rename_chat(title))
         return JSONResponse({"ok": True})
 
+    # -- voices (pick Otto's spoken voice) --------------------------------
+    @app.get("/api/voices")
+    async def get_voices() -> JSONResponse:
+        from ..voice.tts import list_system_voices
+        return JSONResponse({
+            "voices": list_system_voices(),
+            "current": orch.settings.voice.tts.voice,
+            "engine": orch.settings.voice.tts.engine,
+        })
+
+    @app.post("/api/voice/select")
+    async def select_voice(payload: dict) -> JSONResponse:
+        orch.set_voice(payload.get("voice", ""))
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/voice/preview")
+    async def preview_voice(payload: dict) -> JSONResponse:
+        orch.preview_voice(payload.get("voice", ""))
+        return JSONResponse({"ok": True})
+
     # -- preflight / readiness (first-run permissions + health check) ------
     @app.get("/api/preflight")
     async def get_preflight() -> JSONResponse:
