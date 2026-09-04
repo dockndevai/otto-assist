@@ -83,9 +83,11 @@ class STTConfig(BaseModel):
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
     # ~1.3s is a good balance: responsive without clipping normal pauses.
     silence_seconds: float = 1.3
-    # Live captions: stream partial words to the dashboard as you speak (so you can SEE it's
-    # hearing you), using a small fast model. Turn off to save CPU on an always-on machine.
-    realtime_partials: bool = True
+    # Live captions: stream partial words to the dashboard as you speak, using a small fast
+    # model. OFF by default: RealtimeSTT's realtime worker can fall into an EOFError spam loop
+    # (esp. under some Python/multiprocessing setups) that destabilizes the recorder. The
+    # dashboard still shows a "Listening…" state and your final transcript without it.
+    realtime_partials: bool = False
     realtime_model: str = "base.en"
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
