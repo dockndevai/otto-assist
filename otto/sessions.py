@@ -54,6 +54,49 @@ def list_sessions(project_dir: str, current_id: str | None = None,
     return out
 
 
+def list_all_sessions(query: str | None = None, current_id: str | None = None,
+                      per_project: int = 25, total: int = 300) -> list[dict]:
+    """Every chat across EVERY Claude project on this machine — normal chats and cowork alike
+    (cowork sessions are just projects whose cwd is a temp coworks/… path). Returns dicts with
+    the owning project, most-recently-active first, optionally filtered by ``query`` (matched
+    against the chat title, the project name, or the first prompt).
+
+    This is what powers "all sessions" access: the dashboard's global switcher and voice
+    "switch to <name>" searching beyond the focused project.
+    """
+    from pathlib import Path
+
+    from .projects import CLAUDE_PROJECTS, _decode
+
+    q = (query or "").lower().strip()
+    rows: list[dict] = []
+    if not CLAUDE_PROJECTS.is_dir():
+        return []
+    # Newest project dirs first so a capped scan still surfaces recent work.
+    dirs = sorted(CLAUDE_PROJECTS.iterdir(),
+                  key=lambda d: d.stat().st_mtime if d.is_dir() else 0, reverse=True)
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        cwd = _decode(d.name)          # None if the cwd no longer exists (e.g. cleaned temp)
+        if not cwd:
+            continue
+        name = Path(cwd).name or cwd
+        is_cowork = "/coworks/" in cwd or "/claude-" in cwd or cwd.startswith("/private/tmp/")
+        for s in list_sessions(cwd, current_id=current_id, limit=per_project):
+            if q and (q not in s.title.lower() and q not in name.lower()
+                      and q not in s.first_prompt.lower()):
+                continue
+            rows.append({
+                "project": cwd, "project_name": name, "cowork": is_cowork,
+                "session_id": s.session_id, "title": s.title,
+                "first_prompt": s.first_prompt, "updated_at": s.updated_at,
+                "git_branch": s.git_branch, "current": s.current,
+            })
+    rows.sort(key=lambda r: r["updated_at"], reverse=True)
+    return rows[:total]
+
+
 def rename_session_title(project_dir: str, session_id: str, title: str) -> None:
     """Set a chat's display title (appends a custom-title entry; latest wins)."""
     from claude_agent_sdk import rename_session

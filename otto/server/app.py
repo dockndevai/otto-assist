@@ -136,6 +136,22 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.switch_session(sid))
         return JSONResponse({"ok": True})
 
+    @app.get("/api/all-sessions")
+    async def get_all_sessions(q: str = "") -> JSONResponse:
+        from ..sessions import list_all_sessions
+        current = getattr(orch.brain, "session_id", None) or orch._active_session
+        return JSONResponse({"sessions": list_all_sessions(query=q, current_id=current)})
+
+    @app.post("/api/session/open-anywhere")
+    async def open_session_anywhere(payload: dict) -> JSONResponse:
+        project = payload.get("project", "")
+        sid = payload.get("session_id", "")
+        if not project or not sid:
+            return JSONResponse({"ok": False, "error": "project and session_id required"},
+                                status_code=400)
+        asyncio.create_task(orch.open_session_anywhere(project, sid))
+        return JSONResponse({"ok": True})
+
     @app.post("/api/session/new")
     async def new_session() -> JSONResponse:
         asyncio.create_task(orch.new_chat())
@@ -231,6 +247,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     asyncio.create_task(orch.switch_session(data.get("session_id", "")))
                 elif data.get("type") == "new_chat":
                     asyncio.create_task(orch.new_chat())
+                elif data.get("type") == "open_session_anywhere":
+                    asyncio.create_task(orch.open_session_anywhere(
+                        data.get("project", ""), data.get("session_id", "")))
                 elif data.get("type") == "rename_chat":
                     asyncio.create_task(orch.rename_chat(data.get("title", "")))
                 elif data.get("type") == "open_workspace":

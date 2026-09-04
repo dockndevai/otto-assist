@@ -111,7 +111,8 @@ function handle(ev) {
     case "preflight": renderPreflight(ev); return;
     case "session": {
       const el = $("chat"); if (el) el.textContent = "💬 " + (ev.title || "New chat");
-      if (appEl.classList.contains("chats-open")) loadSessions();
+      if (appEl.classList.contains("chats-open"))
+        (chatScope === "all") ? loadAllSessions($("chatSearch").value) : loadSessions();
       return;
     }
     case "canvas_render": {
@@ -346,10 +347,55 @@ async function loadSessions() {
     if (!(r.sessions || []).length) el.innerHTML = '<p class="tiny">No chats yet — start one.</p>';
   } catch (_) {}
 }
+// All-projects chat browser (every session on the machine, cowork included).
+async function loadAllSessions(q) {
+  try {
+    const r = await (await fetch("/api/all-sessions?q=" + encodeURIComponent(q || ""))).json();
+    const el = $("chatList"); if (!el) return; el.innerHTML = "";
+    (r.sessions || []).forEach((s) => {
+      const row = document.createElement("div");
+      row.className = "prow" + (s.current ? " cur" : "");
+      const meta = document.createElement("div"); meta.className = "pmeta";
+      const tag = s.cowork ? "🧩 " : "📁 ";
+      meta.innerHTML = `<b>${escapeHtml(s.title)}</b><span>${tag}${escapeHtml(s.project_name)}` +
+        ` · ${escapeHtml(timeAgo(s.updated_at))}${s.git_branch ? " · " + escapeHtml(s.git_branch) : ""}</span>`;
+      const actions = document.createElement("div"); actions.className = "crow-actions";
+      if (s.current) {
+        const cur = document.createElement("button"); cur.className = "ghost"; cur.textContent = "Current"; cur.disabled = true;
+        actions.append(cur);
+      } else {
+        const btn = document.createElement("button"); btn.textContent = "Open";
+        btn.onclick = async () => {
+          await fetch("/api/session/open-anywhere", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project: s.project, session_id: s.session_id }) });
+        };
+        actions.append(btn);
+      }
+      row.append(meta, actions); el.appendChild(row);
+    });
+    if (!(r.sessions || []).length) el.innerHTML = '<p class="tiny">No chats found.</p>';
+  } catch (_) {}
+}
+let chatScope = "project", searchTimer = null;
+function setChatScope(scope) {
+  chatScope = scope;
+  $("scopeProject").classList.toggle("on", scope === "project");
+  $("scopeAll").classList.toggle("on", scope === "all");
+  $("chatSearch").hidden = scope !== "all";
+  $("newChat").style.display = scope === "all" ? "none" : "";
+  $("chatsHint").textContent = scope === "all"
+    ? "Every chat across all projects & cowork — open any one."
+    : "Chats in this project — switch, or start a new one.";
+  if (scope === "all") loadAllSessions($("chatSearch").value); else loadSessions();
+}
+$("scopeProject").onclick = () => setChatScope("project");
+$("scopeAll").onclick = () => setChatScope("all");
+$("chatSearch").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadAllSessions($("chatSearch").value), 220); };
+
 function openChats() {
   appEl.classList.remove("chat-open", "settings-open", "logs-open");
   appEl.classList.add("chats-open");
-  loadSessions();
+  setChatScope(chatScope);
 }
 $("chatsToggle").onclick = () =>
   appEl.classList.contains("chats-open") ? appEl.classList.remove("chats-open") : openChats();
