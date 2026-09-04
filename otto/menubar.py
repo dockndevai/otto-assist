@@ -278,6 +278,12 @@ class OttoApp(rumps.App):
                     self._loop.call_soon_threadsafe(
                         lambda: self.orch.on_mic_decision(granted))
             request_mic_access_async(_cb)
+            # Also ask for Calendar access (for the dashboard's Upcoming card) on the main thread.
+            try:
+                from .server.data import request_calendar_access
+                request_calendar_access()
+            except Exception:
+                pass
         except Exception as e:
             print(f"[otto] mic request error: {e}", file=sys.stderr, flush=True)
 

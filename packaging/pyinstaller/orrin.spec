@@ -78,6 +78,10 @@ app = BUNDLE(
         "LSUIElement": True,                     # menu-bar agent: no Dock icon
         "NSMicrophoneUsageDescription":
             "Orrin listens to your voice when you talk to it.",
+        "NSCalendarsUsageDescription":
+            "Orrin shows your upcoming events on the dashboard.",
+        "NSCalendarsFullAccessUsageDescription":
+            "Orrin shows your upcoming events on the dashboard.",
         "NSHighResolutionCapable": True,
         # The in-app dashboard (WKWebView) loads the local server over http://127.0.0.1 —
         # allow loopback/local networking under App Transport Security.
