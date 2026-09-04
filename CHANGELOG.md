@@ -5,6 +5,9 @@ is `otto-assist`.
 
 ## Unreleased
 
+**Live feedback**
+- **See what you're saying** — the dashboard now streams partial words as you speak (a small realtime model) and shows them as a live caption on the main stage, plus a clear “Listening…” state — so talking visibly updates the screen instead of only appearing after you finish. Toggle with `voice.stt.realtime_partials`.
+
 **All-sessions access**
 - **Open any chat from any project** — the Chats drawer has a new **All projects** scope with a
   search box that spans *every* Claude session on the machine (normal chats and cowork alike —

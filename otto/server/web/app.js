@@ -35,6 +35,18 @@ function setStatus(state, text) {
   if (state === "listening") appEl.classList.add("state-listening", "is-active");
   else if (state === "speaking") appEl.classList.add("state-speaking", "is-active");
   else if (state === "thinking" || state === "working") appEl.classList.add("state-thinking", "is-active");
+  // Live caption on the stage so talking is visible without opening the drawer.
+  if (state === "listening") setCaption("🎙️ Listening…", "hint");
+  else if (state === "idle") setCaption("", "");
+}
+
+// Live caption (bottom of the stage): shows what you're saying as you speak, and Otto's state.
+let captionHideTimer = null;
+function setCaption(text, cls) {
+  const el = $("caption"); if (!el) return;
+  clearTimeout(captionHideTimer);
+  if (!text) { el.hidden = true; el.textContent = ""; el.className = "caption"; return; }
+  el.hidden = false; el.textContent = text; el.className = "caption" + (cls ? " " + cls : "");
 }
 
 function fmtTime() { return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -134,12 +146,19 @@ function ingestMsg(ev) {
   const k = keyOf(ev), w = win(k), live = k === curKey();
   switch (ev.type) {
     case "transcript_partial":
-      if (ev.role === "user" && live) { if (!partialUser) partialUser = bubble("user partial", ""); partialUser._body.textContent = ev.text; scroll(); }
+      if (ev.role === "user" && live) {
+        if (!partialUser) partialUser = bubble("user partial", ""); partialUser._body.textContent = ev.text; scroll();
+        setCaption(ev.text, "user");                 // live caption on the stage
+      }
       return;   // partials aren't buffered
     case "transcript_final":
       if (ev.role === "user") {
         w.msgs.push({ role: "user", text: ev.text });
-        if (live) { if (partialUser) { partialUser.className = "msg user"; partialUser._body.textContent = ev.text; partialUser = null; } else bubble("user", ev.text); }
+        if (live) {
+          if (partialUser) { partialUser.className = "msg user"; partialUser._body.textContent = ev.text; partialUser = null; } else bubble("user", ev.text);
+          setCaption(ev.text, "user");
+          captionHideTimer = setTimeout(() => setCaption("", ""), 2600);
+        }
       } else {
         const text = ev.text || w.cur || ""; w.cur = null;
         w.msgs.push({ role: "assistant", text });

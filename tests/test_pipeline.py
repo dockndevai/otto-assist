@@ -874,3 +874,26 @@ def test_all_session_routes_registered():
     app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
     paths = {getattr(r, "path", "") for r in app.routes}
     assert {"/api/all-sessions", "/api/session/open-anywhere"} <= paths
+
+
+def test_voice_partial_emits_and_suppresses():
+    async def run():
+        bus = EventBus(); events = []
+        bus.add_sink(events.append)
+        orch = Orchestrator(load_settings(), bus)
+        orch._loop = asyncio.get_running_loop()
+        # normal: streams a live partial caption
+        orch._on_voice_partial("hello wor")
+        assert any(e["type"] == "transcript_partial" and e["text"] == "hello wor"
+                   and e["role"] == "user" for e in events)
+        # asleep: suppressed
+        events.clear(); orch._sleeping = True
+        orch._on_voice_partial("ignore me")
+        assert not events
+        orch._sleeping = False
+        # while Otto is speaking: suppressed (would be its own echo)
+        events.clear()
+        orch.mouth = type("M", (), {"is_playing": lambda self: True})()
+        orch._on_voice_partial("otto's own words")
+        assert not events
+    asyncio.run(run())

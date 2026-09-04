@@ -91,6 +91,7 @@ class Ears:
         on_speech_start: Callable[[], None],
         on_wake: Callable[[], None],
         on_recording_stop: Callable[[], None] | None = None,
+        on_realtime: Callable[[str], None] | None = None,
     ) -> None:
         self.settings = settings
         self._loop = loop
@@ -99,6 +100,7 @@ class Ears:
         self._on_speech_start = on_speech_start
         self._on_wake = on_wake
         self._on_recording_stop = on_recording_stop
+        self._on_realtime = on_realtime
         self._recorder = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -120,10 +122,6 @@ class Ears:
             # Wait longer after you stop before ending the turn, so Otto doesn't cut you
             # off mid-thought (accommodates different speaking/thinking speeds).
             post_speech_silence_duration=cfg.silence_seconds,
-            # Live-partial transcription spawns a second worker that spams EOFErrors and
-            # burns CPU on an always-on app; we only need final transcripts for the wake
-            # phrase, so keep it off.
-            enable_realtime_transcription=False,
             # Leave silero_use_onnx UNSET. It is RealtimeSTT's legacy switch and both True
             # and False resolve to SILERO_BACKEND_LEGACY, which loads the VAD over
             # torch.hub — a GitHub download on first run that needs a CA store and an
@@ -140,6 +138,17 @@ class Ears:
             params["initial_prompt"] = f"{name}. {name.split()[-1]}, "
         if self._on_recording_stop is not None:
             params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
+
+        # Live captions: stream partial words as you speak, so the dashboard visibly reacts to
+        # your voice (transcribed by a small fast model). Optional; off saves CPU on always-on.
+        if cfg.realtime_partials and self._on_realtime is not None:
+            params["enable_realtime_transcription"] = True
+            params["realtime_model_type"] = cfg.realtime_model or "tiny.en"
+            params["realtime_processing_pause"] = 0.15
+            params["on_realtime_transcription_update"] = \
+                lambda t: self._post(self._on_realtime, t)
+        else:
+            params["enable_realtime_transcription"] = False
 
         # "phrase" / "efficientword" transcribe everything (continuous VAD); the wake is
         # decided elsewhere (phrase match, or the EfficientWord-Net listener). Other
