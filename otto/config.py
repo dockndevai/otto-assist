@@ -85,7 +85,7 @@ class STTConfig(BaseModel):
     # Live captions: stream partial words to the dashboard as you speak (so you can SEE it's
     # hearing you), using a small fast model. Turn off to save CPU on an always-on machine.
     realtime_partials: bool = True
-    realtime_model: str = "tiny.en"
+    realtime_model: str = "base.en"
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
     always_listen: bool = False
