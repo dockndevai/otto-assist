@@ -175,8 +175,10 @@ class Orchestrator:
         if not t or self.mouth is None or self.voice_muted:
             return
         self.mouth.speak(t)
-        # ~14 chars/sec for macOS `say`, + 2.5s cooldown for the mic/transcription tail.
-        secs = max(1.5, len(t) / 14.0) + 2.5
+        # ~14 chars/sec for macOS `say`, + a short cooldown for the mic/transcription tail.
+        # (is_playing() covers the whole spoken duration precisely; this only pads the tail,
+        # so keep it tight for snappy back-and-forth.)
+        secs = max(1.0, len(t) / 14.0) + 1.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
 
     def _output_suppressing(self) -> bool:
