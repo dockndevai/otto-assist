@@ -5,9 +5,6 @@
     <!-- Microphone access (voice input). -->
     <key>com.apple.security.device.audio-input</key>
     <true/>
-    <!-- Calendar access (dashboard "Upcoming" card via EventKit). -->
-    <key>com.apple.security.personal-information.calendars</key>
-    <true/>
     <!-- Python / bundled native code needs these under the hardened runtime. -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
