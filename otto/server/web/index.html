@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Orrin — your Claude, by voice</title>
   <meta name="description" content="Otto — a voice & a screen for the Claude you already run." />
-  <meta name="theme-color" content="#060912" />
+  <meta name="theme-color" content="#0891b2" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png" />
   <link rel="apple-touch-icon" href="/static/icon-180.png" />
@@ -14,128 +14,200 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="app" id="app">
+  <div class="app view-home" id="app">
 
-    <header class="hud">
-      <div class="brand"><span class="logo">🤖</span> Orrin <span class="ver" id="wakeBadge" title="Say your wake word, then talk">“HEY OTTO”</span></div>
-      <div class="hudstate">
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="side">
+      <div class="side-brand">
+        <div class="brandorb"></div>
+        <div class="brandtext">
+          <div class="brandname">Otto</div>
+          <div class="brandsub">Voice &amp; Screen for Claude</div>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <button class="navbtn active" data-nav="home"><span class="ni">◎</span> Home</button>
+        <button class="navbtn" data-nav="convo"><span class="ni">💬</span> Conversations<i class="ndot" id="dotConvo"></i></button>
+        <button class="navbtn" data-nav="visuals"><span class="ni">🖼</span> Visuals<i class="ndot" id="dotVisuals"></i></button>
+        <button class="navbtn" data-nav="settings"><span class="ni">⚙</span> Settings</button>
+      </nav>
+
+      <div class="side-talk">
+        <div class="talk-status"><i class="dot" id="talkDot"></i> <span id="talkState">Ready</span>
+          <span class="wakebadge" id="wakeBadge">“HEY OTTO”</span></div>
         <div class="wave" id="wave"></div>
-        <span class="hudlabel" id="heroState">Ready</span>
+        <div class="talk-hint">Push to talk · <b>⌘⇧J</b></div>
+        <button class="talk-btn" id="mic"><span>🎤</span> Talk</button>
+        <div class="talk-mutes">
+          <button class="minibtn" id="muteMic" title="Mute microphone">Mic</button>
+          <button class="minibtn" id="muteVoice" title="Mute voice">Voice</button>
+          <button class="minibtn" id="logsToggle" title="Logs">Logs</button>
+        </div>
       </div>
-      <div class="hud-right">
-        <span class="proj" id="proj">—</span>
-        <span class="proj" id="chat" title="Current chat">—</span>
-        <button class="readypill bad" id="readyPill" title="Setup &amp; health">⚠ Setup</button>
-        <button class="hbtn" id="chatsToggle" title="Chats">🗂</button>
-        <button class="hbtn" id="chatToggle" title="Conversation">💬</button>
-        <button class="hbtn" id="logsToggle" title="Logs">🐞</button>
-        <button class="hbtn" id="themeToggle" title="Light / dark">🌙</button>
-        <button class="hbtn" id="settingsToggle" title="Settings">⚙</button>
-      </div>
-    </header>
+    </aside>
 
-    <div class="wsbar empty" id="wsbar"></div>
+    <!-- ============ MAIN ============ -->
+    <main class="main">
+      <header class="topbar">
+        <div class="greet">
+          <h1 id="greet">Welcome back</h1>
+          <p id="greetSub">How can I help you today?</p>
+        </div>
+        <div class="topbar-right">
+          <span class="proj" id="proj" title="Current project">—</span>
+          <button class="readypill bad" id="readyPill" title="Setup &amp; health">⚠ Setup</button>
+          <button class="hbtn" id="themeToggle" title="Light / dark">🌙</button>
+        </div>
+      </header>
 
-    <main class="stage">
-      <iframe id="canvas" sandbox="allow-scripts" title="canvas"></iframe>
-      <div class="idle" id="idle">
-        <div class="orb" id="orb"></div>
-        <div class="clock" id="clock">--:--</div>
-        <div class="date" id="date"></div>
-        <div class="hello">How can I help?</div>
+      <div class="content">
+
+        <!-- ---- HOME ---- -->
+        <section class="view" data-view="home">
+          <div class="hero">
+            <div class="orb hero-orb" id="orb"></div>
+            <div class="hero-state" id="heroState">Ready</div>
+            <div class="hero-sub" id="heroSub">Tap to talk or type your question</div>
+          </div>
+
+          <div class="grid">
+            <div class="card recent">
+              <div class="card-head"><b>Recent</b><button class="linkbtn" id="recentAll">View all →</button></div>
+              <div id="recentList" class="rlist"><p class="tiny">Loading…</p></div>
+            </div>
+
+            <div class="card status">
+              <div class="card-head"><b>Otto Status</b></div>
+              <div id="statusList" class="slist"></div>
+            </div>
+
+            <div class="card actions">
+              <div class="card-head"><b>Quick Actions</b></div>
+              <div id="qactions" class="qlist"></div>
+            </div>
+
+            <div class="card wsp">
+              <div class="card-head"><b>Workspaces</b><span class="tiny" id="wspCount"></span></div>
+              <div id="wsbar" class="wsgrid empty"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- CONVERSATIONS ---- -->
+        <section class="view" data-view="convo">
+          <div class="convo-head">
+            <span class="convo-title" id="chat">—</span>
+            <div class="convo-tools">
+              <div class="chatscope">
+                <button id="scopeProject" class="scopebtn on">This project</button>
+                <button id="scopeAll" class="scopebtn">All projects</button>
+              </div>
+              <button id="newChat" class="ghostbtn">＋ New chat</button>
+              <button id="chatsToggle" class="ghostbtn">🗂 Chats</button>
+            </div>
+          </div>
+          <input id="chatSearch" class="chatsearch" placeholder="Search every chat &amp; cowork…" hidden />
+          <div id="chatListWrap" hidden>
+            <p class="tiny" id="chatsHint">Chats in this project — switch, or start a new one.</p>
+            <div id="chatList" class="projlist"></div>
+          </div>
+          <div class="transcript" id="transcript"></div>
+        </section>
+
+        <!-- ---- VISUALS ---- -->
+        <section class="view" data-view="visuals">
+          <div class="stage">
+            <iframe id="canvas" sandbox="allow-scripts" title="canvas"></iframe>
+            <div class="idle" id="idle">
+              <div class="orb"></div>
+              <div class="clock" id="clock">--:--</div>
+              <div class="date" id="date"></div>
+              <div class="hello">Otto's visuals appear here</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---- SETTINGS ---- -->
+        <section class="view" data-view="settings">
+          <div class="sbody">
+            <section class="sgroup">
+              <h3>Project <span class="tiny">Otto continues its latest Claude chat</span></h3>
+              <div id="setProjects" class="projlist"></div>
+            </section>
+            <section class="sgroup">
+              <h3>Voice</h3>
+              <label class="field"><span>Wake word</span><input id="setWake" placeholder="hey otto" /></label>
+              <div class="two">
+                <label class="chk"><input type="checkbox" id="setMic" /> Microphone / wake word</label>
+                <label class="chk"><input type="checkbox" id="setSpeak" /> Speak replies</label>
+              </div>
+              <div class="two">
+                <label class="field"><span>Whisper model</span><input id="setModel" placeholder="small.en" /></label>
+                <label class="field"><span>TTS engine</span>
+                  <select id="setTts"><option value="system">system (local)</option><option value="elevenlabs">elevenlabs</option></select></label>
+              </div>
+              <div class="two" id="voiceRow">
+                <label class="field"><span>Voice</span>
+                  <select id="setVoice"><option value="">System default</option></select></label>
+                <label class="field"><span>&nbsp;</span>
+                  <button type="button" id="voicePreview" class="ghost">▶ Preview</button></label>
+              </div>
+            </section>
+            <section class="sgroup">
+              <h3>Brain</h3>
+              <div class="two">
+                <label class="field"><span>Model</span><input id="setBrainModel" placeholder="Claude default" /></label>
+                <label class="field"><span>Permission prompts</span>
+                  <select id="setPerm">
+                    <option value="voice">voice — ask me</option>
+                    <option value="auto">auto — approve</option>
+                    <option value="deny">deny — reject</option>
+                  </select></label>
+              </div>
+              <label class="chk"><input type="checkbox" id="setContinue" /> Continue the project's latest session</label>
+              <label class="chk"><input type="checkbox" id="setMcp" /> Expose Otto as an MCP for Claude (/mcp)</label>
+            </section>
+            <div class="sbar">
+              <button id="setSave">Save changes</button>
+              <span id="setMsg" class="tiny"></span>
+            </div>
+            <p class="tiny path">Config: <span id="setPath">…</span> · some changes apply after Restart (menu bar).</p>
+          </div>
+        </section>
+
       </div>
+
+      <!-- persistent composer -->
+      <footer class="composerbar">
+        <form class="composer" id="composer">
+          <input id="input" autocomplete="off" placeholder="Type your message…" />
+          <button type="submit" class="sendbtn" title="Send">➤</button>
+        </form>
+      </footer>
+
       <div class="caption" id="caption" hidden></div>
+
+      <div class="setup" id="setup" hidden>
+        <div class="setup-card">
+          <div class="setup-head">
+            <span class="setup-emoji" id="setupEmoji">🛠️</span>
+            <div class="setup-titles">
+              <h2 id="setupTitle">Setting up Otto…</h2>
+              <p class="setup-sub" id="setupSub">Checking permissions and your Claude connection.</p>
+            </div>
+            <button class="dclose" id="setupClose" title="Close">✕</button>
+          </div>
+          <div class="checks" id="checks"></div>
+          <div class="setup-bar">
+            <button id="recheckBtn">Recheck</button>
+            <span class="tiny" id="setupNote"></span>
+          </div>
+        </div>
+      </div>
     </main>
 
-    <footer class="control">
-      <button class="mic" id="mic" title="Click, then speak — or just talk"><span>🎤</span></button>
-      <form class="composer" id="composer">
-        <input id="input" autocomplete="off" placeholder="Ask Otto…" />
-        <button type="submit">Send</button>
-      </form>
-      <div class="hint" id="heroSub">click the mic or just talk</div>
-    </footer>
-
-    <aside class="drawer" id="drawer">
-      <div class="drawer-head">
-        <span>CONVERSATION</span>
-        <button class="dclose" id="chatClose" title="Close">✕</button>
-      </div>
-      <div class="transcript" id="transcript"></div>
-    </aside>
-
-    <aside class="sdrawer" id="sdrawer">
-      <div class="drawer-head">
-        <span>SETTINGS</span>
-        <button class="dclose" id="setClose" title="Close">✕</button>
-      </div>
-      <div class="sbody">
-        <section class="sgroup">
-          <h3>Project <span class="tiny">Otto continues its latest Claude chat</span></h3>
-          <div id="setProjects" class="projlist"></div>
-        </section>
-
-        <section class="sgroup">
-          <h3>Voice</h3>
-          <label class="field"><span>Wake word</span>
-            <input id="setWake" placeholder="hey otto" /></label>
-          <div class="two">
-            <label class="chk"><input type="checkbox" id="setMic" /> Microphone / wake word</label>
-            <label class="chk"><input type="checkbox" id="setSpeak" /> Speak replies</label>
-          </div>
-          <div class="two">
-            <label class="field"><span>Whisper model</span><input id="setModel" placeholder="small.en" /></label>
-            <label class="field"><span>TTS engine</span>
-              <select id="setTts"><option value="system">system (local)</option><option value="elevenlabs">elevenlabs</option></select></label>
-          </div>
-          <div class="two" id="voiceRow">
-            <label class="field"><span>Voice</span>
-              <select id="setVoice"><option value="">System default</option></select></label>
-            <label class="field"><span>&nbsp;</span>
-              <button type="button" id="voicePreview" class="ghost">▶ Preview</button></label>
-          </div>
-        </section>
-
-        <section class="sgroup">
-          <h3>Brain</h3>
-          <div class="two">
-            <label class="field"><span>Model</span><input id="setBrainModel" placeholder="Claude default" /></label>
-            <label class="field"><span>Permission prompts</span>
-              <select id="setPerm">
-                <option value="voice">voice — ask me</option>
-                <option value="auto">auto — approve</option>
-                <option value="deny">deny — reject</option>
-              </select></label>
-          </div>
-          <label class="chk"><input type="checkbox" id="setContinue" /> Continue the project's latest session</label>
-          <label class="chk"><input type="checkbox" id="setMcp" /> Expose Otto as an MCP for Claude (/mcp)</label>
-        </section>
-
-        <div class="sbar">
-          <button id="setSave">Save changes</button>
-          <span id="setMsg" class="tiny"></span>
-        </div>
-        <p class="tiny path">Config: <span id="setPath">…</span> · some changes apply after Restart (menu bar).</p>
-      </div>
-    </aside>
-
-    <aside class="cdrawer" id="cdrawer">
-      <div class="drawer-head">
-        <span>CHATS</span>
-        <button class="dclose" id="chatsClose" title="Close">✕</button>
-      </div>
-      <div class="sbody">
-        <button id="newChat" class="newchat">＋ New chat</button>
-        <div class="chatscope">
-          <button id="scopeProject" class="scopebtn on">This project</button>
-          <button id="scopeAll" class="scopebtn">All projects</button>
-        </div>
-        <input id="chatSearch" class="chatsearch" placeholder="Search every chat & cowork…" hidden />
-        <p class="tiny" id="chatsHint" style="margin:8px 0 4px">Chats in this project — switch, or start a new one.</p>
-        <div id="chatList" class="projlist"></div>
-      </div>
-    </aside>
-
+    <!-- ============ LOGS (slide-over) ============ -->
     <aside class="ldrawer" id="ldrawer">
       <div class="drawer-head">
         <span>LOGS</span>
@@ -146,24 +218,6 @@
       </div>
       <div class="logbody" id="logList"></div>
     </aside>
-
-    <div class="setup" id="setup" hidden>
-      <div class="setup-card">
-        <div class="setup-head">
-          <span class="setup-emoji" id="setupEmoji">🛠️</span>
-          <div class="setup-titles">
-            <h2 id="setupTitle">Setting up Otto…</h2>
-            <p class="setup-sub" id="setupSub">Checking permissions and your Claude connection.</p>
-          </div>
-          <button class="dclose" id="setupClose" title="Close">✕</button>
-        </div>
-        <div class="checks" id="checks"></div>
-        <div class="setup-bar">
-          <button id="recheckBtn">Recheck</button>
-          <span class="tiny" id="setupNote"></span>
-        </div>
-      </div>
-    </div>
 
   </div>
   <script src="/static/app.js"></script>
