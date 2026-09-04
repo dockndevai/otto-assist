@@ -119,8 +119,15 @@ class Ears:
             language=cfg.language,
             spinner=False,
             level=logging.WARNING,           # quiet RealtimeSTT's very chatty logging
-            # Wait longer after you stop before ending the turn, so Otto doesn't cut you
-            # off mid-thought (accommodates different speaking/thinking speeds).
+            # Latency: this Mac has no CUDA and Whisper float16 isn't supported on CPU (it
+            # silently upcasts to slow float32), so run int8 on CPU with a greedy beam — far
+            # faster transcription with negligible accuracy loss for short spoken commands.
+            device="cpu",
+            compute_type="int8",
+            beam_size=1,
+            beam_size_realtime=1,
+            # Wait after you stop before ending the turn (lower = snappier, higher = won't
+            # clip a mid-thought pause).
             post_speech_silence_duration=cfg.silence_seconds,
             # Leave silero_use_onnx UNSET. It is RealtimeSTT's legacy switch and both True
             # and False resolve to SILERO_BACKEND_LEGACY, which loads the VAD over
