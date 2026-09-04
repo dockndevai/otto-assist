@@ -140,9 +140,11 @@ class Orchestrator:
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
         # Half-duplex guard: on a laptop speaker the mic hears Otto's OWN voice and would
-        # answer itself in a loop. We drop ALL mic input while Otto is speaking and for a
-        # cooldown after — `_mute_input_until` is pushed out by the length of each spoken line.
+        # answer itself in a loop. Primary defense: physically turn the mic OFF at the recorder
+        # while Otto speaks (set_mic) so nothing is captured; `_mute_input_until` tracks when to
+        # turn it back on, and also filters any straggler transcript as a backstop.
         self._mute_input_until = 0.0
+        self._unmute_handle = None
 
     # -- workspace pool accessors -----------------------------------------
     # Most existing code operates on the *focused* workspace; these keep that code
@@ -175,11 +177,37 @@ class Orchestrator:
         if not t or self.mouth is None or self.voice_muted:
             return
         self.mouth.speak(t)
-        # ~14 chars/sec for macOS `say`, + a short cooldown for the mic/transcription tail.
-        # (is_playing() covers the whole spoken duration precisely; this only pads the tail,
-        # so keep it tight for snappy back-and-forth.)
-        secs = max(1.0, len(t) / 14.0) + 1.5
+        # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.
+        secs = max(1.0, len(t) / 14.0) + 2.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
+        # Primary echo cure: physically stop the mic from capturing while we speak, then
+        # re-enable it once the mute window elapses (extended by any later line).
+        if self.ears is not None:
+            try:
+                self.ears.set_mic(False)
+            except Exception:
+                pass
+            self._schedule_unmute()
+
+    def _schedule_unmute(self) -> None:
+        if self._loop is None:
+            return
+        if self._unmute_handle is not None:
+            self._unmute_handle.cancel()
+        delay = max(0.1, self._mute_input_until - time.monotonic())
+        self._unmute_handle = self._loop.call_later(delay, self._do_unmute)
+
+    def _do_unmute(self) -> None:
+        # A later spoken line may have pushed the window out — only re-enable once it's truly past.
+        if time.monotonic() < self._mute_input_until - 0.05:
+            self._schedule_unmute()
+            return
+        self._unmute_handle = None
+        if self.ears is not None and not self.mic_muted:
+            try:
+                self.ears.set_mic(True)
+            except Exception:
+                pass
 
     def _output_suppressing(self) -> bool:
         """True while Otto is speaking (or in the cooldown after) — drop mic input then."""
@@ -831,6 +859,14 @@ class Orchestrator:
         self._ptt_armed = True
         self._status("listening", "Listening… speak now")
         self._mute_input_until = 0.0     # explicit Talk press bypasses the half-duplex mute
+        if self.ears is not None:        # make sure the mic is on for the press
+            try:
+                self.ears.set_mic(True)
+            except Exception:
+                pass
+        if self._unmute_handle is not None:
+            self._unmute_handle.cancel()
+            self._unmute_handle = None
         if self.mouth:
             self.mouth.stop()
             self.mouth._last_end = 0.0   # allow immediate capture (bypass echo guard)
