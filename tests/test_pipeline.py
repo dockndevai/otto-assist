@@ -835,3 +835,42 @@ def test_set_voice_applies_and_persists(monkeypatch):
     orch.set_voice("Samantha")
     assert orch.settings.voice.tts.voice == "Samantha"
     assert saved.get("voice", {}).get("tts", {}).get("voice") == "Samantha"
+
+
+def test_list_all_sessions_aggregates(monkeypatch):
+    """Global session index spans every project (cowork included), sorted by recency."""
+    import otto.sessions as S
+
+    fake = {
+        "/Users/me/projA": [S.Session("a1", "Auth work", "fix auth", 300.0),
+                            S.Session("a2", "Old thing", "misc", 100.0)],
+        "/private/tmp/claude-x/coworks/web": [S.Session("c1", "Landing page", "build lp", 250.0)],
+    }
+    dirs = list(fake.keys())
+
+    class _D:
+        def __init__(s, p): s.name = p
+        def is_dir(s): return True
+        def stat(s): return type("st", (), {"st_mtime": 1.0})()
+
+    class _Root:
+        def is_dir(s): return True
+        def iterdir(s): return [_D(d) for d in dirs]
+
+    monkeypatch.setattr(S, "list_sessions", lambda cwd, current_id=None, limit=25: fake.get(cwd, []))
+    monkeypatch.setattr("otto.projects.CLAUDE_PROJECTS", _Root())
+    monkeypatch.setattr("otto.projects._decode", lambda name: name)  # each dir decodes to itself
+
+    rows = S.list_all_sessions()
+    titles = [r["title"] for r in rows]
+    assert titles == ["Auth work", "Landing page", "Old thing"]   # recency order across projects
+    web = next(r for r in rows if r["title"] == "Landing page")
+    assert web["cowork"] is True and web["project_name"] == "web"
+    # query filters by title/project/first-prompt
+    assert [r["title"] for r in S.list_all_sessions(query="landing")] == ["Landing page"]
+
+
+def test_all_session_routes_registered():
+    app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
+    paths = {getattr(r, "path", "") for r in app.routes}
+    assert {"/api/all-sessions", "/api/session/open-anywhere"} <= paths

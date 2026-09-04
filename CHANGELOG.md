@@ -5,6 +5,14 @@ is `otto-assist`.
 
 ## Unreleased
 
+**All-sessions access**
+- **Open any chat from any project** — the Chats drawer has a new **All projects** scope with a
+  search box that spans *every* Claude session on the machine (normal chats and cowork alike —
+  cowork sessions are just projects with temp cwds). Picking one focuses that project and resumes
+  that chat in a single step. By voice, "switch to `<name>`" now searches beyond the focused
+  project and opens the match anywhere. (`GET /api/all-sessions`, `POST /api/session/open-anywhere`.)
+  Sessions whose working directory has since been deleted aren't listed (they can't be resumed).
+
 **Voice**
 - **Pick Otto's voice** — Settings now lists every installed macOS voice (183 on a typical Mac,
   English first) in a dropdown with a **▶ Preview** button. Choosing one applies it live and

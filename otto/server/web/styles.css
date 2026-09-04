@@ -274,3 +274,13 @@ body {
 #voicePreview { width: 100%; background: rgba(255,255,255,.05); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
 #voicePreview:hover { border-color: rgba(34,211,238,.4); }
+
+/* ---- Chats drawer: scope toggle + global search ---- */
+.chatscope { display: flex; gap: 6px; margin: 10px 0 6px; }
+.scopebtn { flex: 1; background: rgba(255,255,255,.04); color: var(--muted); border: 1px solid var(--line);
+  border-radius: 9px; padding: 7px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.scopebtn.on { color: #04121a; background: linear-gradient(90deg, var(--cyan), var(--blue)); border-color: transparent; }
+.scopebtn:not(.on):hover { color: var(--text); border-color: rgba(34,211,238,.4); }
+.chatsearch { width: 100%; background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--text);
+  border-radius: 9px; padding: 9px 12px; margin: 2px 0 4px; font-size: 13px; }
+.chatsearch:focus { border-color: rgba(34,211,238,.5); outline: none; }

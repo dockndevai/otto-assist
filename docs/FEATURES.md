@@ -48,6 +48,8 @@ several projects at once, each as its own chat.
 ## Chats within a project
 - Each project keeps multiple Claude **sessions**; **switch**, start a **new chat**, or **rename**
   one — by voice or from the dashboard 🗂 drawer / menu bar.
+- **All sessions, everywhere** — an "All projects" scope in the Chats drawer searches every chat
+  across every project (cowork included) and opens any one in a single step; by voice too.
 - **Resume in place** — working in a project continues its *existing* session, so the conversation
   is right there when you reopen it in Claude Code.
 

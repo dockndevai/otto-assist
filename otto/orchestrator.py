@@ -609,6 +609,35 @@ class Orchestrator:
         self._status("idle", "Ready")
         await self.say("Switched chats.")
 
+    async def open_session_anywhere(self, project: str, session_id: str) -> None:
+        """Open ANY chat from ANY project (incl. cowork) in one step: focus that project as a
+        workspace already bound to the chosen session. This is the 'all sessions access' path."""
+        from pathlib import Path
+        project = str(Path(project).expanduser())
+        session_id = (session_id or "").strip()
+        if not session_id:
+            return
+        if project in self.workspaces:          # already open — just focus + switch chat
+            self.focus_workspace(project)
+            await self.switch_session(session_id)
+            return
+        self._status("thinking", f"Opening {Path(project).name}…")
+        if len(self.workspaces) >= self.max_workspaces:
+            await self.close_workspace(self.focused)   # swap out at the cap (like switch_project)
+        ws = Workspace(self, self.settings, project, resume=session_id)
+        await ws.brain.connect()                # bound to the requested chat from the start
+        self.workspaces[project] = ws
+        self.focus_workspace(project)
+        try:
+            self.settings.brain.project_dir = project
+            self._persist_project(project)
+            self._persist_session(project, session_id)
+        except Exception:
+            pass
+        self._publish_session()
+        self._status("idle", f"Ready · {Path(project).name}")
+        await self.say("Opened that chat.")
+
     async def new_chat(self) -> None:
         """Start a fresh chat in the focused workspace's project (a new Claude session)."""
         ws = self.focused_ws
@@ -684,19 +713,33 @@ class Orchestrator:
         return False
 
     async def _switch_chat_by_name(self, name: str) -> None:
-        """Resolve a spoken chat name to a session and switch, or ask to disambiguate."""
+        """Resolve a spoken chat name to a session and switch, or ask to disambiguate.
+
+        Searches the focused project first; if nothing matches there, falls back to EVERY
+        project on the machine (cowork included) so you can jump to any chat by voice."""
         needle = name.lower().strip()
         chats = sessions.list_sessions(self.current_project,
                                        current_id=self._active_session)
         matches = [s for s in chats if needle in s.title.lower()]
-        if not matches:
-            await self.say(f"I couldn't find a chat matching “{name}”.")
+        if len(matches) == 1:
+            await self.switch_session(matches[0].session_id)
             return
         if len(matches) > 1:
             names = ", ".join(s.title for s in matches[:4])
             await self.say(f"I found a few chats matching that: {names}. Which one?")
             return
-        await self.switch_session(matches[0].session_id)
+        # Nothing in this project — search across all projects.
+        allm = sessions.list_all_sessions(query=needle, current_id=self._active_session)
+        if not allm:
+            await self.say(f"I couldn't find a chat matching “{name}” in any project.")
+            return
+        if len(allm) > 1:
+            names = ", ".join(f"{m['title']} in {m['project_name']}" for m in allm[:3])
+            await self.say(f"I found a few across your projects: {names}. Which one?")
+            return
+        m = allm[0]
+        await self.say(f"Opening {m['title']} in {m['project_name']}.")
+        await self.open_session_anywhere(m["project"], m["session_id"])
 
     def _resolve_workspace_name(self, name: str) -> str | None:
         """Map a spoken workspace name to a project path: an open workspace first, then a
