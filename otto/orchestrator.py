@@ -1220,6 +1220,14 @@ class Orchestrator:
     def set_status(self, text: str) -> None:
         self._status("working", text)
 
+    def set_mood(self, level: str, note: str = "") -> None:
+        """Otto's explicit override of the dashboard's ambient severity color."""
+        lvl = (level or "info").strip().lower()
+        if lvl not in ("good", "info", "warn", "critical"):
+            lvl = "info"
+        self.bus.publish({"type": "mood", "level": lvl, "note": (note or "").strip(),
+                          "source": "otto"})
+
     # -- per-workspace routing (called by each workspace's tools via WorkspaceContext) -----
     # Every workspace streams into its OWN chat window (events tagged with the project); only
     # the focused workspace is spoken aloud.

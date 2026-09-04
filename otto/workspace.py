@@ -43,6 +43,9 @@ class WorkspaceContext:
     def set_status(self, text: str) -> None:
         self.orch._ws_set_status(self.project, text)
 
+    def set_mood(self, level: str, note: str = "") -> None:
+        self.orch.set_mood(level, note)
+
     def notify(self, title: str, body: str = "") -> None:
         self.orch.notify(title, body)
 
