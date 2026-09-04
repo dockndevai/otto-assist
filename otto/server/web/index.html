@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Orrin — your Claude, by voice</title>
-  <meta name="description" content="Otto — a voice & a screen for the Claude you already run." />
+  <meta name="description" content="Orrin — a voice & a screen for the Claude you already run." />
   <meta name="theme-color" content="#0891b2" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png" />
@@ -21,13 +21,13 @@
       <div class="side-brand">
         <div class="brandorb"></div>
         <div class="brandtext">
-          <div class="brandname">Otto</div>
+          <div class="brandname">Orrin</div>
           <div class="brandsub">Voice &amp; Screen for Claude</div>
         </div>
       </div>
       <nav class="side-nav">
         <button class="navbtn active" data-nav="home"><span class="ni">◎</span> Home</button>
-        <button class="navbtn" data-nav="convo"><span class="ni">💬</span> Conversations<i class="ndot" id="dotConvo"></i></button>
+        <button class="navbtn" data-nav="chats"><span class="ni">🗂</span> Chats</button>
         <button class="navbtn" data-nav="settings"><span class="ni">⚙</span> Settings</button>
       </nav>
       <div class="side-talk">
@@ -64,21 +64,31 @@
 
       <div class="content">
 
-        <!-- ---- HOME (ambient presence) ---- -->
+        <!-- ---- HOME (split: presence + live conversation) ---- -->
         <section class="view" data-view="home">
-          <div class="ambient" aria-hidden="true">
-            <span class="flow f1"></span><span class="flow f2"></span><span class="flow f3"></span>
-          </div>
-          <div class="presence">
-            <div class="p-clock"><span id="clock">--:--</span> · <span id="date"></span></div>
-            <div class="orb-wrap">
-              <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
-              <div class="orb big" id="orb"></div>
+          <div class="split">
+            <div class="presence-panel">
+              <div class="ambient" aria-hidden="true">
+                <span class="flow f1"></span><span class="flow f2"></span><span class="flow f3"></span>
+              </div>
+              <div class="presence">
+                <div class="p-clock"><span id="clock">--:--</span> · <span id="date"></span></div>
+                <div class="orb-wrap">
+                  <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
+                  <div class="orb big" id="orb"></div>
+                </div>
+                <div class="p-state" id="heroState">Ready</div>
+                <div class="p-topic" id="homeTopic">How can I help?</div>
+                <div class="p-stats" id="homeStats"></div>
+              </div>
             </div>
-            <div class="p-state" id="heroState">Ready</div>
-            <div class="p-topic" id="homeTopic">How can I help?</div>
-            <div class="p-reply" id="homeReply"></div>
-            <div class="p-stats" id="homeStats"></div>
+            <div class="convo-panel">
+              <div class="cp-head">
+                <span class="convo-title" id="chat">—</span>
+                <button id="chatsToggle" class="ghostbtn">🗂 Chats</button>
+              </div>
+              <div class="transcript" id="transcript"></div>
+            </div>
           </div>
           <div class="p-canvas" id="homeCanvasWrap" hidden>
             <div class="pc-head"><span id="pcTitle">On screen</span>
@@ -87,25 +97,21 @@
           </div>
         </section>
 
-        <!-- ---- CONVERSATIONS ---- -->
-        <section class="view" data-view="convo">
+        <!-- ---- CHATS (management) ---- -->
+        <section class="view" data-view="chats">
           <div class="convo-head">
-            <span class="convo-title" id="chat">—</span>
+            <span class="convo-title">Chats</span>
             <div class="convo-tools">
               <div class="chatscope">
                 <button id="scopeProject" class="scopebtn on">This project</button>
                 <button id="scopeAll" class="scopebtn">All projects</button>
               </div>
               <button id="newChat" class="ghostbtn">＋ New chat</button>
-              <button id="chatsToggle" class="ghostbtn">🗂 Chats</button>
             </div>
           </div>
           <input id="chatSearch" class="chatsearch" placeholder="Search every chat &amp; cowork…" hidden />
-          <div id="chatListWrap" hidden>
-            <p class="tiny" id="chatsHint">Chats in this project — switch, or start a new one.</p>
-            <div id="chatList" class="projlist"></div>
-          </div>
-          <div class="transcript" id="transcript"></div>
+          <p class="tiny" id="chatsHint">Chats in this project — switch, or start a new one.</p>
+          <div id="chatList" class="projlist"></div>
         </section>
 
         <!-- ---- SETTINGS ---- -->

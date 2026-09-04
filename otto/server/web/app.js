@@ -41,9 +41,9 @@ function showView(name) {
   document.querySelectorAll(".navbtn").forEach((b) => b.classList.toggle("active", b.dataset.nav === name));
   const nav = document.querySelector(`.navbtn[data-nav="${name}"]`);
   if (nav) nav.classList.remove("unread");
-  if (name === "convo") scroll();
+  if (name === "home") { renderStats(); scroll(); }
+  if (name === "chats") setChatScope(chatScope);
   if (name === "settings") { loadConfig(); loadProjects(); loadVoices(); }
-  if (name === "home") renderStats();
   if (window.innerWidth <= 820) appEl.classList.remove("nav-open");
 }
 document.querySelectorAll(".navbtn").forEach((b) => (b.onclick = () => showView(b.dataset.nav)));
@@ -151,14 +151,14 @@ function handle(ev) {
     case "status": setStatus(ev.state, ev.text); return;
     case "history_start": { replaying = true; const w = win(curKey()); w.msgs = []; w.cur = null; transcriptEl.innerHTML = ""; partialUser = assistantBubble = null; return; }
     case "history_end": { replaying = false; const d = document.createElement("div"); d.className = "divider"; d.textContent = "— now —"; transcriptEl.appendChild(d); scroll(); return; }
-    case "ask_user": showView("convo"); $("input").focus(); setMood("warn", 12000); return;
+    case "ask_user": showView("home"); $("input").focus(); setMood("warn", 12000); return;
     case "project": setFocused(ev.path, ev.name || ev.path); return;
     case "workspaces": setFocused(ev.focused); renderWorkspaces(ev.items || [], ev.focused, ev.max); return;
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
     case "mood": setMood(ev.level, 25000); return;
     case "session": { chatName = ev.title || "New chat"; const el = $("chat"); if (el) el.textContent = "💬 " + chatName;
-      renderStats(); if (view === "convo" && !$("chatListWrap").hidden) (chatScope === "all") ? loadAllSessions($("chatSearch").value) : loadSessions(); return; }
+      renderStats(); if (view === "chats") (chatScope === "all") ? loadAllSessions($("chatSearch").value) : loadSessions(); return; }
     case "canvas_render": { const k = keyOf(ev), w = win(k); w.canvas = { content: ev.content, format: ev.format };
       if (k === curKey()) showCanvas(ev.content, ev.format); else { w.unread = true; markUnread(k); } return; }
     case "notify": { win(curKey()).msgs.push({ role: "notify", title: ev.title, body: ev.body });
@@ -184,7 +184,7 @@ function ingestMsg(ev) {
         if (live) {
           if (partialUser) { partialUser.className = "msg user"; partialUser._body.textContent = ev.text; partialUser = null; } else bubble("user", ev.text);
           setCaption(ev.text, "user"); captionHideTimer = setTimeout(() => setCaption("", ""), 2600);
-          setTopic(ev.text); setReply("");
+          setTopic(ev.text);
         }
       } else {
         const text = ev.text || w.cur || ""; w.cur = null;
@@ -272,9 +272,9 @@ function renderPreflight(ev) {
   const pill = $("readyPill");
   if (pill) { pill.classList.toggle("ok", !!ev.ready); pill.classList.toggle("bad", !ev.ready);
     pill.textContent = ev.ready ? "✓ Ready" : (ev.done ? "⚠ Setup" : "… Checking"); }
-  if (ev.ready) { $("setupEmoji").textContent = "✅"; $("setupTitle").textContent = "Otto is ready"; $("setupSub").textContent = "Everything checks out — say “hey Otto” or click Talk."; }
-  else if (!ev.done) { $("setupEmoji").textContent = "🛠️"; $("setupTitle").textContent = "Setting up Otto…"; $("setupSub").textContent = "Checking permissions and your Claude connection."; }
-  else { $("setupEmoji").textContent = "⚠️"; $("setupTitle").textContent = "Otto needs one more step"; $("setupSub").textContent = "Fix the items below, then click Recheck."; }
+  if (ev.ready) { $("setupEmoji").textContent = "✅"; $("setupTitle").textContent = "Orrin is ready"; $("setupSub").textContent = "Everything checks out — say “Otto” or click Talk."; }
+  else if (!ev.done) { $("setupEmoji").textContent = "🛠️"; $("setupTitle").textContent = "Setting up Orrin…"; $("setupSub").textContent = "Checking permissions and your Claude connection."; }
+  else { $("setupEmoji").textContent = "⚠️"; $("setupTitle").textContent = "Orrin needs one more step"; $("setupSub").textContent = "Fix the items below, then click Recheck."; }
   $("recheckBtn").disabled = !ev.done; $("setupNote").textContent = ev.done ? "" : "Working…";
   if (!ev.done) { if (ev.first_run) showSetup(); }
   else if (!ev.ready) showSetup();
@@ -335,7 +335,7 @@ function setChatScope(scope) {
   $("chatsHint").textContent = scope === "all" ? "Every chat across all projects & cowork — open any one." : "Chats in this project — switch, or start a new one.";
   if (scope === "all") loadAllSessions($("chatSearch").value); else loadSessions();
 }
-$("chatsToggle").onclick = () => { $("chatListWrap").hidden = !$("chatListWrap").hidden; if (!$("chatListWrap").hidden) setChatScope(chatScope); };
+$("chatsToggle").onclick = () => showView("chats");
 $("scopeProject").onclick = () => setChatScope("project");
 $("scopeAll").onclick = () => setChatScope("all");
 $("chatSearch").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadAllSessions($("chatSearch").value), 220); };
