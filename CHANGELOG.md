@@ -27,6 +27,33 @@ is `otto-assist`.
   a short cooldown after), so on a laptop speaker it no longer hears its own voice and answer
   itself. The dashboard Talk button still bypasses this for push-to-talk.
 
+## v0.2.5 — 2026-09-04
+
+**Rename**
+- The product is now **Orrin** across the UI (sidebar, menu bar, setup, status bar). **Otto** is
+  the wake word.
+
+**Redesigned dashboard**
+- New product-grade layout: left **sidebar** (brand, Listening pill, nav — Home / Conversations /
+  Visuals / Skills / MCP Connectors / Settings, push-to-talk), a **hero** card, a widget row, a
+  right **Chat** drawer ("Ask Orrin anything"), a floating **listening bar**, and a bottom
+  **status bar** (Claude Code · MCP connectors · Mode · TTS · version). Hamburger + responsive for
+  phones; full **light/dark** theme with a toggle; a **mood color** (green/blue/red) that tints the
+  orb by severity — automatic, or set by Orrin via a `set_mood` voice tool.
+
+**Live data (new APIs, no keys)**
+- **Weather** hero — IP geolocation + Open-Meteo current/daily + air quality (temp, condition,
+  hi/lo, precip, wind, AQI).
+- **GitHub Activity** — `gh` for the focused repo (open PRs, issues assigned, commits in 7 days).
+- **Upcoming** — calendar events via EventKit (needs Calendar access; requested up front).
+- Status bar shows the real MCP connector count.
+- Cards render only when they have data — no empty placeholder boxes.
+
+**Voice reliability (from 0.2.4.x fixes)**
+- Hardware half-duplex mic mute while Orrin speaks (cures the self-echo loop); hands-free
+  sleep/wake ("stop listening" → wake word); lower latency (int8/CPU, greedy beam, ~1.3s silence);
+  pick any macOS voice with live preview; open any chat from any project (cowork included).
+
 ## v0.2.4 — 2026-09-03
 
 **Setup & reliability**
