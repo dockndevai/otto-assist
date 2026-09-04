@@ -271,3 +271,6 @@ body {
 #recheckBtn { border: 0; border-radius: 9px; padding: 8px 16px; font-weight: 650; cursor: pointer;
   color: #04121a; background: linear-gradient(90deg, var(--cyan), var(--blue)); }
 #recheckBtn:disabled { opacity: .5; cursor: default; }
+#voicePreview { width: 100%; background: rgba(255,255,255,.05); color: var(--text);
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 600; }
+#voicePreview:hover { border-color: rgba(34,211,238,.4); }

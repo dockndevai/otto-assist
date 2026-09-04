@@ -12,12 +12,37 @@ immediately and `stop()` cuts off playback mid-sentence for barge-in.
 from __future__ import annotations
 
 import queue
+import re
 import subprocess
 import sys
 import threading
 import time
 
 from ..config import Settings
+
+
+def list_system_voices() -> list[dict[str, str]]:
+    """Installed macOS `say` voices as [{'name','locale','sample'}], English first.
+
+    Parsed from `say -v '?'`, whose lines look like:
+        Samantha            en_US    # Hello, my name is Samantha.
+    """
+    try:
+        out = subprocess.run(["/usr/bin/say", "-v", "?"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    voices: list[dict[str, str]] = []
+    for line in out.splitlines():
+        m = re.match(r"^(.+?)\s+([a-z]{2}[_-][A-Z]{2}\S*)\s+#\s*(.*)$", line)
+        if not m:
+            continue
+        voices.append({"name": m.group(1).strip(),
+                       "locale": m.group(2).replace("-", "_"),
+                       "sample": m.group(3).strip()})
+    # English voices first (most relevant), then the rest; alphabetical within each.
+    voices.sort(key=lambda v: (not v["locale"].startswith("en"), v["name"].lower()))
+    return voices
 
 
 class Mouth:
@@ -63,6 +88,23 @@ class Mouth:
                     self._proc = None
                 if self._q.empty():
                     self._last_end = time.monotonic()
+
+    def set_voice(self, voice: str) -> None:
+        """Change the macOS `say` voice live (applies to the next utterance)."""
+        self._voice = (voice or "").strip()
+
+    def preview(self, text: str, voice: str) -> None:
+        """Speak a one-off sample in `voice` without changing the configured voice."""
+        if self._engine == "elevenlabs":
+            return
+        argv = ["/usr/bin/say"]
+        if voice:
+            argv += ["-v", voice]
+        argv.append(text)
+        try:
+            subprocess.Popen(argv)
+        except Exception:
+            pass
 
     def speak(self, text: str) -> None:
         if not text:

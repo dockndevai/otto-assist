@@ -20,6 +20,10 @@ several projects at once, each as its own chat.
 - **Type** — the composer box does the same thing; no mic needed.
 - **Push-to-talk hotkey** (⌘⇧J) — opt-in (`voice.hotkey.enabled`), needs macOS Accessibility.
 - Local **Whisper** speech-to-text; **system voice or ElevenLabs** text-to-speech.
+- **Pick the voice** — choose from every installed macOS voice in Settings, with a live preview;
+  applies instantly.
+- **Hands-free with sleep/wake** — optional always-listen; say "stop listening" to pause and the
+  wake word to resume. Strict half-duplex stops Otto from hearing its own voice on a speaker.
 - **Smart, brief spoken replies** — one or two natural sentences (the takeaway), not a play-by-play;
   the detail stays on screen.
 

@@ -419,10 +419,35 @@ async function loadProjects() {
     });
   } catch (_) {}
 }
+async function loadVoices() {
+  try {
+    const r = await (await fetch("/api/voices")).json();
+    const sel = $("setVoice"); if (!sel) return;
+    const cur = r.current || "";
+    sel.innerHTML = '<option value="">System default</option>';
+    (r.voices || []).forEach((v) => {
+      const o = document.createElement("option");
+      o.value = v.name; o.textContent = `${v.name} · ${v.locale}`;
+      if (v.name === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+    const row = $("voiceRow");           // system voices apply to the 'system' engine
+    if (row) row.style.opacity = r.engine === "elevenlabs" ? "0.5" : "1";
+  } catch (_) {}
+}
+const postJSON = (url, body) =>
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+$("setVoice").onchange = async () => {
+  const v = $("setVoice").value;
+  await postJSON("/api/voice/select", { voice: v });   // apply live + persist
+  postJSON("/api/voice/preview", { voice: v });        // hear it immediately
+};
+$("voicePreview").onclick = () => postJSON("/api/voice/preview", { voice: $("setVoice").value });
+
 function openSettings() {
   appEl.classList.remove("chat-open", "chats-open", "logs-open");
   appEl.classList.add("settings-open");
-  loadConfig(); loadProjects();
+  loadConfig(); loadProjects(); loadVoices();
 }
 $("settingsToggle").onclick = () =>
   appEl.classList.contains("settings-open") ? appEl.classList.remove("settings-open") : openSettings();
@@ -441,6 +466,7 @@ $("setSave").onclick = async () => {
   v.stt.wake_words = $("setWake").value.trim();
   v.stt.model = $("setModel").value.trim();
   v.tts.engine = $("setTts").value;
+  v.tts.voice = $("setVoice").value;   // keep the chosen voice (already applied live)
   $("setMsg").textContent = "Saving…";
   try {
     const r = await (await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" },

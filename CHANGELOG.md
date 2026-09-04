@@ -3,6 +3,19 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## Unreleased
+
+**Voice**
+- **Pick Otto's voice** — Settings now lists every installed macOS voice (183 on a typical Mac,
+  English first) in a dropdown with a **▶ Preview** button. Choosing one applies it live and
+  saves it; no restart. (`GET /api/voices`, `POST /api/voice/{select,preview}`.)
+- **Hands-free sleep/wake** — in always-listen, say **"stop listening"** (or "go to sleep",
+  "be quiet") to pause; the mic stays on but only the **wake word** ("Otto") resumes it, back to
+  fully hands-free.
+- **No more self-echo loop** — strict half-duplex: Otto ignores the mic while it's speaking (and
+  a short cooldown after), so on a laptop speaker it no longer hears its own voice and answer
+  itself. The dashboard Talk button still bypasses this for push-to-talk.
+
 ## v0.2.4 — 2026-09-03
 
 **Setup & reliability**
