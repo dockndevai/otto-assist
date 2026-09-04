@@ -21,6 +21,7 @@ class AssistantContext(Protocol):
     async def ask_user(self, question: str) -> str: ...
     def render_canvas(self, content: str, fmt: str = "html") -> None: ...
     def set_status(self, text: str) -> None: ...
+    def set_mood(self, level: str, note: str = "") -> None: ...
     def notify(self, title: str, body: str = "") -> None: ...
 
 
@@ -74,6 +75,19 @@ def build_server(ctx: AssistantContext):
         return _text("status updated")
 
     @tool(
+        "set_mood",
+        "Set the ambient color/mood of the dashboard to match the tone of what's happening. "
+        "Use 'good' (green) for success or all-clear, 'info' (blue) for normal work, 'warn' "
+        "(amber) for something needing attention, or 'critical' (red) for errors/serious "
+        "issues. Optionally pass a short note. The dashboard also infers this automatically; "
+        "call this to override when the topic's severity isn't obvious from activity.",
+        {"level": str, "note": str},
+    )
+    async def set_mood(args: dict[str, Any]) -> dict[str, Any]:
+        ctx.set_mood(args.get("level", "info"), args.get("note", ""))
+        return _text("mood set")
+
+    @tool(
         "notify",
         "Send a desktop notification (macOS) — useful for finished background work.",
         {"title": str, "body": str},
@@ -85,11 +99,11 @@ def build_server(ctx: AssistantContext):
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="0.1.0",
-        tools=[say, ask_user, render_canvas, set_status, notify],
+        tools=[say, ask_user, render_canvas, set_status, set_mood, notify],
     )
 
 
 # Fully-qualified tool names, for allowed_tools / permission logic.
 def qualified_names() -> list[str]:
-    names = ["say", "ask_user", "render_canvas", "set_status", "notify"]
+    names = ["say", "ask_user", "render_canvas", "set_status", "set_mood", "notify"]
     return [f"mcp__{SERVER_NAME}__{n}" for n in names]
