@@ -266,6 +266,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     asyncio.create_task(orch.run_preflight(request=True))
                 elif data.get("type") == "open_pane":
                     orch.open_privacy_pane(data.get("pane", ""))
+                elif data.get("type") == "mute_mic":
+                    orch.mic_muted = bool(data.get("value"))
+                elif data.get("type") == "mute_voice":
+                    orch.voice_muted = bool(data.get("value"))
         except WebSocketDisconnect:
             pass
         finally:
