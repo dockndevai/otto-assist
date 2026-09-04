@@ -242,11 +242,53 @@ def _is_read_only(tool_name: str) -> bool:
 
 
 def _describe(tool_name: str, args: dict[str, Any]) -> str:
+    """A natural, spoken-friendly description of what a tool will DO and its impact — NOT the
+    raw command (that's already shown on screen in the chat). Used for the voice confirmation."""
+    import os as _os
+
     if tool_name == "Bash":
-        return f"run the command: {args.get('command', '')}"
-    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-        return f"modify the file {args.get('file_path', args.get('path', 'a file'))}"
+        return _describe_bash(str(args.get("command", "")))
+    if tool_name == "Write":
+        f = _os.path.basename(args.get("file_path", args.get("path", "")) or "a file")
+        return f"create or overwrite {f} — this writes a file to disk"
+    if tool_name in ("Edit", "MultiEdit", "NotebookEdit"):
+        f = _os.path.basename(args.get("file_path", args.get("path", "")) or "a file")
+        return f"edit {f} — this changes a file on disk"
+    if tool_name.startswith("mcp__"):
+        leaf = tool_name.split("__")[-1].replace("_", " ").strip()
+        return leaf or "use a connected tool"
     return f"use the {tool_name} tool"
+
+
+def _describe_bash(command: str) -> str:
+    """Summarize a shell command as intent + impact, in one short spoken sentence."""
+    c = " ".join(command.split())
+    low = c.lower()
+    # Destructive / irreversible — call it out clearly.
+    if re.search(r"\brm\s+-?[rf]|\bgit\s+reset\s+--hard|\bgit\s+clean\b|\bdd\b|\bmkfs|"
+                 r"\bdrop\s+(table|database)\b|\btruncate\b|>\s*/dev/|\bshred\b", low):
+        return "run a command that deletes or overwrites data — this can't easily be undone"
+    if re.search(r"\bgit\s+push\b", low):
+        force = "force-" if re.search(r"--force|-f\b|force-with-lease", low) else ""
+        return f"{force}push your commits to the remote — this publishes them"
+    if re.search(r"\bgh\s+(pr|release|repo|issue)\s+\w*\s*(create|merge|close|delete|edit)", low):
+        return "run a GitHub command that changes a pull request, release, or the remote"
+    if re.search(r"\bgit\s+commit\b", low):
+        return "commit the current changes to git"
+    if re.search(r"\b(npm|pnpm|yarn|pip|pip3|brew|uv|cargo|gem|apt|go)\s+(install|add|i|get)\b", low):
+        return "install software or dependencies onto your machine"
+    if re.search(r"\bkill|pkill|killall\b", low):
+        return "stop a running process"
+    if re.search(r"\b(curl|wget)\b", low):
+        return "make a network request"
+    if re.search(r"\b(mv|cp|mkdir|touch|chmod|chown|ln)\b|>>?\s*\S", low):
+        return "create or change files on disk"
+    # Read-only-ish or unknown: name the tool without reading the whole command.
+    parts = [p for p in re.split(r"\s*(?:&&|\|\||;|\|)\s*", c) if p.strip()]
+    first = parts[0].split()[0] if parts and parts[0].split() else "a shell"
+    if len(parts) > 1:
+        return f"run a few shell commands (starting with {first})"
+    return f"run the {first} command"
 
 
 def _extract_text_delta(event: dict[str, Any] | None) -> str:

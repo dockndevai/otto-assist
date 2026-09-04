@@ -897,3 +897,23 @@ def test_voice_partial_emits_and_suppresses():
         orch._on_voice_partial("otto's own words")
         assert not events
     asyncio.run(run())
+
+
+def test_describe_is_human_and_impactful():
+    from otto.brain.agent import _describe
+    # destructive → clear impact, never reads the raw command
+    d = _describe("Bash", {"command": "rm -rf build"})
+    assert "undone" in d.lower() and "rm -rf" not in d
+    assert "publishes" in _describe("Bash", {"command": "git push origin main"}).lower()
+    assert "force" in _describe("Bash", {"command": "git push --force"}).lower()
+    assert "install" in _describe("Bash", {"command": "npm install left-pad"}).lower()
+    assert "commit" in _describe("Bash", {"command": "git commit -m x"}).lower()
+    # plain read: names the command, doesn't recite it in full
+    r = _describe("Bash", {"command": "git status -sb && cat log.txt"})
+    assert "git status -sb" not in r
+    # files
+    assert "edit" in _describe("Edit", {"file_path": "/a/b/foo.py"}).lower()
+    assert "foo.py" in _describe("Edit", {"file_path": "/a/b/foo.py"})
+    assert "write" in _describe("Write", {"file_path": "x.txt"}).lower()
+    # connected (MCP) tool → readable words, no mcp__ noise
+    assert _describe("mcp__claude_ai_Gmail__send_message", {}) == "send message"
