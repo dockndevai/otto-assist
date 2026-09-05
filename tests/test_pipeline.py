@@ -917,3 +917,67 @@ def test_describe_is_human_and_impactful():
     assert "write" in _describe("Write", {"file_path": "x.txt"}).lower()
     # connected (MCP) tool → readable words, no mcp__ noise
     assert _describe("mcp__claude_ai_Gmail__send_message", {}) == "send message"
+
+
+# ---- persistent cross-session memory ----------------------------------------
+
+def test_memory_slug_and_empty_preamble(tmp_path):
+    from otto.memory import Memory, project_slug
+    assert project_slug("/Users/x/proj") == "Users-x-proj"
+    m = Memory(tmp_path / "memory", load_settings())
+    # nothing learned yet → no preamble (a fresh install adds no noise)
+    assert m.preamble("/Users/x/proj") == ""
+
+
+def test_memory_record_turn_writes_log_and_index(tmp_path):
+    import json
+    from otto.memory import Memory, project_slug
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/demo-proj"
+    m.record_turn(proj, "hello", "hi there", session_id="s1")
+    log = (tmp_path / "memory" / "projects" / project_slug(proj) / "turns.jsonl")
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert rows and rows[0]["user"] == "hello" and rows[0]["reply"] == "hi there"
+    idx = json.loads((tmp_path / "memory" / "index.json").read_text())
+    assert idx[project_slug(proj)]["turns"] == 1
+
+
+def test_memory_capture_applies_facts_and_dedups(tmp_path, monkeypatch):
+    from otto.memory import Memory, project_slug
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/demo-proj"
+
+    async def fake_extract(self, project_path, user_text, reply):
+        return {"user_facts": ["The user prefers concise answers"],
+                "project_facts": ["The project deploys from the release branch"],
+                "summary": "Set up deploy conventions."}
+    monkeypatch.setattr(Memory, "_extract", fake_extract)
+
+    r1 = asyncio.run(m.capture(proj, "how do we deploy?", "From the release branch."))
+    assert r1["user_facts"] == 1 and r1["project_facts"] == 1 and r1["summarized"]
+
+    g = (tmp_path / "memory" / "global.md").read_text()
+    pj = (tmp_path / "memory" / "projects" / project_slug(proj) / "project.md").read_text()
+    assert "concise answers" in g and "release branch" in pj
+
+    # same facts again → de-duplicated (nothing new added)
+    r2 = asyncio.run(m.capture(proj, "remind me", "release branch again."))
+    assert r2["user_facts"] == 0 and r2["project_facts"] == 0
+    assert g.count("concise answers") == 1
+
+    # now the preamble carries the durable context, clearly delimited + bounded
+    pre = m.preamble(proj)
+    assert "Orrin memory" in pre and "release branch" in pre and "concise answers" in pre
+    assert len(pre) <= load_settings().memory.max_preamble_chars + 20
+
+
+def test_memory_preamble_is_bounded(tmp_path):
+    from otto.memory import Memory
+    s = load_settings()
+    s.memory.max_preamble_chars = 300
+    m = Memory(tmp_path / "memory", s)
+    proj = "/tmp/big"
+    facts = [f"durable fact number {i} about the project that is fairly wordy" for i in range(40)]
+    m._append_facts(m.project_dir(proj) / "project.md", "# Project\n", facts)
+    pre = m.preamble(proj)
+    assert 0 < len(pre) <= 300 + 20 and pre.rstrip().endswith("[end memory]")

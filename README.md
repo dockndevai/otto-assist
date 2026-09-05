@@ -209,6 +209,38 @@ config** — not here. Orrin's `config.yaml` is wiring only:
 | `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` / `efficientword` |
 | `voice.stt.realtime_partials` | `false` | live partial captions as you speak (small model) |
 | `voice.tts.engine` | `system` | macOS `say` (pick the voice in Settings); `elevenlabs` needs `ELEVENLABS_API_KEY` |
+| `memory.enabled` | `true` | persistent cross-session memory (see below) |
+| `memory.auto_capture` | `true` | after each turn, learn what's worth remembering — automatic |
+| `memory.max_preamble_chars` | `2000` | cap on the durable-context block injected per turn |
+
+## Memory — it remembers across sessions
+
+Orrin keeps a persistent, shared knowledge store under
+`~/Library/Application Support/Otto/memory/` that **every** session reads and writes, so what
+it learns in one conversation carries into the next — organized **per project**, with a
+**global** tier for facts about you that span all projects:
+
+```
+memory/
+  global.md              facts about you (all projects)
+  index.json             registry of projects Orrin has worked in
+  projects/<slug>/
+    project.md           curated knowledge about this project
+    summary.md           rolling one-line summaries of recent conversations
+    turns.jsonl          durable log of every exchange
+```
+
+Two things make it feel like memory, not just storage:
+
+- **Always in view** — before each turn, a small **bounded** block (your durable facts + this
+  project's facts + the recent summary) is prepended to what Orrin sends Claude, so continuity
+  is automatic without stuffing an unbounded transcript into the context window.
+- **Learns on its own** — after each turn, a fast background pass decides what's worth keeping
+  and folds it into the store. No "remember this" needed (though you can still just say it).
+
+The full turn-by-turn transcript of a chat stays owned by Claude Code itself (Orrin resumes
+the project's session); this store adds the curated, cross-session, cross-project layer on top.
+Turn it off (or tune it) under `memory:` in `config.yaml`.
 
 ## How Orrin compares (2026)
 
@@ -230,6 +262,7 @@ otto/
   preflight.py             first-run permission checks + "Orrin ready" health (mic, Claude
                            test turn, voice, Accessibility)
   history.py               persist + replay the dashboard conversation
+  memory.py                persistent cross-session memory (per-project facts + summaries)
   projects.py sessions.py  project + Claude-session (chat) discovery across ~/.claude
   config.py                storage (~/Library/Application Support/Otto) + wiring config
   menubar.py               rumps menu-bar app (state icon, main-thread mic request)
