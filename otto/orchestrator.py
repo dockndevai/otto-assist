@@ -22,6 +22,7 @@ from . import sessions
 from .brain.base import Brain
 from .config import OTTO_HOME, Settings, save_config
 from .history import History
+from .memory import Memory
 from .server.events import EventBus
 from .workspace import Workspace
 
@@ -103,6 +104,9 @@ class Orchestrator:
         self.bus = bus
         self.history = History(OTTO_HOME / "history.jsonl")
         bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
+        # Persistent, cross-session memory (OTTO_HOME/memory): durable facts + rolling
+        # summaries per project, injected into every turn and learned from automatically.
+        self.memory = Memory(OTTO_HOME / "memory", settings)
         # Parallel workspaces: a bounded pool of projects, each running its own Claude
         # (its own subprocess), one of them focused. Only the focused workspace streams to
         # the screen and speaks; background ones run headless and notify when they finish.
@@ -1110,8 +1114,15 @@ class Orchestrator:
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
+            # Prepend durable memory (facts + recent summary) so Claude has cross-session
+            # context. The dashboard/transcript already showed the user's *clean* text above;
+            # only what we send to the brain carries the (clearly-delimited) preamble.
             try:
-                async for ev in ws.brain.send(text):
+                send_text = self.memory.preamble(p) + text
+            except Exception:
+                send_text = text
+            try:
+                async for ev in ws.brain.send(send_text):
                     live = p == self.focused   # focus can change mid-turn
                     if ev["type"] == "delta":
                         chunk = ev["text"]
@@ -1153,6 +1164,11 @@ class Orchestrator:
                 ws.last_reply = reply
                 if reply:
                     self.bus.transcript("assistant", reply, final=True, ws=p)
+                    # Learn from the exchange in the background (records the turn + folds any
+                    # durable facts/summary into the store). Off the voice path, never blocks.
+                    if self._loop is not None:
+                        self._loop.create_task(
+                            self.memory.capture(p, text, reply, session_id=ws.session_id))
                 if focused:
                     self._flush_speech()
                     self._status("idle", "Ready")

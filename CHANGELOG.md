@@ -5,6 +5,16 @@ is `otto-assist`.
 
 ## Unreleased
 
+**Persistent memory**
+- **Orrin remembers across sessions** — a shared knowledge store under `OTTO_HOME/memory` that
+  every session reads and writes, organized per project with a global tier for facts about you.
+  Before each turn a bounded preamble (durable facts + a rolling summary) is injected so Claude
+  has cross-session context; after each turn a fast background pass automatically decides what's
+  worth keeping and folds it into `global.md` / `project.md` / `summary.md` (plus a durable
+  `turns.jsonl` log). Fully automatic — no "remember this" required. Tunable/off under
+  `memory:` in `config.yaml` (`enabled`, `inject`, `auto_capture`, `max_preamble_chars`,
+  `max_summary_lines`, `capture_model`).
+
 **Live feedback**
 - **See what you're saying** — the dashboard now streams partial words as you speak (a small realtime model) and shows them as a live caption on the main stage, plus a clear “Listening…” state — so talking visibly updates the screen instead of only appearing after you finish. Toggle with `voice.stt.realtime_partials`.
 

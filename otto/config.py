@@ -129,6 +129,30 @@ class VoiceConfig(BaseModel):
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
 
 
+class MemoryConfig(BaseModel):
+    """Orrin's persistent, cross-session memory (lives under OTTO_HOME/memory).
+
+    Every Orrin session shares this store, so what it learns in one conversation is available
+    in the next — and per project, so each project keeps its own knowledge. Two mechanisms:
+    a bounded *preamble* injected into every turn (durable facts + a rolling summary), and an
+    automatic *capture* pass after each turn that decides what's worth remembering.
+    """
+    enabled: bool = True
+    # Prepend the memory preamble (global + project facts + recent summary) to each turn so
+    # continuity is automatic. Bounded by max_preamble_chars, so context cost stays small.
+    inject: bool = True
+    # After every turn, a background pass extracts durable facts + a one-line summary and
+    # writes them to the store — fully automatic, no explicit "remember" needed.
+    auto_capture: bool = True
+    # Upper bound on the injected preamble (characters). Project + summary are trimmed first.
+    max_preamble_chars: int = 2000
+    # How many recent one-line summaries to keep (the rolling "Recently" section).
+    max_summary_lines: int = 15
+    # Fast/cheap model for the capture pass (an alias the user's Claude accepts). The capture
+    # runs off the voice path, so latency here doesn't affect responsiveness.
+    capture_model: str = "haiku"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OTTO_",
@@ -140,6 +164,7 @@ class Settings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     @classmethod
     def settings_customise_sources(

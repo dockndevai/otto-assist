@@ -21,6 +21,14 @@ brain:
   continue_conversation: false  # resume project chat on launch (false = fresh each launch)
   register_mcp: true           # expose /mcp so `claude mcp add otto` gives Claude voice+screen
 
+memory:                        # persistent, cross-session memory (OTTO_HOME/memory)
+  enabled: true                # master switch for the whole memory store
+  inject: true                 # prepend durable facts + recent summary to every turn
+  auto_capture: true           # after each turn, learn what's worth remembering (automatic)
+  max_preamble_chars: 2000     # upper bound on the injected memory block
+  max_summary_lines: 15        # how many recent one-line summaries to keep
+  capture_model: "haiku"       # fast/cheap model for the background learn pass
+
 voice:
   input_enabled: true          # microphone / wake word / push-to-talk
   output_enabled: true         # speak replies
