@@ -241,13 +241,19 @@ Three things make it feel like memory, not just storage:
   and folds it into the store. No "remember this" needed (though you can just say it — *"Otto,
   remember that we deploy from the release branch"*).
 - **Remembers documents** — say *"remember this doc"* (or point Orrin at a file) and it saves
-  the content into the project's memory; relevant saved notes are then surfaced automatically
-  when a later question matches them (keyword retrieval, no external service).
+  the content into the project's memory; relevant saved notes are surfaced automatically when a
+  later question matches them (keyword retrieval, no external service), and Claude can open a
+  saved note **in full** on demand (its memory dir is added to its readable dirs).
 
-The dashboard replays each **project's own** conversation history, and the full turn-by-turn
-transcript of a chat stays owned by Claude Code itself (Orrin resumes the project's session);
-this store adds the curated, cross-session, cross-project layer on top. Turn it off (or tune
-it) under `memory:` in `config.yaml`.
+The dashboard replays each **project's own** conversation history — on load and when you switch
+projects — and the full turn-by-turn transcript of a chat stays owned by Claude Code itself
+(Orrin resumes the project's session); this store adds the curated, cross-session, cross-project
+layer on top. Turn it off (or tune it) under `memory:` in `config.yaml`.
+
+It's built to stay cheap: the preamble is re-injected only on a chat's first turn or when the
+remembered content actually changes (not redundantly every turn); the learn pass runs in the
+background off the voice path, skips greetings, and won't pile up; and document search ranks on
+an in-memory index, reading only the top matches.
 
 ## How Orrin compares (2026)
 

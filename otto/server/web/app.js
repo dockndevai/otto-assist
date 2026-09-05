@@ -111,6 +111,23 @@ function setFocused(path, name) {
   if (!path || path === focusedWs) return;
   if (focusedWs === null && wins["__main__"] && !wins[path]) { wins[path] = wins["__main__"]; delete wins["__main__"]; }
   focusedWs = path; win(path).unread = false; renderWindow(path);
+  hydrate(path);   // pull this project's stored history if we haven't loaded it this session
+}
+
+// Fill a window from the per-project stored history the first time it's focused (e.g. a project
+// worked on in a previous session, whose messages aren't in memory yet). Idempotent per window.
+async function hydrate(k) {
+  const w = win(k);
+  if (w.loaded || w.msgs.length || k === "__main__") { w.loaded = true; return; }
+  w.loaded = true;
+  try {
+    const { events } = await (await fetch("/api/history?project=" + encodeURIComponent(k))).json();
+    for (const ev of (events || [])) {
+      if (ev.type === "transcript_final") w.msgs.push({ role: ev.role, text: ev.text });
+      else if (ev.type === "canvas_render") w.canvas = { content: ev.content, format: ev.format };
+    }
+    if (k === curKey()) renderWindow(k);   // repaint only if it's still the focused window
+  } catch (_) {}
 }
 
 function handle(ev) {

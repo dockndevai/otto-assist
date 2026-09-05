@@ -20,8 +20,16 @@ is `otto-assist`.
   automatically via keyword retrieval (no external service).
 - **Per-project dashboard history** — the conversation log moved into the memory store and is
   now kept and replayed **per project** (`memory/projects/<slug>/history.jsonl`), matching what
-  Orrin remembers. A pre-existing flat `history.jsonl` is migrated into the per-project store
-  once on upgrade (the original is set aside as `history.jsonl.migrated`).
+  Orrin remembers, including **when you switch projects** (`GET /api/history`). A pre-existing
+  flat `history.jsonl` is migrated into the per-project store once on upgrade (the original is
+  set aside as `history.jsonl.migrated`).
+- **Claude can read its memory** — a project's memory dir is added to Claude's readable dirs
+  (`memory.expose_to_claude`, default on), so it can open a saved document in full when it needs
+  more than the injected excerpt.
+- **Leaner by design** — the memory preamble is re-injected only on a chat's first turn or when
+  the remembered content changes (not every turn); the background learn pass skips greetings and
+  won't run concurrently for a project; and document search ranks on the in-memory index,
+  reading only the top-matching bodies.
 
 **Live feedback**
 - **See what you're saying** — the dashboard now streams partial words as you speak (a small realtime model) and shows them as a live caption on the main stage, plus a clear “Listening…” state — so talking visibly updates the screen instead of only appearing after you finish. Toggle with `voice.stt.realtime_partials`.

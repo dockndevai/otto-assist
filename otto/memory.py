@@ -52,6 +52,11 @@ _STOP = {
 }
 
 
+_GREETING = re.compile(
+    r"^(hi|hey|hello|yo|thanks|thank you|ok|okay|k|got it|cool|nice|great|awesome|"
+    r"yes|no|yep|nope|sure|good (morning|afternoon|evening)|bye|goodbye)[\s!.?,]*$", re.I)
+
+
 def project_slug(project_path: str) -> str:
     """Stable, human-readable directory name for a project path.
 
@@ -72,6 +77,7 @@ class Memory:
         self.root = Path(root)
         self.settings = settings
         self._locks: dict[str, asyncio.Lock] = {}
+        self._capturing: set[str] = set()   # projects with an extract in flight (avoid pile-up)
         try:
             (self.root / "projects").mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -298,27 +304,27 @@ class Memory:
 
     def search_docs(self, project_path: str, query: str, k: int = 2,
                     max_chars: int = 400) -> list[dict[str, str]]:
-        """Keyword-ranked document snippets for a query (dependency-light — no vector DB)."""
+        """Keyword-ranked document snippets for a query (dependency-light — no vector DB).
+
+        Scoring uses the in-memory index (each doc's stored keywords + title), so it does NOT
+        read any document bodies to rank; only the top-k winners are read, to build excerpts."""
         index = self._docs_index(project_path)
         if not index:
             return []
         qtokens = set(self._tokens(query))
         if not qtokens:
             return []
-        docs = self._docs_dir(project_path)
-        scored: list[tuple[int, dict[str, Any], str]] = []
+        scored: list[tuple[int, dict[str, Any]]] = []
         for e in index:
-            body = self._read(docs / e.get("file", ""))
             kw = set(e.get("keywords") or []) | set(self._tokens(e.get("title", "")))
             score = len(qtokens & kw)
-            # also reward direct hits in the body
-            low = body.lower()
-            score += sum(1 for t in qtokens if t in low)
             if score > 0:
-                scored.append((score, e, body))
+                scored.append((score, e))
         scored.sort(key=lambda x: x[0], reverse=True)
+        docs = self._docs_dir(project_path)
         out: list[dict[str, str]] = []
-        for _, e, body in scored[:k]:
+        for _, e in scored[:k]:               # read bodies only for the winners
+            body = self._read(docs / e.get("file", ""))
             out.append({"title": e.get("title", "note"),
                         "excerpt": self._excerpt(body, qtokens, max_chars)})
         return out
@@ -360,26 +366,41 @@ class Memory:
             pass
         if not (self._cfg.enabled and self._cfg.auto_capture):
             return result
-        if not reply.strip():
-            return result
-        async with self._lock(project_slug(project_path)):
-            data = await self._extract(project_path, user_text, reply)
-            pdir = self.project_dir(project_path)
-            uf = [str(x) for x in (data.get("user_facts") or []) if str(x).strip()]
-            pf = [str(x) for x in (data.get("project_facts") or []) if str(x).strip()]
-            summary = str(data.get("summary") or "").strip()
-            if uf:
-                result["user_facts"] = self._append_facts(
-                    self.global_path, "# About the user\n", uf)
-            if pf:
-                name = str(project_path).rstrip("/").split("/")[-1]
-                result["project_facts"] = self._append_facts(
-                    pdir / "project.md", f"# Project: {name}\n", pf)
-            if not summary:  # heuristic fallback so the rolling summary still advances
-                summary = re.split(r"(?<=[.!?])\s", reply.strip())[0][:160]
-            self._push_summary(pdir, summary)
-            result["summarized"] = True
+        if not reply.strip() or self._is_trivial(user_text, reply):
+            return result                       # nothing durable in a greeting/ack — skip the call
+        slug = project_slug(project_path)
+        if slug in self._capturing:
+            return result                       # a capture is already in flight; don't pile up
+        self._capturing.add(slug)
+        try:
+            async with self._lock(slug):
+                data = await self._extract(project_path, user_text, reply)
+                pdir = self.project_dir(project_path)
+                uf = [str(x) for x in (data.get("user_facts") or []) if str(x).strip()]
+                pf = [str(x) for x in (data.get("project_facts") or []) if str(x).strip()]
+                summary = str(data.get("summary") or "").strip()
+                if uf:
+                    result["user_facts"] = self._append_facts(
+                        self.global_path, "# About the user\n", uf)
+                if pf:
+                    name = str(project_path).rstrip("/").split("/")[-1]
+                    result["project_facts"] = self._append_facts(
+                        pdir / "project.md", f"# Project: {name}\n", pf)
+                if not summary:  # heuristic fallback so the rolling summary still advances
+                    summary = re.split(r"(?<=[.!?])\s", reply.strip())[0][:160]
+                self._push_summary(pdir, summary)
+                result["summarized"] = True
+        finally:
+            self._capturing.discard(slug)
         return result
+
+    @staticmethod
+    def _is_trivial(user_text: str, reply: str) -> bool:
+        """A short greeting/acknowledgement with nothing durable — skip the extraction call.
+        Deliberately conservative: only matches clear greetings/acks, never a real (if short)
+        question, so we don't drop something worth remembering."""
+        u = (user_text or "").strip()
+        return len(u) <= 30 and bool(_GREETING.match(u))
 
     _EXTRACT_SYS = (
         "You maintain Orrin's long-term memory. From the latest exchange between the user "

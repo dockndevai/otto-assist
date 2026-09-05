@@ -151,6 +151,9 @@ class MemoryConfig(BaseModel):
     # Fast/cheap model for the capture pass (an alias the user's Claude accepts). The capture
     # runs off the voice path, so latency here doesn't affect responsiveness.
     capture_model: str = "haiku"
+    # Add the project's memory dir to Claude's readable dirs, so it can open a saved document
+    # in full (beyond the short excerpt injected into the preamble) when it needs the detail.
+    expose_to_claude: bool = True
 
 
 class Settings(BaseSettings):
