@@ -23,6 +23,8 @@ class AssistantContext(Protocol):
     def set_status(self, text: str) -> None: ...
     def set_mood(self, level: str, note: str = "") -> None: ...
     def notify(self, title: str, body: str = "") -> None: ...
+    async def remember_fact(self, fact: str, scope: str = "project") -> bool: ...
+    async def remember_document(self, title: str, content: str) -> str: ...
 
 
 def _text(msg: str) -> dict[str, Any]:
@@ -96,14 +98,40 @@ def build_server(ctx: AssistantContext):
         ctx.notify(args["title"], args.get("body", ""))
         return _text("notified")
 
+    @tool(
+        "remember",
+        "Save a durable fact to Orrin's long-term memory so it's available in future sessions. "
+        "Use when the user says 'remember that…' or states a lasting preference, decision, or "
+        "detail. Keep it to one concise sentence. scope='user' for facts true across all "
+        "projects (a preference about you); scope='project' (default) for this project.",
+        {"fact": str, "scope": str},
+    )
+    async def remember(args: dict[str, Any]) -> dict[str, Any]:
+        added = await ctx.remember_fact(args["fact"], args.get("scope") or "project")
+        return _text("remembered" if added else "already knew that")
+
+    @tool(
+        "remember_document",
+        "Save a document or note into Orrin's long-term memory for THIS project, so its content "
+        "is available in future sessions. Use when the user says 'remember this doc/file/note'. "
+        "Pass a short descriptive title and the full text as content (if it's a file, read it "
+        "first and paste the text). Orrin surfaces relevant saved notes automatically later.",
+        {"title": str, "content": str},
+    )
+    async def remember_document(args: dict[str, Any]) -> dict[str, Any]:
+        msg = await ctx.remember_document(args["title"], args["content"])
+        return _text(msg)
+
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="0.1.0",
-        tools=[say, ask_user, render_canvas, set_status, set_mood, notify],
+        tools=[say, ask_user, render_canvas, set_status, set_mood, notify,
+               remember, remember_document],
     )
 
 
 # Fully-qualified tool names, for allowed_tools / permission logic.
 def qualified_names() -> list[str]:
-    names = ["say", "ask_user", "render_canvas", "set_status", "set_mood", "notify"]
+    names = ["say", "ask_user", "render_canvas", "set_status", "set_mood", "notify",
+             "remember", "remember_document"]
     return [f"mcp__{SERVER_NAME}__{n}" for n in names]

@@ -228,19 +228,26 @@ memory/
     project.md           curated knowledge about this project
     summary.md           rolling one-line summaries of recent conversations
     turns.jsonl          durable log of every exchange
+    history.jsonl        the dashboard conversation (replayed per project)
+    docs/                documents you asked Orrin to remember (+ an index)
 ```
 
-Two things make it feel like memory, not just storage:
+Three things make it feel like memory, not just storage:
 
 - **Always in view** — before each turn, a small **bounded** block (your durable facts + this
   project's facts + the recent summary) is prepended to what Orrin sends Claude, so continuity
   is automatic without stuffing an unbounded transcript into the context window.
 - **Learns on its own** — after each turn, a fast background pass decides what's worth keeping
-  and folds it into the store. No "remember this" needed (though you can still just say it).
+  and folds it into the store. No "remember this" needed (though you can just say it — *"Otto,
+  remember that we deploy from the release branch"*).
+- **Remembers documents** — say *"remember this doc"* (or point Orrin at a file) and it saves
+  the content into the project's memory; relevant saved notes are then surfaced automatically
+  when a later question matches them (keyword retrieval, no external service).
 
-The full turn-by-turn transcript of a chat stays owned by Claude Code itself (Orrin resumes
-the project's session); this store adds the curated, cross-session, cross-project layer on top.
-Turn it off (or tune it) under `memory:` in `config.yaml`.
+The dashboard replays each **project's own** conversation history, and the full turn-by-turn
+transcript of a chat stays owned by Claude Code itself (Orrin resumes the project's session);
+this store adds the curated, cross-session, cross-project layer on top. Turn it off (or tune
+it) under `memory:` in `config.yaml`.
 
 ## How Orrin compares (2026)
 

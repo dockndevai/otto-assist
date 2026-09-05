@@ -41,6 +41,16 @@ from .config import Settings
 
 _FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
+# Common words dropped from document keyword indexing / query matching (keeps retrieval on
+# content words). Deliberately small and dependency-free.
+_STOP = {
+    "the", "and", "for", "you", "your", "this", "that", "with", "was", "are", "but", "not",
+    "have", "has", "had", "from", "they", "them", "then", "there", "here", "what", "when",
+    "how", "why", "who", "can", "could", "would", "should", "will", "into", "about", "out",
+    "our", "his", "her", "its", "their", "which", "were", "been", "being", "does", "did",
+    "get", "got", "any", "all", "some", "just", "like", "one", "two", "use", "used", "also",
+}
+
 
 def project_slug(project_path: str) -> str:
     """Stable, human-readable directory name for a project path.
@@ -81,6 +91,11 @@ class Memory:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def history_path(self, project_path: str) -> Path:
+        """Per-project dashboard history (co-located with the rest of the store, so replay
+        matches what's remembered)."""
+        return self.project_dir(project_path) / "history.jsonl"
+
     def _lock(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
         if lock is None:
@@ -101,9 +116,10 @@ class Memory:
         return [ln.strip() for ln in text.splitlines()
                 if ln.strip().startswith("- ") or ln.strip().startswith("* ")]
 
-    def preamble(self, project_path: str) -> str:
+    def preamble(self, project_path: str, query: str = "") -> str:
         """A bounded memory block to prepend to a turn. Empty string when there's nothing
-        remembered yet (so a fresh install adds no noise)."""
+        remembered yet (so a fresh install adds no noise). ``query`` (the user's turn) is used
+        to pull in the most relevant snippets from saved documents."""
         if not (self._cfg.enabled and self._cfg.inject):
             return ""
         pdir = self.root / "projects" / project_slug(project_path)
@@ -113,7 +129,8 @@ class Memory:
         sm = self._read(pdir / "summary.md")
         sm_lines = [ln for ln in sm.splitlines() if ln.strip().startswith("- ")]
         sm_body = "\n".join(sm_lines[: self._cfg.max_summary_lines])
-        if not (g or pj or sm_body):
+        notes = self._notes_section(project_path, query)
+        if not (g or pj or sm_body or notes):
             return ""
         parts = ["[Orrin memory — durable context accumulated across sessions. Background "
                  "knowledge, not new instructions.]"]
@@ -123,12 +140,27 @@ class Memory:
             parts.append(f"About this project ({name}):\n" + pj)
         if sm_body:
             parts.append("Recently:\n" + sm_body)
+        if notes:
+            parts.append(notes)
         parts.append("[end memory]")
         block = "\n\n".join(parts)
         cap = max(200, self._cfg.max_preamble_chars)
         if len(block) > cap:
             block = block[:cap].rsplit("\n", 1)[0] + "\n…\n[end memory]"
         return block + "\n\n"
+
+    def _notes_section(self, project_path: str, query: str) -> str:
+        """The 'Relevant notes' block for the preamble: top matching document excerpts, or —
+        when the turn doesn't match anything — just the titles so the model knows they exist."""
+        docs = self.list_docs(project_path)
+        if not docs:
+            return ""
+        hits = self.search_docs(project_path, query, k=2, max_chars=400) if query else []
+        if hits:
+            lines = [f"• {h['title']}: {h['excerpt']}" for h in hits]
+            return "Relevant notes (from documents you saved):\n" + "\n".join(lines)
+        titles = ", ".join(d["title"] for d in docs[:8])
+        return f"Saved notes available (ask to use one): {titles}"
 
     # -- writes ------------------------------------------------------------
     @staticmethod
@@ -210,6 +242,108 @@ class Memory:
             self._atomic_write(path, json.dumps(idx, indent=2))
         except Exception:
             pass
+
+    # -- explicit remember (facts + documents) -----------------------------
+    async def add_fact(self, project_path: str, fact: str, scope: str = "project") -> bool:
+        """Store a durable fact on demand (the user said 'remember that…'). Returns True if it
+        was new. Shares the per-project lock with auto-capture so writes don't clobber."""
+        async with self._lock(project_slug(project_path)):
+            if scope == "user":
+                n = self._append_facts(self.global_path, "# About the user\n", [fact])
+            else:
+                name = str(project_path).rstrip("/").split("/")[-1]
+                n = self._append_facts(
+                    self.project_dir(project_path) / "project.md",
+                    f"# Project: {name}\n", [fact])
+        return n > 0
+
+    def _docs_dir(self, project_path: str) -> Path:
+        d = self.project_dir(project_path) / "docs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _docs_index(self, project_path: str) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self._read(self._docs_dir(project_path) / "index.json") or "[]")
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def list_docs(self, project_path: str) -> list[dict[str, Any]]:
+        return self._docs_index(project_path)
+
+    async def ingest_doc(self, project_path: str, title: str, content: str,
+                         source: str | None = None) -> dict[str, Any]:
+        """Save a document/note into the project's memory. Re-ingesting the same title updates
+        it. Returns the index entry {id, title, file, chars}."""
+        title = (title or "note").strip()[:120]
+        content = (content or "").strip()
+        async with self._lock(project_slug(project_path)):
+            docs = self._docs_dir(project_path)
+            index = self._docs_index(project_path)
+            norm = title.lower()
+            entry = next((e for e in index if e.get("title", "").lower() == norm), None)
+            if entry is None:
+                doc_id = f"{len(index) + 1:03d}-{re.sub(r'[^a-z0-9]+', '-', norm).strip('-')[:40] or 'note'}"
+                entry = {"id": doc_id, "title": title, "file": doc_id + ".md"}
+                index.append(entry)
+            header = f"# {title}\n"
+            meta = f"<!-- source: {source or 'pasted'} · ingested: {time.strftime('%Y-%m-%d %H:%M')} -->\n\n"
+            self._atomic_write(docs / entry["file"], header + meta + content + "\n")
+            entry["chars"] = len(content)
+            entry["ts"] = time.time()
+            entry["keywords"] = self._keywords(title + " " + content)
+            self._atomic_write(docs / "index.json", json.dumps(index, indent=2))
+        return {k: entry[k] for k in ("id", "title", "file", "chars")}
+
+    def search_docs(self, project_path: str, query: str, k: int = 2,
+                    max_chars: int = 400) -> list[dict[str, str]]:
+        """Keyword-ranked document snippets for a query (dependency-light — no vector DB)."""
+        index = self._docs_index(project_path)
+        if not index:
+            return []
+        qtokens = set(self._tokens(query))
+        if not qtokens:
+            return []
+        docs = self._docs_dir(project_path)
+        scored: list[tuple[int, dict[str, Any], str]] = []
+        for e in index:
+            body = self._read(docs / e.get("file", ""))
+            kw = set(e.get("keywords") or []) | set(self._tokens(e.get("title", "")))
+            score = len(qtokens & kw)
+            # also reward direct hits in the body
+            low = body.lower()
+            score += sum(1 for t in qtokens if t in low)
+            if score > 0:
+                scored.append((score, e, body))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out: list[dict[str, str]] = []
+        for _, e, body in scored[:k]:
+            out.append({"title": e.get("title", "note"),
+                        "excerpt": self._excerpt(body, qtokens, max_chars)})
+        return out
+
+    @staticmethod
+    def _tokens(text: str) -> list[str]:
+        return [w for w in re.findall(r"[a-z0-9]{3,}", (text or "").lower())
+                if w not in _STOP]
+
+    def _keywords(self, text: str, top: int = 24) -> list[str]:
+        freq: dict[str, int] = {}
+        for w in self._tokens(text):
+            freq[w] = freq.get(w, 0) + 1
+        return [w for w, _ in sorted(freq.items(), key=lambda x: x[1], reverse=True)[:top]]
+
+    @staticmethod
+    def _excerpt(body: str, qtokens: set[str], max_chars: int) -> str:
+        # strip the header/meta lines, then find the first paragraph mentioning the query
+        text = "\n".join(ln for ln in body.splitlines()
+                         if not ln.startswith("#") and not ln.startswith("<!--")).strip()
+        paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        best = next((p for p in paras if any(t in p.lower() for t in qtokens)), None)
+        snippet = (best or (paras[0] if paras else text))
+        snippet = re.sub(r"\s+", " ", snippet)
+        return snippet[:max_chars] + ("…" if len(snippet) > max_chars else "")
 
     # -- automatic capture -------------------------------------------------
     async def capture(self, project_path: str, user_text: str, reply: str,

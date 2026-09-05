@@ -49,6 +49,12 @@ class WorkspaceContext:
     def notify(self, title: str, body: str = "") -> None:
         self.orch.notify(title, body)
 
+    async def remember_fact(self, fact: str, scope: str = "project") -> bool:
+        return await self.orch._ws_remember_fact(self.project, fact, scope)
+
+    async def remember_document(self, title: str, content: str) -> str:
+        return await self.orch._ws_remember_document(self.project, title, content)
+
 
 class Workspace:
     """One project running its own Claude chat, in parallel with others."""

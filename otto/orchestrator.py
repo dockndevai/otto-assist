@@ -102,11 +102,14 @@ class Orchestrator:
     def __init__(self, settings: Settings, bus: EventBus) -> None:
         self.settings = settings
         self.bus = bus
-        self.history = History(OTTO_HOME / "history.jsonl")
-        bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
         # Persistent, cross-session memory (OTTO_HOME/memory): durable facts + rolling
-        # summaries per project, injected into every turn and learned from automatically.
+        # summaries + saved documents per project, injected into every turn and learned from
+        # automatically. The dashboard history lives inside it too, one log per project.
         self.memory = Memory(OTTO_HOME / "memory", settings)
+        self.history = History(self.memory, lambda: self.focused)
+        # Move any pre-existing flat history into the per-project store (once).
+        self.history.migrate_legacy(OTTO_HOME / "history.jsonl", str(settings.project_path))
+        bus.add_sink(self.history.sink)   # persist transcript + canvas as they publish
         # Parallel workspaces: a bounded pool of projects, each running its own Claude
         # (its own subprocess), one of them focused. Only the focused workspace streams to
         # the screen and speaks; background ones run headless and notify when they finish.
@@ -1118,7 +1121,7 @@ class Orchestrator:
             # context. The dashboard/transcript already showed the user's *clean* text above;
             # only what we send to the brain carries the (clearly-delimited) preamble.
             try:
-                send_text = self.memory.preamble(p) + text
+                send_text = self.memory.preamble(p, query=text) + text
             except Exception:
                 send_text = text
             try:
@@ -1269,6 +1272,21 @@ class Orchestrator:
             self._status("working", text)
         else:
             self._publish_workspaces()
+
+    async def _ws_remember_fact(self, project: str, fact: str, scope: str = "project") -> bool:
+        """Explicit 'remember that…' → durable fact in this project's (or the global) memory."""
+        try:
+            return await self.memory.add_fact(project, fact, scope)
+        except Exception:
+            return False
+
+    async def _ws_remember_document(self, project: str, title: str, content: str) -> str:
+        """Explicit 'remember this doc' → save it into the project's memory documents."""
+        try:
+            e = await self.memory.ingest_doc(project, title, content)
+            return f"saved “{e['title']}” to this project's memory ({e['chars']} chars)"
+        except Exception as ex:
+            return f"couldn't save that note: {ex}"
 
     async def _ws_ask_user(self, project: str, question: str) -> str:
         if project == self.focused:

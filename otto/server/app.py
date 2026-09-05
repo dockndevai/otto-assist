@@ -227,8 +227,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
         queue = bus.subscribe()
-        # Replay saved conversation so a reloaded/reopened dashboard shows history.
-        history = orch.history.load()
+        # Replay saved conversation so a reloaded/reopened dashboard shows history — the
+        # focused project's own log, from the per-project memory store.
+        history = orch.history.load(orch.current_project)
         if history:
             await websocket.send_json({"type": "history_start"})
             for ev in history:
