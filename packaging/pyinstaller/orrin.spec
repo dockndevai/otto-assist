@@ -27,6 +27,12 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openw
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
+# The default config template, placed at the bundle root so a DMG-only install (no install.sh)
+# still seeds ~/Library/Application Support/Otto/config.yaml on first run. config.py's
+# PACKAGED_DEFAULT resolves to <bundle root>/config.yaml (otto/config.py -> parent.parent), so
+# it's found and copied; without this, DMG installs run on defaults with an empty settings drawer.
+datas += [(os.path.join(ROOT, "config.yaml"), ".")]
+
 hiddenimports += ["otto.menubar", "otto.server.app", "otto.webview", "uvicorn.logging",
                   "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto",
                   "uvicorn.lifespan.on"]
