@@ -29,6 +29,7 @@ models/
 # Runtime conversation history
 history.jsonl
 *.jsonl
+*.migrated
 
 # Persistent memory store (also written to the repo root during tests via conftest's OTTO_HOME)
 /memory/
