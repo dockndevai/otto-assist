@@ -269,21 +269,53 @@ def test_porcupine_custom_keyword_shim(monkeypatch):
 
 def test_history_persist_and_replay(tmp_path):
     from otto.history import History
-    h = History(tmp_path / "history.jsonl")
+    from otto.memory import Memory
+    mem = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/histproj"
+    h = History(mem, lambda: proj)
     bus = EventBus()
     bus.add_sink(h.sink)
-    bus.transcript("user", "hello")
-    bus.transcript("assistant", "hi there")
-    bus.canvas("<b>old</b>")
-    bus.canvas("<b>new</b>")
+    bus.transcript("user", "hello", ws=proj)
+    bus.transcript("assistant", "hi there", ws=proj)
+    bus.canvas("<b>old</b>", ws=proj)
+    bus.canvas("<b>new</b>", ws=proj)
     bus.status("idle", "ignored")          # not persisted
-    loaded = h.load()
+    loaded = h.load(proj)
     kinds = [e["type"] for e in loaded]
     assert kinds.count("transcript_final") == 2
     # only the latest canvas is replayed, and it comes last
     canvases = [e for e in loaded if e["type"] == "canvas_render"]
     assert len(canvases) == 1 and canvases[0]["content"] == "<b>new</b>"
     assert "status" not in kinds
+    # per-project isolation: a different project has its own (empty) history
+    assert h.load("/tmp/other-proj") == []
+
+
+def test_history_is_per_project_and_migrates(tmp_path):
+    import json
+    from otto.history import History
+    from otto.memory import Memory
+    mem = Memory(tmp_path / "memory", load_settings())
+    h = History(mem, lambda: "/tmp/focused")
+    bus = EventBus()
+    bus.add_sink(h.sink)
+    bus.transcript("user", "in project A", ws="/tmp/a")
+    bus.transcript("user", "in project B", ws="/tmp/b")
+    bus.transcript("user", "untagged goes to focused")     # ws=None -> resolve_project()
+    assert [e["text"] for e in h.load("/tmp/a")] == ["in project A"]
+    assert [e["text"] for e in h.load("/tmp/b")] == ["in project B"]
+    assert [e["text"] for e in h.load("/tmp/focused")] == ["untagged goes to focused"]
+
+    # legacy flat file is split per project, then set aside
+    legacy = tmp_path / "history.jsonl"
+    legacy.write_text("\n".join([
+        json.dumps({"type": "transcript_final", "role": "user", "text": "old A", "ws": "/tmp/a"}),
+        json.dumps({"type": "transcript_final", "role": "user", "text": "old default"}),
+    ]))
+    h.migrate_legacy(legacy, "/tmp/default")
+    assert any(e["text"] == "old A" for e in h.load("/tmp/a"))
+    assert [e["text"] for e in h.load("/tmp/default")] == ["old default"]
+    assert not legacy.exists() and legacy.with_suffix(".jsonl.migrated").exists()
 
 
 def test_log_bus_streams_to_dashboard():
@@ -983,3 +1015,45 @@ def test_memory_preamble_is_bounded(tmp_path):
     m._append_facts(m.project_dir(proj) / "project.md", "# Project\n", facts)
     pre = m.preamble(proj)
     assert 0 < len(pre) <= 300 + 20 and pre.rstrip().endswith("[end memory]")
+
+
+def test_memory_document_ingest_search_and_preamble(tmp_path):
+    from otto.memory import Memory
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/docproj"
+    e = asyncio.run(m.ingest_doc(
+        proj, "Deploy runbook",
+        "Deploys run from the release branch. Roll back with the previous tag. "
+        "The staging database is reset every night."))
+    assert e["title"] == "Deploy runbook" and e["chars"] > 0
+    assert [d["title"] for d in m.list_docs(proj)] == ["Deploy runbook"]
+
+    # keyword search finds it and returns a relevant excerpt
+    hits = m.search_docs(proj, "how do we roll back a deploy?")
+    assert hits and hits[0]["title"] == "Deploy runbook"
+    assert "roll back" in hits[0]["excerpt"].lower()
+    # an unrelated query doesn't match
+    assert m.search_docs(proj, "banana smoothie recipe") == []
+
+    # the preamble surfaces the matching note for a relevant turn...
+    pre = m.preamble(proj, query="remind me how to roll back")
+    assert "Relevant notes" in pre and "Deploy runbook" in pre
+    # ...and lists available notes (not full excerpts) when the turn doesn't match
+    pre2 = m.preamble(proj, query="what's the weather")
+    assert "Saved notes available" in pre2 and "Deploy runbook" in pre2
+
+    # re-ingesting the same title updates in place (no duplicate)
+    asyncio.run(m.ingest_doc(proj, "Deploy runbook", "Now deploys from main."))
+    assert len(m.list_docs(proj)) == 1
+
+
+def test_memory_add_fact_scopes_and_dedups(tmp_path):
+    from otto.memory import Memory, project_slug
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/factproj"
+    assert asyncio.run(m.add_fact(proj, "Deploys from the release branch")) is True
+    assert asyncio.run(m.add_fact(proj, "Deploys from the release branch")) is False  # dup
+    assert asyncio.run(m.add_fact(proj, "The user prefers metric units", scope="user")) is True
+    pj = (tmp_path / "memory" / "projects" / project_slug(proj) / "project.md").read_text()
+    g = (tmp_path / "memory" / "global.md").read_text()
+    assert "release branch" in pj and "metric units" in g

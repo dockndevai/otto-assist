@@ -14,6 +14,14 @@ is `otto-assist`.
   `turns.jsonl` log). Fully automatic — no "remember this" required. Tunable/off under
   `memory:` in `config.yaml` (`enabled`, `inject`, `auto_capture`, `max_preamble_chars`,
   `max_summary_lines`, `capture_model`).
+- **Remember documents** — new voice tools `remember` (a durable fact) and `remember_document`
+  (a note/file's content) let you say *"remember this doc"*; saved notes live per project under
+  `memory/projects/<slug>/docs/` and the most relevant ones are surfaced into the turn
+  automatically via keyword retrieval (no external service).
+- **Per-project dashboard history** — the conversation log moved into the memory store and is
+  now kept and replayed **per project** (`memory/projects/<slug>/history.jsonl`), matching what
+  Orrin remembers. A pre-existing flat `history.jsonl` is migrated into the per-project store
+  once on upgrade (the original is set aside as `history.jsonl.migrated`).
 
 **Live feedback**
 - **See what you're saying** — the dashboard now streams partial words as you speak (a small realtime model) and shows them as a live caption on the main stage, plus a clear “Listening…” state — so talking visibly updates the screen instead of only appearing after you finish. Toggle with `voice.stt.realtime_partials`.
