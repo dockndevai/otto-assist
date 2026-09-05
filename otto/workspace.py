@@ -70,6 +70,7 @@ class Workspace:
         self.lock = asyncio.Lock()          # serialize this workspace's own turns
         self.last_canvas: str | None = None  # last visual it rendered (shown when focused)
         self.last_reply = ""                # last spoken/summary line (for the done-notify)
+        self._last_preamble: str | None = None  # memory block last injected into this chat
 
     @property
     def session_id(self) -> str | None:
@@ -84,4 +85,5 @@ class Workspace:
             pass
         self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
                                  new_chat=new_chat, cwd=self.project)
+        self._last_preamble = None       # fresh chat → re-inject memory on its first turn
         await self.brain.connect()

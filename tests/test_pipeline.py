@@ -158,6 +158,8 @@ def test_app_routes_and_mcp():
     # chat (session) switcher endpoints
     assert {"/api/sessions", "/api/session/switch", "/api/session/new",
             "/api/session/rename"} <= paths
+    # per-project history replay endpoint
+    assert "/api/history" in paths
     # parallel-workspace endpoints
     assert {"/api/workspaces", "/api/workspace/open", "/api/workspace/focus",
             "/api/workspace/close"} <= paths
@@ -1057,3 +1059,58 @@ def test_memory_add_fact_scopes_and_dedups(tmp_path):
     pj = (tmp_path / "memory" / "projects" / project_slug(proj) / "project.md").read_text()
     g = (tmp_path / "memory" / "global.md").read_text()
     assert "release branch" in pj and "metric units" in g
+
+
+def test_memory_capture_skips_trivial_turns(tmp_path, monkeypatch):
+    from otto.memory import Memory, project_slug
+    s = load_settings(); s.memory.auto_capture = True
+    m = Memory(tmp_path / "memory", s)
+    called = {"n": 0}
+    async def boom(self, *a, **k):
+        called["n"] += 1
+        return {}
+    monkeypatch.setattr(Memory, "_extract", boom)
+    # a greeting/ack exchange → no extraction model call…
+    r = asyncio.run(m.capture("/tmp/triv", "hi", "Hello! How can I help?"))
+    assert called["n"] == 0 and r["summarized"] is False
+    # …but the turn is still logged durably
+    assert (tmp_path / "memory" / "projects" / project_slug("/tmp/triv") / "turns.jsonl").exists()
+    # a substantive exchange DOES trigger extraction
+    asyncio.run(m.capture("/tmp/triv", "how should we structure the billing service?",
+                          "Use a ledger table and post double-entry rows."))
+    assert called["n"] == 1
+
+
+def test_memory_preamble_injected_once_then_on_change(tmp_path, monkeypatch):
+    """The bounded preamble is injected on a chat's first turn and again only when the
+    remembered content changes — not redundantly every turn (a token optimization)."""
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    from otto.workspace import Workspace
+
+    class RecBrain(_FakeBrain):
+        def __init__(self, **k):
+            super().__init__(**k)
+            self.seen = []
+        async def send(self, text):
+            self.seen.append(text)
+            async for ev in super().send(text):
+                yield ev
+
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        proj = str(tmp_path / "proj"); (tmp_path / "proj").mkdir()
+        ws = Workspace(orch, orch.settings, proj)
+        ws.brain = RecBrain()
+        orch.workspaces[proj] = ws
+        orch.focused = proj
+        await orch.memory.add_fact(proj, "We deploy from the release branch")
+        await orch._run_turn(ws, "first question")
+        await orch._run_turn(ws, "second question")
+        assert "Orrin memory" in ws.brain.seen[0]        # injected on turn 1
+        assert "Orrin memory" not in ws.brain.seen[1]     # not repeated (unchanged)
+        assert ws.brain.seen[1] == "second question"      # user text sent verbatim
+        await orch.memory.add_fact(proj, "The staging DB resets nightly")
+        await orch._run_turn(ws, "third question")
+        assert "Orrin memory" in ws.brain.seen[2]         # re-injected after a change
+    asyncio.run(run())

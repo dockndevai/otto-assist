@@ -1117,11 +1117,20 @@ class Orchestrator:
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
-            # Prepend durable memory (facts + recent summary) so Claude has cross-session
-            # context. The dashboard/transcript already showed the user's *clean* text above;
-            # only what we send to the brain carries the (clearly-delimited) preamble.
+            # Prepend durable memory (facts + recent summary + relevant saved-note excerpts)
+            # so Claude has cross-session context. The dashboard/transcript already showed the
+            # user's *clean* text above; only what we send to the brain carries the
+            # (clearly-delimited) preamble. Optimization: within one resumed chat the model
+            # already retains the earlier preamble, so we only (re)inject on the first turn or
+            # when the remembered content has actually changed — avoiding redundant tokens every
+            # turn. Doc-retrieval excerpts vary by turn, so those still refresh naturally.
             try:
-                send_text = self.memory.preamble(p, query=text) + text
+                pre = self.memory.preamble(p, query=text)
+                if pre and pre != getattr(ws, "_last_preamble", None):
+                    send_text = pre + text
+                    ws._last_preamble = pre
+                else:
+                    send_text = text
             except Exception:
                 send_text = text
             try:

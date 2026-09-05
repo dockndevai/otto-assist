@@ -94,6 +94,20 @@ class ClaudeBrain:
             session_opts = {"resume": self._resume, "fork_session": False}
         else:
             session_opts = {"continue_conversation": b.continue_conversation}
+        # Let Claude read this project's memory (saved docs, project.md, summary) in full when
+        # it wants more than the injected preamble excerpt. Only if it exists (nothing to read
+        # otherwise), and behind the config flag.
+        extra_dirs = list(self.settings.add_dirs)
+        if self.settings.memory.enabled and self.settings.memory.expose_to_claude:
+            try:
+                from ..config import OTTO_HOME
+                from ..memory import project_slug
+                cwd = self._cwd or str(self.settings.project_path)
+                memdir = OTTO_HOME / "memory" / "projects" / project_slug(cwd)
+                if memdir.exists():
+                    extra_dirs.append(str(memdir))
+            except Exception:
+                pass
         options = ClaudeAgentOptions(
             system_prompt={
                 "type": "preset",
@@ -107,7 +121,7 @@ class ClaudeBrain:
             mcp_servers={"voice": build_server(self.ctx)},
             can_use_tool=self._permission,
             cwd=(self._cwd or str(self.settings.project_path)),
-            add_dirs=self.settings.add_dirs,
+            add_dirs=extra_dirs,
             include_partial_messages=True,
             permission_mode="default",
             **session_opts,

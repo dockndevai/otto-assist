@@ -72,6 +72,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                               pinned=orch.settings.brain.projects)
         return JSONResponse({"projects": [p.__dict__ for p in projs]})
 
+    @app.get("/api/history")
+    async def get_history(project: str = "") -> JSONResponse:
+        """The stored dashboard conversation for a project (defaults to focused). Used by the
+        front-end to fill a window when switching to a project not yet loaded this session."""
+        events = orch.history.load(project or orch.current_project)
+        return JSONResponse({"events": events})
+
     @app.post("/api/project/switch")
     async def switch_project(payload: dict) -> JSONResponse:
         path = payload.get("path", "")
