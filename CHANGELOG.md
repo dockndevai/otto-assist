@@ -3,7 +3,7 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
-## Unreleased
+## v0.2.7 — 2026-09-05
 
 **Persistent memory**
 - **Orrin remembers across sessions** — a shared knowledge store under `OTTO_HOME/memory` that
