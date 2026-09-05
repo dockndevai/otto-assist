@@ -6,3 +6,7 @@ from pathlib import Path
 
 # Must be set before `otto.config` is imported.
 os.environ.setdefault("OTTO_HOME", str(Path(__file__).resolve().parent.parent))
+# Keep the offline suite offline: the orchestrator's post-turn memory capture would otherwise
+# spawn a live model call. Tests that exercise capture enable it explicitly on their own
+# Settings instance.
+os.environ.setdefault("OTTO_MEMORY__AUTO_CAPTURE", "false")

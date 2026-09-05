@@ -944,7 +944,9 @@ def test_memory_record_turn_writes_log_and_index(tmp_path):
 
 def test_memory_capture_applies_facts_and_dedups(tmp_path, monkeypatch):
     from otto.memory import Memory, project_slug
-    m = Memory(tmp_path / "memory", load_settings())
+    s = load_settings()
+    s.memory.auto_capture = True          # self-contained: don't depend on the suite's env
+    m = Memory(tmp_path / "memory", s)
     proj = "/tmp/demo-proj"
 
     async def fake_extract(self, project_path, user_text, reply):
