@@ -70,6 +70,9 @@ class OttoApp(rumps.App):
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
+        # The menu bar owns global push-to-talk (installed on the MAIN thread via NSEvent),
+        # so the orchestrator must NOT start the pynput listener (which SIGTRAPs the .app).
+        self.orch._external_ptt = True
         self.url = f"http://{self.settings.server.host}:{self.settings.server.port}"
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
@@ -98,6 +101,8 @@ class OttoApp(rumps.App):
         ]
         self._proj_tick = 0
         self._mic_asked = False    # one-shot: request mic on the main thread once booted
+        self._hotkey = None        # global push-to-talk monitor (installed on the main thread)
+        self._hotkey_asked = False
         self._refresh_projects()
         self._refresh_workspaces()
         self._refresh_chats()
@@ -259,6 +264,11 @@ class OttoApp(rumps.App):
         if not self._mic_asked and self._loop is not None:
             self._mic_asked = True
             self._ask_microphone()
+        # Install the global push-to-talk hotkey ONCE, also on the main thread (NSEvent
+        # monitors require it) — the same reason the mic prompt lives here.
+        if not self._hotkey_asked and self._loop is not None:
+            self._hotkey_asked = True
+            self._install_hotkey()
         # Refresh the project list (and current checkmark) every ~8s.
         self._proj_tick = (self._proj_tick + 1) % 8
         if self._proj_tick == 0:
@@ -280,6 +290,25 @@ class OttoApp(rumps.App):
             request_mic_access_async(_cb)
         except Exception as e:
             print(f"[otto] mic request error: {e}", file=sys.stderr, flush=True)
+
+    def _install_hotkey(self) -> None:
+        """Install the global push-to-talk monitor on the main thread (opt-in via config)."""
+        if not self.settings.voice.hotkey.enabled:
+            return
+        try:
+            from .voice.hotkey_mac import MacHotkey
+
+            def press():
+                if self._loop is not None:
+                    self._loop.call_soon_threadsafe(self.orch.arm_ptt)
+
+            def release():   # arm-next-utterance model: VAD ends the turn, nothing on release
+                pass
+
+            self._hotkey = MacHotkey(self.settings, self._loop, press, release)
+            self._hotkey.start()
+        except Exception as e:
+            print(f"[otto] hotkey install error: {e}", file=sys.stderr, flush=True)
 
     def talk(self, _) -> None:
         if self._loop is not None:
