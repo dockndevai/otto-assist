@@ -64,4 +64,7 @@ voice:
     kokoro_model_dir: ""       # blank = ~/Library/Application Support/Otto/models/kokoro
 
   hotkey:
+    # Global push-to-talk hotkey. Works in the packaged app (main-thread NSEvent monitor).
+    # Off by default; needs macOS Input Monitoring permission when enabled.
+    enabled: false
     push_to_talk: "<cmd>+<shift>+j"

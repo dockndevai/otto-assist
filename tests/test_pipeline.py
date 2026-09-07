@@ -1138,3 +1138,23 @@ def test_tts_config_accepts_kokoro():
     s = load_settings()
     s.voice.tts.engine = "kokoro"        # Literal allows it
     assert s.voice.tts.engine == "kokoro"
+
+
+def test_hotkey_chord_parse_and_pane():
+    """The push-to-talk chord parses to a modifier mask + key, and the Input Monitoring
+    privacy pane is wired (the fix that lets PTT work in the packaged app)."""
+    from otto.voice.hotkey_mac import parse_chord, _CMD, _SHIFT, MacHotkey
+    mask, key = parse_chord("<cmd>+<shift>+j")
+    assert key == "j" and (mask & _CMD) and (mask & _SHIFT)
+    # constructing the monitor must not require AppKit (only start() touches it)
+    s = load_settings()
+    s.voice.hotkey.push_to_talk = "<cmd>+<shift>+k"
+    hk = MacHotkey(s, loop=None, on_press=lambda: None, on_release=lambda: None)
+    assert hk._key == "k"
+    from otto.preflight import _PANES
+    assert _PANES.get("input_monitoring") == "Privacy_ListenEvent"
+
+
+def test_orchestrator_external_ptt_default_false():
+    orch = Orchestrator(load_settings(), EventBus())
+    assert orch._external_ptt is False      # menu bar flips this to own PTT on the main thread
