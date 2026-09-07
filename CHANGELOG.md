@@ -3,7 +3,20 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
-## Unreleased
+## v0.2.8 — 2026-09-07
+
+**Local neural voice (Kokoro)**
+- **A natural voice that runs on your Mac** — new `voice.tts.engine: kokoro` (Kokoro, 82M, ONNX):
+  fully offline, no API key. Each sentence is synthesized and played through the same barge-in
+  path as `say`; if the package/model are missing it falls back to the system voice. Enable with
+  `pip install -e ".[neural-voice]"` + `python -m otto.voice.fetch_kokoro`. **Bundled into the
+  packaged app** (kokoro-onnx + espeak-ng), so a DMG install can use it once the model files are
+  fetched into `OTTO_HOME/models/kokoro`.
+
+**Push-to-talk in the packaged app**
+- **Global ⌘⇧J now works in the .app** — replaced the pynput backend (which SIGTRAP-crashed the
+  bundled app) with a main-thread `NSEvent` monitor installed by the menu bar; terminal runs still
+  use pynput. Opt-in (`voice.hotkey.enabled`); needs macOS Input Monitoring.
 
 **Voice UX (ideas adapted from voicebox)**
 - **Dictation-anywhere** — turn on Dictation mode (menu bar, `POST /api/dictation`, or say
