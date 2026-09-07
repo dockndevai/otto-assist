@@ -1337,8 +1337,56 @@ def test_follow_up_window_no_wake_word_needed():
         orch._enter_awaiting_command(greet=False, timeout=15)
         assert orch._awaiting_command is True
         sent = []
-        orch._dispatch_voice_command = lambda t: sent.append(t)
+        orch._dispatch_voice_command = lambda t, **k: sent.append(t)
         orch._on_voice_final("what's the weather")     # no wake word
         assert sent == ["what's the weather"]           # taken as the command
         assert orch._awaiting_command is False           # window consumed
+    asyncio.run(run())
+
+
+def test_is_noise_heuristic():
+    from otto.voice.noise import is_noise
+    for junk in ["", ".", "  ", "S.", "you", "Thank you.", "okay",
+                 "team team team team team team team", "hi hi hi hi hi hi hi"]:
+        assert is_noise(junk) is True, junk
+    for real in ["what's the weather today", "check the MCP server status",
+                 "create a file called notes"]:
+        assert is_noise(real) is False, real
+
+
+def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.filter_hallucinations = True
+        orch.settings.voice.stt.hands_free_verify = True
+        orch.settings.voice.stt.refine = False
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+
+        # heuristic: obvious junk dropped, never reaches the brain
+        orch._dispatch_voice_command("you", hands_free=True)   # heuristic filler → dropped
+        await asyncio.sleep(0)
+        assert sent == []
+
+        # hands-free semantic gate says NO → dropped
+        import otto.voice.noise as noise
+        async def fake_verify(text, model="haiku"): return False
+        monkeypatch.setattr(noise, "is_real_command", fake_verify)
+        orch._dispatch_voice_command("check the guitar back duty", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == []
+
+        # a real hands-free command (gate says YES) → passes through
+        async def yes_verify(text, model="haiku"): return True
+        monkeypatch.setattr(noise, "is_real_command", yes_verify)
+        orch._dispatch_voice_command("what's the weather", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == ["what's the weather"]
+
+        # deliberate (push-to-talk) skips the filter entirely — even short input goes through
+        sent.clear()
+        orch._dispatch_voice_command("stop", deliberate=True)
+        await asyncio.sleep(0)
+        assert sent == ["stop"]
     asyncio.run(run())

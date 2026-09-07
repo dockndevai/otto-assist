@@ -169,6 +169,9 @@ class Orchestrator:
         # Dictation-anywhere: when on, a heard command is typed into the focused app instead
         # of being sent to Claude (runtime-toggleable; starts from config).
         self._dictation = settings.voice.stt.dictation_mode
+        # True while a post-reply follow-up window is open (hands-free) — those utterances get
+        # the stricter anti-hallucination gate; an after-wake command does not.
+        self._follow_up_active = False
         # Half-duplex guard: on a laptop speaker the mic hears Otto's OWN voice and would
         # answer itself in a loop. Primary defense: physically turn the mic OFF at the recorder
         # while Otto speaks (set_mic) so nothing is captured; `_mute_input_until` tracks when to
@@ -960,7 +963,7 @@ class Orchestrator:
             if self._ptt_handle is not None:
                 self._ptt_handle.cancel()
             print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(text)
+            self._dispatch_voice_command(text, deliberate=True)   # button press = trust it
             return
         # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
         # greeting echo and a repeated wake word; the next real utterance is the command.
@@ -973,9 +976,11 @@ class Orchestrator:
                 print(f"[otto] ignoring wake echo: {text!r}", file=sys.stderr, flush=True)
                 return   # just the wake word again — keep waiting for the command
             command = remainder if (matched and remainder.strip()) else text
-            self._cancel_await()
-            print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(command)
+            hands_free = self._follow_up_active     # a follow-up window is hands-free; after a
+            self._cancel_await()                    # bare wake word it's deliberate
+            print(f"[otto] command after wake: {command!r} (hands_free={hands_free})",
+                  file=sys.stderr, flush=True)
+            self._dispatch_voice_command(command, hands_free=hands_free)
             return
         # Half-duplex echo guard: while Otto is speaking (and for a content-length-based
         # cooldown after), the mic hears Otto's own voice — drop it so Otto doesn't answer
@@ -1009,7 +1014,7 @@ class Orchestrator:
         # filtered above). Mute the mic when you don't want Otto listening.
         if self.settings.voice.stt.always_listen:
             print(f"[otto] always-listen: {text!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(text)
+            self._dispatch_voice_command(text, hands_free=True)   # gate ambient hallucinations
             return
         # "phrase" backend = software wake word: act on speech that begins with the wake
         # phrase (e.g. "hey otto"), or greet + await the command when it's said alone.
@@ -1056,22 +1061,40 @@ class Orchestrator:
         self._voice_out(ack)
 
     # -- voice command dispatch (refine + dictation) ----------------------
-    def _dispatch_voice_command(self, text: str) -> None:
-        """Route a heard command: optionally clean it up (refine), then either type it into
-        the focused app (dictation mode) or send it to Claude.
+    def _dispatch_voice_command(self, text: str, deliberate: bool = False,
+                                hands_free: bool = False) -> None:
+        """Route a heard command through the anti-hallucination filter, optional refine, then
+        dictation or Claude.
 
-        Fast path — the default (no refine, no dictation) — sends straight to Claude
-        synchronously (lowest latency, unchanged behavior). Otherwise it runs async so a
-        refine model call or the (blocking) paste never stalls the event loop."""
-        if not self.settings.voice.stt.refine and not self._dictation:
-            self.submit_user_input(text)
+        `deliberate` (push-to-talk) skips the noise filter entirely. Otherwise the free
+        heuristic drops obvious junk; on the `hands_free` path (always-listen / follow-up) a
+        model gate also rejects grammatical-but-nonsensical hallucinations. Fast synchronous
+        path when nothing async is needed (unchanged latency for wake-word/PTT)."""
+        stt = self.settings.voice.stt
+        if not deliberate and stt.filter_hallucinations:
+            from .voice.noise import is_noise
+            if is_noise(text):
+                print(f"[otto] dropped noise: {text!r}", file=sys.stderr, flush=True)
+                return
+        need_verify = hands_free and stt.hands_free_verify and not deliberate
+        if not stt.refine and not self._dictation and not need_verify:
+            self.submit_user_input(text)          # fast path — no model calls
             return
         if self._loop is not None:
-            self._loop.create_task(self._dispatch_async(text))
+            self._loop.create_task(self._dispatch_async(text, need_verify))
         else:
             self.submit_user_input(text)
 
-    async def _dispatch_async(self, text: str) -> None:
+    async def _dispatch_async(self, text: str, verify: bool = False) -> None:
+        if verify:
+            try:
+                from .voice.noise import is_real_command
+                if not await is_real_command(text, model=self.settings.voice.stt.verify_model):
+                    print(f"[otto] dropped (not a command): {text!r}",
+                          file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                pass
         if self.settings.voice.stt.refine:
             try:
                 from .voice.refine import refine_transcript
@@ -1173,6 +1196,7 @@ class Orchestrator:
         and waits; `greet=False` is a silent follow-up window opened right after a reply, so a
         natural back-and-forth doesn't need "hey otto" before every turn."""
         self._awaiting_command = True
+        self._follow_up_active = not greet     # silent window = hands-free (stricter noise gate)
         self._status("listening", "Listening…")
         if greet:
             ack = random.choice(_WAKE_ACKS)
@@ -1201,10 +1225,12 @@ class Orchestrator:
     def _await_timeout(self) -> None:
         if self._awaiting_command:
             self._awaiting_command = False
+            self._follow_up_active = False
             self._status("idle", "Ready")
 
     def _cancel_await(self) -> None:
         self._awaiting_command = False
+        self._follow_up_active = False
         if self._await_handle is not None:
             self._await_handle.cancel()
             self._await_handle = None
