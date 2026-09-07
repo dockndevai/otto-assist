@@ -30,6 +30,23 @@ _log = logging.getLogger("otto")
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
+_SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
+
+
+def _speakable(text: str) -> str:
+    """Strip markdown/URLs/code from text so TTS speaks words, not '[label](https://…)'.
+    The model is *asked* to be brief and markdown-free; this enforces it for the spoken path
+    (the full, original text still goes to the chat/screen)."""
+    t = _SPEAK_CODEBLOCK.sub(" ", text or "")
+    t = re.sub(r"`[^`]*`", " ", t)                       # inline code
+    t = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", t)     # [label](url) / image -> label
+    t = re.sub(r"https?://\S+|www\.\S+", " ", t)         # bare URLs
+    t = re.sub(r"(?m)^\s*[>#]+\s*", "", t)               # headings / block quotes
+    t = re.sub(r"(?m)^\s*[*\-+]\s+", "", t)              # bullet markers
+    t = re.sub(r"[*_`#|]", "", t)                        # residual emphasis/table pipes
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 # Common speech-to-text mishearings of the "otto" trigger word.
 _WAKE_ALIASES = {
     "otto": {"otto", "auto", "oto", "ottos", "otho", "atto", "alto", "otter",
@@ -127,6 +144,8 @@ class Orchestrator:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending_answer: asyncio.Future[str] | None = None
         self._speech_buf = ""
+        self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
+        self._speak_done = False     # cap reached → stop speaking the rest of this reply
         self._speaking = False
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
@@ -1249,6 +1268,8 @@ class Orchestrator:
             if focused:
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""
+                self._spoken_chars = 0
+                self._speak_done = False
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
@@ -1326,7 +1347,8 @@ class Orchestrator:
                 self._publish_workspaces()
 
     def _feed_speech(self, chunk: str) -> None:
-        """Buffer deltas and speak whole sentences for natural prosody."""
+        """Buffer deltas and speak whole sentences for natural prosody — cleaned + length-capped
+        so Orrin answers in a sentence or two, not by narrating the whole (markdown) reply."""
         if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
@@ -1336,12 +1358,33 @@ class Orchestrator:
                 break
             sentence = m.group(0)
             self._speech_buf = self._speech_buf[m.end():]
-            self._voice_out(sentence.strip())
+            self._speak_capped(sentence)
 
     def _flush_speech(self) -> None:
         if self._speech_buf.strip():
-            self._voice_out(self._speech_buf.strip())
+            self._speak_capped(self._speech_buf)
         self._speech_buf = ""
+
+    def _speak_capped(self, raw: str) -> None:
+        """Speak a cleaned sentence, up to the spoken-length cap. Past the cap, say the rest is
+        on screen (once) and stop — so a long/verbose reply doesn't get narrated in full."""
+        if self._speak_done:
+            return
+        s = _speakable(raw)
+        if not s:
+            return
+        cap = self.settings.voice.tts.max_spoken_chars or 0
+        if cap and self._spoken_chars + len(s) > cap:
+            remaining = cap - self._spoken_chars
+            if remaining > 40:                       # squeeze in the start of this sentence
+                head = s[:remaining].rsplit(" ", 1)[0].strip()
+                if head:
+                    self._voice_out(head + "…")
+            self._voice_out("The rest is on screen.")
+            self._speak_done = True
+            return
+        self._voice_out(s)
+        self._spoken_chars += len(s) + 1
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":
