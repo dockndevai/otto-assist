@@ -131,9 +131,10 @@ working in, set the wake word, choose the brain/permissions, **pick any installe
 
 Four ways in:
 
-1. **🎤 Talk button** *(most reliable)* — dashboard button, menu-bar **Talk to Orrin**, or the
-   **⌘⇧J** hotkey. Click, then speak — no wake word, no mishearing. Needs no macOS
-   permission (the hotkey needs Accessibility).
+1. **🎤 Talk button** *(most reliable)* — dashboard button or menu-bar **Talk to Orrin**: click,
+   then speak — no wake word, no mishearing, no macOS permission needed. There's also an opt-in
+   global **⌘⇧J** hotkey (`voice.hotkey.enabled`) that works in the packaged app — it's a
+   main-thread key monitor and needs **Input Monitoring** permission.
 2. **Always-listen** *(just talk)* — set `voice.stt.always_listen: true` and Orrin responds
    to whatever you say, no wake word. It mutes the mic while it speaks (no self-echo); say
    **"stop listening"** to put it to sleep, and the **wake word** wakes it again.

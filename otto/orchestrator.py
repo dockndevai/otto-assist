@@ -122,6 +122,7 @@ class Orchestrator:
         self.mouth = None       # set in start() if voice output enabled
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
+        self._external_ptt = False  # menu bar installs the global hotkey on the main thread
         self._eff = None        # EfficientWord-Net custom wake-word listener
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending_answer: asyncio.Future[str] | None = None
@@ -306,10 +307,12 @@ class Orchestrator:
                 on_realtime=self._on_voice_partial,
             )
             self.ears.start()
-            # Global push-to-talk hotkey is opt-in: pynput's macOS input-source calls run
-            # off the main thread and hard-abort (SIGTRAP) in the packaged app, and it needs
-            # Accessibility permission anyway. The dashboard mic button + wake word cover PTT.
-            if v.hotkey.enabled:
+            # Global push-to-talk. Under the menu-bar app the hotkey is owned there and
+            # installed on the MAIN thread (NSEvent), because pynput's macOS input-source
+            # calls run off the main thread and hard-abort (SIGTRAP) the packaged app. Here we
+            # only start the pynput listener for a bare terminal run (no menu bar), where it's
+            # safe. `_external_ptt` is set by the menu bar.
+            if v.hotkey.enabled and not self._external_ptt:
                 from .voice.hotkey import PushToTalk
                 self._ptt = PushToTalk(
                     self.settings, self._loop,
@@ -363,8 +366,9 @@ class Orchestrator:
             preflight.Check("claude_cli", "Claude CLI found"),
             preflight.Check("claude_test", "Claude connection (test run)"),
             preflight.Check("voice_output", "Voice output", required=False),
-            preflight.Check("accessibility", "Accessibility (global hotkey)",
-                            required=self.settings.voice.hotkey.enabled, pane="accessibility"),
+            preflight.Check("accessibility", "Input Monitoring (global hotkey)",
+                            required=self.settings.voice.hotkey.enabled,
+                            pane="input_monitoring"),
         ]
         self._publish_preflight(done=False)
         # NB: we deliberately do NOT call AVFoundation requestAccess (see start()); the recorder
