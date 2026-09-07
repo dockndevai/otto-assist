@@ -1294,3 +1294,33 @@ def test_pending_answer_bypasses_wake_word():
         orch._on_voice_final("yes go ahead")
         assert orch._pending_answer.done() and orch._pending_answer.result() == "yes go ahead"
     asyncio.run(run())
+
+
+def test_speakable_strips_markdown_and_urls():
+    from otto.orchestrator import _speakable
+    s = _speakable("Here: - [SuperLabs Blog](https://blog.superlabs.co/) and `code` and **bold**")
+    assert "http" not in s and "](" not in s and "*" not in s and "`" not in s
+    assert "SuperLabs Blog" in s and "bold" in s
+    assert _speakable("visit https://example.com/x now").count("http") == 0
+
+
+def test_spoken_reply_is_capped():
+    """A long, markdown-y reply is not narrated in full: Orrin speaks the start, then says the
+    rest is on screen."""
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.settings.voice.tts.max_spoken_chars = 60
+    spoken = []
+    class M:
+        def stop(self): ...
+        def is_playing(self): return False
+    orch.mouth = M()
+    orch._voice_out = lambda t: spoken.append(t)   # capture what would be spoken
+    orch._spoken_chars = 0; orch._speak_done = False
+    orch._speak_capped("This first sentence is a concise answer.")
+    orch._speak_capped("Then a second, much longer sentence that would blow past the spoken cap entirely.")
+    orch._speak_capped("And a third that must never be spoken.")
+    joined = " ".join(spoken)
+    assert "concise answer" in joined
+    assert "The rest is on screen." in joined
+    assert "third that must never" not in joined
+    assert orch._speak_done is True

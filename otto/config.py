@@ -125,6 +125,10 @@ class TTSConfig(BaseModel):
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
     kokoro_model_dir: str = ""
+    # Cap how much of a reply is spoken aloud. Orrin should answer in a sentence or two; the
+    # full text is always on screen. This is enforced regardless of how verbose the model is,
+    # and markdown/URLs/code are stripped from speech. 0 disables the cap.
+    max_spoken_chars: int = 240
     # Per-project voice override (project path -> voice id/name). When you focus a project,
     # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
     # `voice`/`kokoro_voice` for projects with no entry.
