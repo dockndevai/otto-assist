@@ -108,8 +108,16 @@ class STTConfig(BaseModel):
 
 
 class TTSConfig(BaseModel):
-    engine: Literal["system", "elevenlabs"] = "system"
-    voice: str = ""
+    # "system" = macOS `say` (default, zero setup); "kokoro" = local neural voice (offline,
+    # no key — needs `kokoro-onnx` + model files, see `python -m otto.voice.fetch_kokoro`);
+    # "elevenlabs" = premium cloud voice (needs ELEVENLABS_API_KEY).
+    engine: Literal["system", "elevenlabs", "kokoro"] = "system"
+    voice: str = ""                              # macOS `say` voice (engine "system")
+    # Kokoro (engine "kokoro"): a voice id (see otto.voice.tts.KOKORO_VOICES), speaking speed,
+    # and where the model files live (blank = OTTO_HOME/models/kokoro).
+    kokoro_voice: str = "af_heart"
+    kokoro_speed: float = 1.0
+    kokoro_model_dir: str = ""
 
 
 class HotkeyConfig(BaseModel):

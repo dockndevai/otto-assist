@@ -398,9 +398,11 @@ class Orchestrator:
 
     # -- voice selection ---------------------------------------------------
     def set_voice(self, voice: str) -> None:
-        """Switch Otto's spoken voice live (macOS `say`) and persist it to config."""
+        """Switch Otto's spoken voice live and persist it. The field depends on the engine:
+        `voice` for macOS `say`, `kokoro_voice` for the local neural voice."""
         voice = (voice or "").strip()
-        self.settings.voice.tts.voice = voice
+        key = "kokoro_voice" if self.settings.voice.tts.engine == "kokoro" else "voice"
+        setattr(self.settings.voice.tts, key, voice)
         if self.mouth is not None:
             try:
                 self.mouth.set_voice(voice)
@@ -412,7 +414,7 @@ class Orchestrator:
             cfg_file = config_path()
             data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
             data = data or {}
-            data.setdefault("voice", {}).setdefault("tts", {})["voice"] = voice
+            data.setdefault("voice", {}).setdefault("tts", {})[key] = voice
             save_config(data)
         except Exception:
             pass

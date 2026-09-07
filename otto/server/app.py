@@ -193,12 +193,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     # -- voices (pick Otto's spoken voice) --------------------------------
     @app.get("/api/voices")
     async def get_voices() -> JSONResponse:
-        from ..voice.tts import list_system_voices
-        return JSONResponse({
-            "voices": list_system_voices(),
-            "current": orch.settings.voice.tts.voice,
-            "engine": orch.settings.voice.tts.engine,
-        })
+        from ..voice.tts import list_kokoro_voices, list_system_voices
+        tts = orch.settings.voice.tts
+        if tts.engine == "kokoro":
+            voices, current = list_kokoro_voices(), tts.kokoro_voice
+        else:
+            voices, current = list_system_voices(), tts.voice
+        return JSONResponse({"voices": voices, "current": current, "engine": tts.engine})
 
     @app.post("/api/voice/select")
     async def select_voice(payload: dict) -> JSONResponse:
