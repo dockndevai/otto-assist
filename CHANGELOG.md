@@ -3,6 +3,22 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## Unreleased
+
+**Voice UX (ideas adapted from voicebox)**
+- **Dictation-anywhere** — turn on Dictation mode (menu bar, `POST /api/dictation`, or say
+  "start/stop dictation") and Orrin types what you say into the focused app via ⌘V, restoring
+  your clipboard afterward, instead of sending it to Claude. macOS; the paste needs Accessibility.
+- **Transcript refinement** — optionally clean filler words / false starts / mis-hears from the
+  raw transcript with a cheap model pass before it's used (`voice.stt.refine`, off by default;
+  most useful for dictation). Best-effort — falls back to the raw text on any problem.
+- **Captures** — every heard utterance (transcript + metadata) is logged per project
+  (`memory/projects/<slug>/captures.jsonl`, `GET /api/captures`), so mis-hears are reviewable —
+  including speech Orrin ignored, which the turns log doesn't record.
+- **Per-workspace voice** — each project can speak in its own voice (`voice.tts.project_voices`);
+  focusing a workspace applies its voice, so parallel workspaces are easy to tell apart. Setting
+  a voice while focused on a project remembers it for that project.
+
 ## v0.2.7 — 2026-09-05
 
 **Persistent memory**

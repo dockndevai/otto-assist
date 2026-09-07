@@ -211,6 +211,22 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         orch.preview_voice(payload.get("voice", ""))
         return JSONResponse({"ok": True})
 
+    # -- captures (every heard utterance, per project) --------------------
+    @app.get("/api/captures")
+    async def get_captures(project: str = "", limit: int = 100) -> JSONResponse:
+        items = orch.memory.list_captures(project or orch.current_project, limit=limit)
+        return JSONResponse({"captures": items})
+
+    # -- dictation-anywhere toggle ----------------------------------------
+    @app.get("/api/dictation")
+    async def get_dictation() -> JSONResponse:
+        return JSONResponse({"on": orch._dictation})
+
+    @app.post("/api/dictation")
+    async def set_dictation(payload: dict) -> JSONResponse:
+        orch.set_dictation(bool(payload.get("on", not orch._dictation)))
+        return JSONResponse({"ok": True, "on": orch._dictation})
+
     # -- preflight / readiness (first-run permissions + health check) ------
     @app.get("/api/preflight")
     async def get_preflight() -> JSONResponse:

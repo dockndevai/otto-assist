@@ -145,6 +145,16 @@ Four ways in:
 Orrin **waits for you to finish** (`voice.stt.silence_seconds`, ~1.3s pause) so it won't cut
 you off.
 
+**Dictation-anywhere** — flip on **Dictation mode** (menu bar, or say *"start dictation"*) and
+Orrin types what you say into whatever app is focused (⌘V, and it restores your clipboard),
+instead of talking to Claude. Say *"stop dictation"* to switch back. Optionally turn on
+`voice.stt.refine` to strip "ums" and false starts before the text is inserted.
+
+Every utterance Orrin hears is also logged per project (**Captures**, `GET /api/captures`), so
+you can review what it heard — handy for catching mis-hears in always-listen mode. And each
+project can have **its own voice** (`voice.tts.project_voices`) so parallel workspaces are easy
+to tell apart by ear.
+
 ### Menu bar — status at a glance
 
 The menu-bar robot changes color to show what Orrin is doing:
@@ -207,6 +217,8 @@ config** — not here. Orrin's `config.yaml` is wiring only:
 | `brain.continue_conversation` | `false` | resume the project's latest session |
 | `voice.stt.always_listen` | `false` | `true` = just talk, no wake word (say "stop listening" to sleep) |
 | `voice.stt.silence_seconds` | `1.3` | pause that ends your turn — higher waits longer |
+| `voice.stt.refine` | `false` | clean filler/false-starts from the transcript first (cheap model) |
+| `voice.stt.dictation_mode` | `false` | type speech into the focused app (⌘V) instead of Claude |
 | `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` / `efficientword` |
 | `voice.stt.realtime_partials` | `false` | live partial captions as you speak (small model) |
 | `voice.tts.engine` | `system` | macOS `say`; **`kokoro`** = local neural voice (offline, no key — see below); `elevenlabs` = cloud (needs `ELEVENLABS_API_KEY`) |

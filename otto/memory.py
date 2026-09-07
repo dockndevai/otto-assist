@@ -229,6 +229,37 @@ class Memory:
             pass
         self._touch_index(project_path)
 
+    def record_capture(self, project_path: str, text: str, source: str = "voice") -> None:
+        """Log a heard utterance (transcript + metadata) to the project's captures log. Unlike
+        `turns.jsonl` (only exchanges that ran), this records *everything* the mic heard —
+        including ignored/echo/non-command speech — so mis-hears are reviewable."""
+        text = (text or "").strip()
+        if not text:
+            return
+        pdir = self.project_dir(project_path)
+        rec = {"ts": time.time(), "text": text, "source": source}
+        try:
+            with (pdir / "captures.jsonl").open("a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+
+    def list_captures(self, project_path: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Most-recent-first heard utterances for a project."""
+        path = self.project_dir(project_path) / "captures.jsonl"
+        try:
+            lines = path.read_text().splitlines()[-limit:]
+        except Exception:
+            return []
+        out: list[dict[str, Any]] = []
+        for ln in lines:
+            try:
+                out.append(json.loads(ln))
+            except Exception:
+                continue
+        out.reverse()
+        return out
+
     def _touch_index(self, project_path: str) -> None:
         path = self.root / "index.json"
         try:
