@@ -160,6 +160,8 @@ def test_app_routes_and_mcp():
             "/api/session/rename"} <= paths
     # per-project history replay endpoint
     assert "/api/history" in paths
+    # captures + dictation endpoints
+    assert {"/api/captures", "/api/dictation"} <= paths
     # parallel-workspace endpoints
     assert {"/api/workspaces", "/api/workspace/open", "/api/workspace/focus",
             "/api/workspace/close"} <= paths
@@ -1158,3 +1160,112 @@ def test_hotkey_chord_parse_and_pane():
 def test_orchestrator_external_ptt_default_false():
     orch = Orchestrator(load_settings(), EventBus())
     assert orch._external_ptt is False      # menu bar flips this to own PTT on the main thread
+
+
+# ---- #5 captures: every heard utterance, per project ----
+def test_memory_captures_record_and_list(tmp_path):
+    from otto.memory import Memory
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/capproj"
+    m.record_capture(proj, "what's the weather", source="voice")
+    m.record_capture(proj, "otto go to sleep", source="voice")
+    m.record_capture(proj, "   ", source="voice")          # blank ignored
+    caps = m.list_captures(proj)
+    assert [c["text"] for c in caps] == ["otto go to sleep", "what's the weather"]  # newest first
+    assert all(c["source"] == "voice" for c in caps)
+    assert m.list_captures("/tmp/other") == []             # per-project isolation
+
+
+# ---- #4 dictation paste: clipboard-safe insertion ----
+def test_dictation_paste_sequence(monkeypatch):
+    import otto.voice.dictation as dc
+    calls = []
+    class _R:
+        def __init__(self, stdout=""): self.stdout = stdout
+    def fake_run(argv, **kw):
+        calls.append((argv, kw.get("input")))
+        return _R(stdout="OLD-CLIP") if argv == ["pbpaste"] else _R()
+    monkeypatch.setattr(dc.subprocess, "run", fake_run)
+    monkeypatch.setattr(dc.time, "sleep", lambda *_: None)
+    assert dc.paste_text("hello world") is True
+    seq = [a[0] for a in calls]
+    assert seq[0] == ["pbpaste"]                            # save clipboard first
+    assert calls[1][0] == ["pbcopy"] and calls[1][1] == "hello world"   # set text
+    assert seq[2][0] == "osascript"                         # ⌘V
+    assert calls[3][0] == ["pbcopy"] and calls[3][1] == "OLD-CLIP"      # restore clipboard
+    # empty text does nothing
+    calls.clear()
+    assert dc.paste_text("") is False and calls == []
+
+
+# ---- #3 refine: no-op on empty; guards ----
+def test_refine_empty_is_noop():
+    import asyncio as _a
+    from otto.voice.refine import refine_transcript
+    assert _a.run(refine_transcript("")) == ""            # no model call for empty input
+
+
+# ---- #3 + #4 dispatch routing (refine → dictation|Claude) ----
+def test_voice_command_dispatch_routing(monkeypatch):
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+
+        # refine off, dictation off → text goes to Claude unchanged
+        orch.settings.voice.stt.refine = False
+        orch._dictation = False
+        await orch._dispatch_async("hello world")
+        assert sent == ["hello world"]
+
+        # refine on → transcript cleaned before dispatch
+        import otto.voice.refine as rf
+        async def fake_refine(text, model="haiku"): return "CLEANED " + text
+        monkeypatch.setattr(rf, "refine_transcript", fake_refine)
+        orch.settings.voice.stt.refine = True
+        sent.clear()
+        await orch._dispatch_async("um hello")
+        assert sent == ["CLEANED um hello"]
+
+        # dictation on → typed into the focused app, NOT sent to Claude
+        import otto.voice.dictation as dc
+        pasted = []
+        monkeypatch.setattr(dc, "paste_text", lambda t: (pasted.append(t), True)[1])
+        orch._dictation = True
+        sent.clear()
+        await orch._dispatch_async("type this")
+        assert pasted == ["CLEANED type this"] and sent == []
+    asyncio.run(run())
+
+
+def test_dictation_voice_toggle_and_command(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    assert orch._is_dictation_command("start dictation")
+    assert orch._is_dictation_command("otto stop dictation")     # wake word peeled
+    assert not orch._is_dictation_command("what's the weather")
+    orch.set_dictation(True);  assert orch._dictation is True
+    orch.set_dictation(False); assert orch._dictation is False
+
+
+# ---- #6 per-workspace voice ----
+def test_per_project_voice(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    class FakeMouth:
+        def __init__(self): self.voice = None
+        def set_voice(self, v): self.voice = v
+    orch.mouth = FakeMouth()
+    orch.settings.voice.tts.engine = "system"
+    orch.settings.voice.tts.voice = "Samantha"               # global default
+    orch.settings.voice.tts.project_voices = {orch.focused: "Daniel"}
+    orch._apply_project_voice()
+    assert orch.mouth.voice == "Daniel"                      # project override applied
+    orch.settings.voice.tts.project_voices = {}
+    orch._apply_project_voice()
+    assert orch.mouth.voice == "Samantha"                    # falls back to default
+    # setting a voice records it as this project's voice
+    orch.set_voice("Karen")
+    assert orch.settings.voice.tts.project_voices[orch.focused] == "Karen"
+    assert orch.mouth.voice == "Karen"
