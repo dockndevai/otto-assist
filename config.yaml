@@ -55,8 +55,13 @@ voice:
     oww_inference_framework: "onnx"   # "onnx" or "tflite" (match the model file)
 
   tts:
-    engine: "system"           # "system" (local macOS voice) or "elevenlabs" (needs key)
-    voice: ""
+    # "system" = macOS `say` (default, zero setup) · "kokoro" = local neural voice (offline,
+    # no key; run `python -m otto.voice.fetch_kokoro` once) · "elevenlabs" = cloud (needs key)
+    engine: "system"
+    voice: ""                  # macOS `say` voice name (engine "system")
+    kokoro_voice: "af_heart"   # Kokoro voice id (engine "kokoro"); see otto/voice/tts.py
+    kokoro_speed: 1.0          # Kokoro speaking speed
+    kokoro_model_dir: ""       # blank = ~/Library/Application Support/Otto/models/kokoro
 
   hotkey:
     push_to_talk: "<cmd>+<shift>+j"

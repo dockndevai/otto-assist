@@ -38,6 +38,12 @@ app = [
     "rumps>=0.4",                    # menu bar UI
     "pyobjc-framework-WebKit>=10",   # in-app dashboard window (WKWebView) instead of a browser
 ]
+# Local neural voice (Kokoro) — optional, offline, no API key. Model files fetched separately
+# with `python -m otto.voice.fetch_kokoro`. espeak-ng ships bundled via espeakng-loader.
+neural-voice = [
+    "kokoro-onnx>=0.4",              # Kokoro TTS on onnxruntime (bundled espeak-ng)
+    "soundfile>=0.12",               # write synthesized audio to a WAV for afplay
+]
 
 [project.scripts]
 otto = "run:main"
