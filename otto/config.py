@@ -99,6 +99,21 @@ class STTConfig(BaseModel):
     # Dictation-anywhere: type transcribed speech into the focused app (⌘V, clipboard-safe)
     # instead of sending it to Claude. Runtime-toggleable; this is the startup default.
     dictation_mode: bool = False
+    # After a reply, keep listening this many seconds for a follow-up WITHOUT the wake word, so
+    # a back-and-forth doesn't need "hey otto" every turn. 0 = off (always require the wake word).
+    follow_up_seconds: float = 0.0
+    # Anti-hallucination: drop Whisper's noise output so ambient sound isn't run as a command.
+    #   filter_hallucinations: free heuristic (empty/short/repetitive/filler) on every voice turn.
+    #   hands_free_verify: a cheap model gate on the HANDS-FREE path (always-listen / follow-up)
+    #     that also rejects grammatical-but-nonsensical hallucinations. Adds a little latency to
+    #     hands-free turns only; the wake-word/push-to-talk paths stay snappy.
+    filter_hallucinations: bool = True
+    hands_free_verify: bool = True
+    verify_model: str = "haiku"
+    # VAD tightening (RealtimeSTT): lower silero_sensitivity + a longer minimum recording make
+    # the recorder trigger on clearer speech and ignore short noise blips.
+    silero_sensitivity: float = 0.4
+    min_length_of_recording: float = 0.5
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"
@@ -125,6 +140,10 @@ class TTSConfig(BaseModel):
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
     kokoro_model_dir: str = ""
+    # Cap how much of a reply is spoken aloud. Orrin should answer in a sentence or two; the
+    # full text is always on screen. This is enforced regardless of how verbose the model is,
+    # and markdown/URLs/code are stripped from speech. 0 disables the cap.
+    max_spoken_chars: int = 240
     # Per-project voice override (project path -> voice id/name). When you focus a project,
     # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
     # `voice`/`kokoro_voice` for projects with no entry.

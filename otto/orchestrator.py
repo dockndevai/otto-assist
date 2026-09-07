@@ -30,6 +30,30 @@ _log = logging.getLogger("otto")
 
 _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
+_SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
+
+# Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
+# for garbled/no-op input; speaking them is just noise).
+_DEAD_REPLIES = {
+    "no response requested", "no response needed", "no response", "none",
+    "no reply", "nothing to do", "no action needed", "understood", "ok", "okay",
+}
+
+
+def _speakable(text: str) -> str:
+    """Strip markdown/URLs/code from text so TTS speaks words, not '[label](https://…)'.
+    The model is *asked* to be brief and markdown-free; this enforces it for the spoken path
+    (the full, original text still goes to the chat/screen)."""
+    t = _SPEAK_CODEBLOCK.sub(" ", text or "")
+    t = re.sub(r"`[^`]*`", " ", t)                       # inline code
+    t = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", t)     # [label](url) / image -> label
+    t = re.sub(r"https?://\S+|www\.\S+", " ", t)         # bare URLs
+    t = re.sub(r"(?m)^\s*[>#]+\s*", "", t)               # headings / block quotes
+    t = re.sub(r"(?m)^\s*[*\-+]\s+", "", t)              # bullet markers
+    t = re.sub(r"[*_`#|]", "", t)                        # residual emphasis/table pipes
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 # Common speech-to-text mishearings of the "otto" trigger word.
 _WAKE_ALIASES = {
     "otto": {"otto", "auto", "oto", "ottos", "otho", "atto", "alto", "otter",
@@ -127,6 +151,8 @@ class Orchestrator:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending_answer: asyncio.Future[str] | None = None
         self._speech_buf = ""
+        self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
+        self._speak_done = False     # cap reached → stop speaking the rest of this reply
         self._speaking = False
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
@@ -150,6 +176,9 @@ class Orchestrator:
         # Dictation-anywhere: when on, a heard command is typed into the focused app instead
         # of being sent to Claude (runtime-toggleable; starts from config).
         self._dictation = settings.voice.stt.dictation_mode
+        # True while a post-reply follow-up window is open (hands-free) — those utterances get
+        # the stricter anti-hallucination gate; an after-wake command does not.
+        self._follow_up_active = False
         # Half-duplex guard: on a laptop speaker the mic hears Otto's OWN voice and would
         # answer itself in a loop. Primary defense: physically turn the mic OFF at the recorder
         # while Otto speaks (set_mic) so nothing is captured; `_mute_input_until` tracks when to
@@ -213,6 +242,15 @@ class Orchestrator:
         if time.monotonic() < self._mute_input_until - 0.05:
             self._schedule_unmute()
             return
+        # The char-based window is tuned for macOS `say`; Kokoro (synth + afplay) can run past
+        # it. Stay muted while audio is actually still playing so Orrin never hears itself.
+        try:
+            if self.mouth is not None and self.mouth.is_playing():
+                self._mute_input_until = time.monotonic() + 0.6
+                self._schedule_unmute()
+                return
+        except Exception:
+            pass
         self._unmute_handle = None
         if self.ears is not None and not self.mic_muted:
             try:
@@ -915,13 +953,24 @@ class Orchestrator:
         if self._is_dictation_command(text):
             self.set_dictation(not self._dictation)
             return
+        # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
+        # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
+        # itself (mic may still catch the tail of Orrin speaking it).
+        if self._pending_answer is not None and not self._pending_answer.done():
+            if self._output_suppressing():        # mic tail of Orrin speaking the question
+                print(f"[otto] ignoring echo while awaiting answer: {text!r}",
+                      file=sys.stderr, flush=True)
+                return
+            print(f"[otto] answer to prompt: {text!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(text)
+            return
         # Push-to-talk armed: this utterance is the command, no wake word required.
         if self._ptt_armed:
             self._ptt_armed = False
             if self._ptt_handle is not None:
                 self._ptt_handle.cancel()
             print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(text)
+            self._dispatch_voice_command(text, deliberate=True)   # button press = trust it
             return
         # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
         # greeting echo and a repeated wake word; the next real utterance is the command.
@@ -934,9 +983,11 @@ class Orchestrator:
                 print(f"[otto] ignoring wake echo: {text!r}", file=sys.stderr, flush=True)
                 return   # just the wake word again — keep waiting for the command
             command = remainder if (matched and remainder.strip()) else text
-            self._cancel_await()
-            print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(command)
+            hands_free = self._follow_up_active     # a follow-up window is hands-free; after a
+            self._cancel_await()                    # bare wake word it's deliberate
+            print(f"[otto] command after wake: {command!r} (hands_free={hands_free})",
+                  file=sys.stderr, flush=True)
+            self._dispatch_voice_command(command, hands_free=hands_free)
             return
         # Half-duplex echo guard: while Otto is speaking (and for a content-length-based
         # cooldown after), the mic hears Otto's own voice — drop it so Otto doesn't answer
@@ -970,7 +1021,7 @@ class Orchestrator:
         # filtered above). Mute the mic when you don't want Otto listening.
         if self.settings.voice.stt.always_listen:
             print(f"[otto] always-listen: {text!r}", file=sys.stderr, flush=True)
-            self._dispatch_voice_command(text)
+            self._dispatch_voice_command(text, hands_free=True)   # gate ambient hallucinations
             return
         # "phrase" backend = software wake word: act on speech that begins with the wake
         # phrase (e.g. "hey otto"), or greet + await the command when it's said alone.
@@ -1017,22 +1068,43 @@ class Orchestrator:
         self._voice_out(ack)
 
     # -- voice command dispatch (refine + dictation) ----------------------
-    def _dispatch_voice_command(self, text: str) -> None:
-        """Route a heard command: optionally clean it up (refine), then either type it into
-        the focused app (dictation mode) or send it to Claude.
+    def _dispatch_voice_command(self, text: str, deliberate: bool = False,
+                                hands_free: bool = False) -> None:
+        """Route a heard command through the anti-hallucination filter, optional refine, then
+        dictation or Claude.
 
-        Fast path — the default (no refine, no dictation) — sends straight to Claude
-        synchronously (lowest latency, unchanged behavior). Otherwise it runs async so a
-        refine model call or the (blocking) paste never stalls the event loop."""
-        if not self.settings.voice.stt.refine and not self._dictation:
-            self.submit_user_input(text)
+        `deliberate` (push-to-talk) skips the noise filter entirely. Otherwise the free
+        heuristic drops obvious junk; on the `hands_free` path (always-listen / follow-up) a
+        model gate also rejects grammatical-but-nonsensical hallucinations. Fast synchronous
+        path when nothing async is needed (unchanged latency for wake-word/PTT)."""
+        stt = self.settings.voice.stt
+        if not deliberate and stt.filter_hallucinations:
+            from .voice.noise import is_noise
+            if is_noise(text):
+                print(f"[otto] dropped noise: {text!r}", file=sys.stderr, flush=True)
+                return
+        # Semantic gate on the hands-free path (always-listen / follow-up) — the noisiest,
+        # lowest-intent context. After a deliberate wake word we stay snappy (no model call);
+        # any junk that still slips through is caught by the dead-reply suppression on output.
+        need_verify = hands_free and stt.hands_free_verify and not deliberate
+        if not stt.refine and not self._dictation and not need_verify:
+            self.submit_user_input(text)          # fast path — no model calls
             return
         if self._loop is not None:
-            self._loop.create_task(self._dispatch_async(text))
+            self._loop.create_task(self._dispatch_async(text, need_verify))
         else:
             self.submit_user_input(text)
 
-    async def _dispatch_async(self, text: str) -> None:
+    async def _dispatch_async(self, text: str, verify: bool = False) -> None:
+        if verify:
+            try:
+                from .voice.noise import is_real_command
+                if not await is_real_command(text, model=self.settings.voice.stt.verify_model):
+                    print(f"[otto] dropped (not a command): {text!r}",
+                          file=sys.stderr, flush=True)
+                    return
+            except Exception:
+                pass
         if self.settings.voice.stt.refine:
             try:
                 from .voice.refine import refine_transcript
@@ -1129,18 +1201,22 @@ class Orchestrator:
             return True, " ".join(norm[1:])
         return False, ""
 
-    def _enter_awaiting_command(self) -> None:
-        """Wake word heard alone — greet warmly and wait for the command."""
+    def _enter_awaiting_command(self, greet: bool = True, timeout: float = 12) -> None:
+        """Wait for a command with no wake word. `greet=True` (wake word heard alone) greets
+        and waits; `greet=False` is a silent follow-up window opened right after a reply, so a
+        natural back-and-forth doesn't need "hey otto" before every turn."""
         self._awaiting_command = True
+        self._follow_up_active = not greet     # silent window = hands-free (stricter noise gate)
         self._status("listening", "Listening…")
-        ack = random.choice(_WAKE_ACKS)
-        self._last_ack = ack
-        self.bus.transcript("assistant", ack, final=True)
-        self._voice_out(ack)
+        if greet:
+            ack = random.choice(_WAKE_ACKS)
+            self._last_ack = ack
+            self.bus.transcript("assistant", ack, final=True)
+            self._voice_out(ack)
         if self._loop is not None:
             if self._await_handle is not None:
                 self._await_handle.cancel()
-            self._await_handle = self._loop.call_later(12, self._await_timeout)
+            self._await_handle = self._loop.call_later(timeout, self._await_timeout)
 
     def _is_ack_echo(self, text: str) -> bool:
         """Did the mic just hear Otto's own greeting? (avoid treating it as the command).
@@ -1159,10 +1235,12 @@ class Orchestrator:
     def _await_timeout(self) -> None:
         if self._awaiting_command:
             self._awaiting_command = False
+            self._follow_up_active = False
             self._status("idle", "Ready")
 
     def _cancel_await(self) -> None:
         self._awaiting_command = False
+        self._follow_up_active = False
         if self._await_handle is not None:
             self._await_handle.cancel()
             self._await_handle = None
@@ -1229,6 +1307,8 @@ class Orchestrator:
             if focused:
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""
+                self._spoken_chars = 0
+                self._speak_done = False
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
@@ -1298,7 +1378,15 @@ class Orchestrator:
                             self.memory.capture(p, text, reply, session_id=ws.session_id))
                 if focused:
                     self._flush_speech()
-                    self._status("idle", "Ready")
+                    # Open a silent follow-up window so the next command needs no wake word —
+                    # unless we're asleep, dictating, or awaiting an explicit answer.
+                    fu = self.settings.voice.stt.follow_up_seconds
+                    if (fu and fu > 0 and reply and not self._sleeping
+                            and not self._dictation
+                            and not (self._pending_answer and not self._pending_answer.done())):
+                        self._enter_awaiting_command(greet=False, timeout=fu)
+                    else:
+                        self._status("idle", "Ready")
                 else:
                     # Background window finished — nudge the user; its chat is there to switch to.
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."
@@ -1306,7 +1394,8 @@ class Orchestrator:
                 self._publish_workspaces()
 
     def _feed_speech(self, chunk: str) -> None:
-        """Buffer deltas and speak whole sentences for natural prosody."""
+        """Buffer deltas and speak whole sentences for natural prosody — cleaned + length-capped
+        so Orrin answers in a sentence or two, not by narrating the whole (markdown) reply."""
         if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
@@ -1316,12 +1405,36 @@ class Orchestrator:
                 break
             sentence = m.group(0)
             self._speech_buf = self._speech_buf[m.end():]
-            self._voice_out(sentence.strip())
+            self._speak_capped(sentence)
 
     def _flush_speech(self) -> None:
         if self._speech_buf.strip():
-            self._voice_out(self._speech_buf.strip())
+            self._speak_capped(self._speech_buf)
         self._speech_buf = ""
+
+    def _speak_capped(self, raw: str) -> None:
+        """Speak a cleaned sentence, up to the spoken-length cap. Past the cap, say the rest is
+        on screen (once) and stop — so a long/verbose reply doesn't get narrated in full."""
+        if self._speak_done:
+            return
+        s = _speakable(raw)
+        if not s:
+            return
+        if re.sub(r"[^\w\s]", "", s).strip().lower() in _DEAD_REPLIES:
+            print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
+            return
+        cap = self.settings.voice.tts.max_spoken_chars or 0
+        if cap and self._spoken_chars + len(s) > cap:
+            remaining = cap - self._spoken_chars
+            if remaining > 40:                       # squeeze in the start of this sentence
+                head = s[:remaining].rsplit(" ", 1)[0].strip()
+                if head:
+                    self._voice_out(head + "…")
+            self._voice_out("The rest is on screen.")
+            self._speak_done = True
+            return
+        self._voice_out(s)
+        self._spoken_chars += len(s) + 1
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":

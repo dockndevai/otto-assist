@@ -10,3 +10,6 @@ os.environ.setdefault("OTTO_HOME", str(Path(__file__).resolve().parent.parent))
 # spawn a live model call. Tests that exercise capture enable it explicitly on their own
 # Settings instance.
 os.environ.setdefault("OTTO_MEMORY__AUTO_CAPTURE", "false")
+# Likewise, the hands-free command-verify gate makes a live model call — off for the offline
+# suite; tests that exercise it enable it explicitly and monkeypatch the model.
+os.environ.setdefault("OTTO_VOICE__STT__HANDS_FREE_VERIFY", "false")
