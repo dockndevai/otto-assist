@@ -27,6 +27,16 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openw
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
+# Local neural voice (optional): bundle Kokoro + its bundled espeak-ng so the packaged app can
+# speak with it — the model files themselves live in OTTO_HOME/models/kokoro (not shipped here).
+# Skipped cleanly if the neural-voice extra isn't installed at build time.
+for pkg in ["kokoro_onnx", "espeakng_loader", "phonemizer", "soundfile"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d; binaries += b; hiddenimports += h
+    except Exception as e:
+        print(f"[orrin.spec] skip {pkg}: {e}")
+
 # The default config template, placed at the bundle root so a DMG-only install (no install.sh)
 # still seeds ~/Library/Application Support/Otto/config.yaml on first run. config.py's
 # PACKAGED_DEFAULT resolves to <bundle root>/config.yaml (otto/config.py -> parent.parent), so
@@ -78,8 +88,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Orrin",
         "CFBundleDisplayName": "Orrin",
-        "CFBundleShortVersionString": "0.2.7",
-        "CFBundleVersion": "0.2.7",
+        "CFBundleShortVersionString": "0.2.8",
+        "CFBundleVersion": "0.2.8",
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,                     # menu-bar agent: no Dock icon
         "NSMicrophoneUsageDescription":

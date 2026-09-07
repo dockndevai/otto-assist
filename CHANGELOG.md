@@ -3,6 +3,35 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## v0.2.8 — 2026-09-07
+
+**Local neural voice (Kokoro)**
+- **A natural voice that runs on your Mac** — new `voice.tts.engine: kokoro` (Kokoro, 82M, ONNX):
+  fully offline, no API key. Each sentence is synthesized and played through the same barge-in
+  path as `say`; if the package/model are missing it falls back to the system voice. Enable with
+  `pip install -e ".[neural-voice]"` + `python -m otto.voice.fetch_kokoro`. **Bundled into the
+  packaged app** (kokoro-onnx + espeak-ng), so a DMG install can use it once the model files are
+  fetched into `OTTO_HOME/models/kokoro`.
+
+**Push-to-talk in the packaged app**
+- **Global ⌘⇧J now works in the .app** — replaced the pynput backend (which SIGTRAP-crashed the
+  bundled app) with a main-thread `NSEvent` monitor installed by the menu bar; terminal runs still
+  use pynput. Opt-in (`voice.hotkey.enabled`); needs macOS Input Monitoring.
+
+**Voice UX (ideas adapted from voicebox)**
+- **Dictation-anywhere** — turn on Dictation mode (menu bar, `POST /api/dictation`, or say
+  "start/stop dictation") and Orrin types what you say into the focused app via ⌘V, restoring
+  your clipboard afterward, instead of sending it to Claude. macOS; the paste needs Accessibility.
+- **Transcript refinement** — optionally clean filler words / false starts / mis-hears from the
+  raw transcript with a cheap model pass before it's used (`voice.stt.refine`, off by default;
+  most useful for dictation). Best-effort — falls back to the raw text on any problem.
+- **Captures** — every heard utterance (transcript + metadata) is logged per project
+  (`memory/projects/<slug>/captures.jsonl`, `GET /api/captures`), so mis-hears are reviewable —
+  including speech Orrin ignored, which the turns log doesn't record.
+- **Per-workspace voice** — each project can speak in its own voice (`voice.tts.project_voices`);
+  focusing a workspace applies its voice, so parallel workspaces are easy to tell apart. Setting
+  a voice while focused on a project remembers it for that project.
+
 ## v0.2.7 — 2026-09-05
 
 **Persistent memory**

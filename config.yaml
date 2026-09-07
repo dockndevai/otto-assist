@@ -38,6 +38,9 @@ voice:
     language: "en"
     silence_seconds: 1.8    # pause (s) that ends your turn — higher = waits longer, won't cut you off
     always_listen: false    # true = just talk, no wake word (mute the mic when not in use)
+    refine: false           # clean filler/false-starts from the transcript before use (haiku)
+    refine_model: "haiku"
+    dictation_mode: false   # type speech into the focused app instead of sending to Claude
     # Wake word backend:
     #   efficientword -> BEST custom wake word: record your phrase a few times, no account,
     #                    no training. Run `python -m otto.enroll_wake_word "hey otto"`.
