@@ -208,10 +208,25 @@ config** — not here. Orrin's `config.yaml` is wiring only:
 | `voice.stt.silence_seconds` | `1.3` | pause that ends your turn — higher waits longer |
 | `voice.stt.wakeword_backend` | `phrase` | `phrase` / `oww` / `pvporcupine` / `efficientword` |
 | `voice.stt.realtime_partials` | `false` | live partial captions as you speak (small model) |
-| `voice.tts.engine` | `system` | macOS `say` (pick the voice in Settings); `elevenlabs` needs `ELEVENLABS_API_KEY` |
+| `voice.tts.engine` | `system` | macOS `say`; **`kokoro`** = local neural voice (offline, no key — see below); `elevenlabs` = cloud (needs `ELEVENLABS_API_KEY`) |
 | `memory.enabled` | `true` | persistent cross-session memory (see below) |
 | `memory.auto_capture` | `true` | after each turn, learn what's worth remembering — automatic |
 | `memory.max_preamble_chars` | `2000` | cap on the durable-context block injected per turn |
+
+## A better voice (optional) — local & offline
+
+The default voice is macOS `say` (robotic but zero-setup). For a much more natural voice that
+still runs **entirely on your Mac** (no API key, no cloud), switch on **Kokoro** — a small 82M
+neural TTS:
+
+```bash
+pip install -e ".[neural-voice]"        # kokoro-onnx + soundfile (espeak-ng ships bundled)
+python -m otto.voice.fetch_kokoro       # downloads the model files (~330 MB) once
+```
+
+Then set `voice.tts.engine: kokoro` in Settings (pick a voice like `af_heart`) and restart. If
+the package or model files are missing, Orrin logs how to get them and keeps using `say` — it
+never goes silent. `elevenlabs` (cloud, premium) remains available with `ELEVENLABS_API_KEY`.
 
 ## Memory — it remembers across sessions
 
