@@ -213,6 +213,15 @@ class Orchestrator:
         if time.monotonic() < self._mute_input_until - 0.05:
             self._schedule_unmute()
             return
+        # The char-based window is tuned for macOS `say`; Kokoro (synth + afplay) can run past
+        # it. Stay muted while audio is actually still playing so Orrin never hears itself.
+        try:
+            if self.mouth is not None and self.mouth.is_playing():
+                self._mute_input_until = time.monotonic() + 0.6
+                self._schedule_unmute()
+                return
+        except Exception:
+            pass
         self._unmute_handle = None
         if self.ears is not None and not self.mic_muted:
             try:
@@ -914,6 +923,17 @@ class Orchestrator:
         # Hands-free dictation toggle ("start/stop dictation") — whole-utterance match.
         if self._is_dictation_command(text):
             self.set_dictation(not self._dictation)
+            return
+        # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
+        # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
+        # itself (mic may still catch the tail of Orrin speaking it).
+        if self._pending_answer is not None and not self._pending_answer.done():
+            if self._output_suppressing():        # mic tail of Orrin speaking the question
+                print(f"[otto] ignoring echo while awaiting answer: {text!r}",
+                      file=sys.stderr, flush=True)
+                return
+            print(f"[otto] answer to prompt: {text!r}", file=sys.stderr, flush=True)
+            self.submit_user_input(text)
             return
         # Push-to-talk armed: this utterance is the command, no wake word required.
         if self._ptt_armed:
