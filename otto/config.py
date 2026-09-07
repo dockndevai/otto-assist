@@ -99,6 +99,9 @@ class STTConfig(BaseModel):
     # Dictation-anywhere: type transcribed speech into the focused app (⌘V, clipboard-safe)
     # instead of sending it to Claude. Runtime-toggleable; this is the startup default.
     dictation_mode: bool = False
+    # After a reply, keep listening this many seconds for a follow-up WITHOUT the wake word, so
+    # a back-and-forth doesn't need "hey otto" every turn. 0 = off (always require the wake word).
+    follow_up_seconds: float = 0.0
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

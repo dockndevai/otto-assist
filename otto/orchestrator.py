@@ -1168,18 +1168,21 @@ class Orchestrator:
             return True, " ".join(norm[1:])
         return False, ""
 
-    def _enter_awaiting_command(self) -> None:
-        """Wake word heard alone — greet warmly and wait for the command."""
+    def _enter_awaiting_command(self, greet: bool = True, timeout: float = 12) -> None:
+        """Wait for a command with no wake word. `greet=True` (wake word heard alone) greets
+        and waits; `greet=False` is a silent follow-up window opened right after a reply, so a
+        natural back-and-forth doesn't need "hey otto" before every turn."""
         self._awaiting_command = True
         self._status("listening", "Listening…")
-        ack = random.choice(_WAKE_ACKS)
-        self._last_ack = ack
-        self.bus.transcript("assistant", ack, final=True)
-        self._voice_out(ack)
+        if greet:
+            ack = random.choice(_WAKE_ACKS)
+            self._last_ack = ack
+            self.bus.transcript("assistant", ack, final=True)
+            self._voice_out(ack)
         if self._loop is not None:
             if self._await_handle is not None:
                 self._await_handle.cancel()
-            self._await_handle = self._loop.call_later(12, self._await_timeout)
+            self._await_handle = self._loop.call_later(timeout, self._await_timeout)
 
     def _is_ack_echo(self, text: str) -> bool:
         """Did the mic just hear Otto's own greeting? (avoid treating it as the command).
@@ -1339,7 +1342,15 @@ class Orchestrator:
                             self.memory.capture(p, text, reply, session_id=ws.session_id))
                 if focused:
                     self._flush_speech()
-                    self._status("idle", "Ready")
+                    # Open a silent follow-up window so the next command needs no wake word —
+                    # unless we're asleep, dictating, or awaiting an explicit answer.
+                    fu = self.settings.voice.stt.follow_up_seconds
+                    if (fu and fu > 0 and reply and not self._sleeping
+                            and not self._dictation
+                            and not (self._pending_answer and not self._pending_answer.done())):
+                        self._enter_awaiting_command(greet=False, timeout=fu)
+                    else:
+                        self._status("idle", "Ready")
                 else:
                     # Background window finished — nudge the user; its chat is there to switch to.
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."
