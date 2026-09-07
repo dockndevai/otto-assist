@@ -102,6 +102,18 @@ class STTConfig(BaseModel):
     # After a reply, keep listening this many seconds for a follow-up WITHOUT the wake word, so
     # a back-and-forth doesn't need "hey otto" every turn. 0 = off (always require the wake word).
     follow_up_seconds: float = 0.0
+    # Anti-hallucination: drop Whisper's noise output so ambient sound isn't run as a command.
+    #   filter_hallucinations: free heuristic (empty/short/repetitive/filler) on every voice turn.
+    #   hands_free_verify: a cheap model gate on the HANDS-FREE path (always-listen / follow-up)
+    #     that also rejects grammatical-but-nonsensical hallucinations. Adds a little latency to
+    #     hands-free turns only; the wake-word/push-to-talk paths stay snappy.
+    filter_hallucinations: bool = True
+    hands_free_verify: bool = True
+    verify_model: str = "haiku"
+    # VAD tightening (RealtimeSTT): lower silero_sensitivity + a longer minimum recording make
+    # the recorder trigger on clearer speech and ignore short noise blips.
+    silero_sensitivity: float = 0.4
+    min_length_of_recording: float = 0.5
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

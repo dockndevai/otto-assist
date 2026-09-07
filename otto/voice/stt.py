@@ -129,6 +129,10 @@ class Ears:
             # Wait after you stop before ending the turn (lower = snappier, higher = won't
             # clip a mid-thought pause).
             post_speech_silence_duration=cfg.silence_seconds,
+            # VAD gating: trigger on clearer speech and ignore short noise blips, so the
+            # recorder hands Whisper real speech instead of ambient sound it hallucinates over.
+            silero_sensitivity=cfg.silero_sensitivity,
+            min_length_of_recording=cfg.min_length_of_recording,
             # Leave silero_use_onnx UNSET. It is RealtimeSTT's legacy switch and both True
             # and False resolve to SILERO_BACKEND_LEGACY, which loads the VAD over
             # torch.hub — a GitHub download on first run that needs a CA store and an
