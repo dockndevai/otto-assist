@@ -1114,3 +1114,27 @@ def test_memory_preamble_injected_once_then_on_change(tmp_path, monkeypatch):
         await orch._run_turn(ws, "third question")
         assert "Orrin memory" in ws.brain.seen[2]         # re-injected after a change
     asyncio.run(run())
+
+
+def test_tts_kokoro_engine_config_and_fallback():
+    """Kokoro is a selectable engine; if the model files/lib aren't available, the Mouth
+    falls back to the always-present system voice instead of going mute."""
+    from otto.voice.tts import Mouth, list_kokoro_voices
+    voices = list_kokoro_voices()
+    assert voices and all("name" in v for v in voices)
+    s = load_settings()
+    assert s.voice.tts.kokoro_voice == "af_heart"      # default from config
+    s.voice.tts.engine = "kokoro"
+    s.voice.tts.kokoro_model_dir = "/tmp/orrin-no-such-kokoro-dir"
+    m = Mouth(s)
+    m.start()                                          # model files absent → graceful fallback
+    assert m._engine == "system" and m._kokoro is None
+    # a system-voice job renders a `say` argv (no crash, no kokoro)
+    argv, tmp = m._render_job("hello there")
+    assert argv[0] == "/usr/bin/say" and tmp is None
+
+
+def test_tts_config_accepts_kokoro():
+    s = load_settings()
+    s.voice.tts.engine = "kokoro"        # Literal allows it
+    assert s.voice.tts.engine == "kokoro"
