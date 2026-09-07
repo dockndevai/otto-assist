@@ -1324,3 +1324,21 @@ def test_spoken_reply_is_capped():
     assert "The rest is on screen." in joined
     assert "third that must never" not in joined
     assert orch._speak_done is True
+
+
+def test_follow_up_window_no_wake_word_needed():
+    """After a reply, a follow-up window lets the next command run without the wake word."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "efficientword"  # normally needs a wake trigger
+        orch.settings.voice.stt.always_listen = False
+        # open the follow-up window (what _run_turn does after a focused reply)
+        orch._enter_awaiting_command(greet=False, timeout=15)
+        assert orch._awaiting_command is True
+        sent = []
+        orch._dispatch_voice_command = lambda t: sent.append(t)
+        orch._on_voice_final("what's the weather")     # no wake word
+        assert sent == ["what's the weather"]           # taken as the command
+        assert orch._awaiting_command is False           # window consumed
+    asyncio.run(run())
