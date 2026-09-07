@@ -32,6 +32,13 @@ _SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
 
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
+# Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
+# for garbled/no-op input; speaking them is just noise).
+_DEAD_REPLIES = {
+    "no response requested", "no response needed", "no response", "none",
+    "no reply", "nothing to do", "no action needed", "understood", "ok", "okay",
+}
+
 
 def _speakable(text: str) -> str:
     """Strip markdown/URLs/code from text so TTS speaks words, not '[label](https://…)'.
@@ -1076,6 +1083,9 @@ class Orchestrator:
             if is_noise(text):
                 print(f"[otto] dropped noise: {text!r}", file=sys.stderr, flush=True)
                 return
+        # Semantic gate on the hands-free path (always-listen / follow-up) — the noisiest,
+        # lowest-intent context. After a deliberate wake word we stay snappy (no model call);
+        # any junk that still slips through is caught by the dead-reply suppression on output.
         need_verify = hands_free and stt.hands_free_verify and not deliberate
         if not stt.refine and not self._dictation and not need_verify:
             self.submit_user_input(text)          # fast path — no model calls
@@ -1409,6 +1419,9 @@ class Orchestrator:
             return
         s = _speakable(raw)
         if not s:
+            return
+        if re.sub(r"[^\w\s]", "", s).strip().lower() in _DEAD_REPLIES:
+            print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
         cap = self.settings.voice.tts.max_spoken_chars or 0
         if cap and self._spoken_chars + len(s) > cap:
