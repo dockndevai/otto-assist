@@ -161,6 +161,7 @@ _PANES = {
     "microphone": "Privacy_Microphone",
     "accessibility": "Privacy_Accessibility",
     "automation": "Privacy_Automation",
+    "input_monitoring": "Privacy_ListenEvent",   # global key monitor (push-to-talk hotkey)
 }
 
 
@@ -218,15 +219,18 @@ def check_claude_cli(settings: Settings) -> Check:
 def check_accessibility(settings: Settings) -> Check:
     # Only *required* if the global push-to-talk hotkey is enabled; otherwise informational.
     needed = settings.voice.hotkey.enabled
-    c = Check("accessibility", "Accessibility (global hotkey)", required=needed,
-              pane="accessibility")
+    # The global push-to-talk key monitor needs Input Monitoring; we use Accessibility trust as
+    # a best-effort proxy (there's no simple public status API for Input Monitoring).
+    c = Check("accessibility", "Input Monitoring (global hotkey)", required=needed,
+              pane="input_monitoring")
     trusted = accessibility_trusted()
     if trusted:
         c.status, c.detail = "ok", "Granted."
     elif needed:
         c.status = "fail"
-        c.detail = "The push-to-talk hotkey needs Accessibility."
-        c.fix = "Enable Orrin under System Settings → Privacy & Security → Accessibility."
+        c.detail = "The push-to-talk hotkey needs Input Monitoring (and/or Accessibility)."
+        c.fix = ("Enable Orrin under System Settings → Privacy & Security → Input Monitoring "
+                 "(and Accessibility if prompted).")
     else:
         c.status = "warn"
         c.detail = "Not granted (only needed if you enable the global push-to-talk hotkey)."

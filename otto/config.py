@@ -121,10 +121,11 @@ class TTSConfig(BaseModel):
 
 
 class HotkeyConfig(BaseModel):
-    # The global push-to-talk hotkey (pynput) is OFF by default: it needs macOS
-    # Accessibility permission, and pynput's Carbon input-source calls run on a background
-    # thread, which aborts (SIGTRAP) inside the packaged .app. The mic still works via the
-    # dashboard button and the wake word; enable this only if you've granted Accessibility.
+    # Global push-to-talk. Under the menu-bar app it's a main-thread NSEvent monitor (works in
+    # the packaged .app — the old pynput backend SIGTRAP-crashed it); a bare terminal run falls
+    # back to pynput. OFF by default because it needs macOS Input Monitoring permission (which,
+    # like the mic, doesn't persist across rebuilds on an ad-hoc-signed build). The dashboard
+    # Talk button and the wake word cover push-to-talk without it.
     enabled: bool = False
     push_to_talk: str = "<cmd>+<shift>+j"
 
