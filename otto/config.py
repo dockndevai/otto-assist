@@ -92,6 +92,13 @@ class STTConfig(BaseModel):
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
     always_listen: bool = False
+    # Clean up the raw transcript (filler words, false starts, mis-hears) with a cheap model
+    # pass before it's used. Off by default (adds a little latency); most useful for dictation.
+    refine: bool = False
+    refine_model: str = "haiku"
+    # Dictation-anywhere: type transcribed speech into the focused app (⌘V, clipboard-safe)
+    # instead of sending it to Claude. Runtime-toggleable; this is the startup default.
+    dictation_mode: bool = False
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"
@@ -118,6 +125,10 @@ class TTSConfig(BaseModel):
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
     kokoro_model_dir: str = ""
+    # Per-project voice override (project path -> voice id/name). When you focus a project,
+    # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
+    # `voice`/`kokoro_voice` for projects with no entry.
+    project_voices: dict[str, str] = Field(default_factory=dict)
 
 
 class HotkeyConfig(BaseModel):

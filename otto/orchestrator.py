@@ -147,6 +147,9 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        # Dictation-anywhere: when on, a heard command is typed into the focused app instead
+        # of being sent to Claude (runtime-toggleable; starts from config).
+        self._dictation = settings.voice.stt.dictation_mode
         # Half-duplex guard: on a laptop speaker the mic hears Otto's OWN voice and would
         # answer itself in a loop. Primary defense: physically turn the mic OFF at the recorder
         # while Otto speaks (set_mic) so nothing is captured; `_mute_input_until` tracks when to
@@ -412,13 +415,18 @@ class Orchestrator:
                 self.mouth.set_voice(voice)
             except Exception:
                 pass
+        # Also remember it as THIS project's voice, so parallel workspaces can differ and the
+        # choice sticks when you switch away and back.
+        self.settings.voice.tts.project_voices[self.focused] = voice
         try:
             import yaml
             from .config import config_path
             cfg_file = config_path()
             data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
             data = data or {}
-            data.setdefault("voice", {}).setdefault("tts", {})[key] = voice
+            tts = data.setdefault("voice", {}).setdefault("tts", {})
+            tts[key] = voice
+            tts.setdefault("project_voices", {})[self.focused] = voice
             save_config(data)
         except Exception:
             pass
@@ -512,6 +520,7 @@ class Orchestrator:
             self._persist_project(path)
         except Exception:
             pass
+        self._apply_project_voice()      # speak this workspace in its own voice
         self._publish_project()
         self._publish_session()
         # Re-show whatever this workspace last drew, so the canvas reflects the focus.
@@ -896,13 +905,23 @@ class Orchestrator:
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
             return
+        # Log every heard utterance (transcript-level captures), even ones we ignore below —
+        # useful for reviewing mis-hears in always-listen.
+        try:
+            self.memory.record_capture(self.focused, text, source="voice")
+        except Exception:
+            pass
+        # Hands-free dictation toggle ("start/stop dictation") — whole-utterance match.
+        if self._is_dictation_command(text):
+            self.set_dictation(not self._dictation)
+            return
         # Push-to-talk armed: this utterance is the command, no wake word required.
         if self._ptt_armed:
             self._ptt_armed = False
             if self._ptt_handle is not None:
                 self._ptt_handle.cancel()
             print(f"[otto] ptt heard: {text!r}", file=sys.stderr, flush=True)
-            self.submit_user_input(text)
+            self._dispatch_voice_command(text)
             return
         # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
         # greeting echo and a repeated wake word; the next real utterance is the command.
@@ -917,7 +936,7 @@ class Orchestrator:
             command = remainder if (matched and remainder.strip()) else text
             self._cancel_await()
             print(f"[otto] command after wake: {command!r}", file=sys.stderr, flush=True)
-            self.submit_user_input(command)
+            self._dispatch_voice_command(command)
             return
         # Half-duplex echo guard: while Otto is speaking (and for a content-length-based
         # cooldown after), the mic hears Otto's own voice — drop it so Otto doesn't answer
@@ -936,7 +955,7 @@ class Orchestrator:
             self._sleeping = False
             print(f"[otto] woke from sleep: {text!r}", file=sys.stderr, flush=True)
             if remainder.strip():
-                self.submit_user_input(remainder)
+                self._dispatch_voice_command(remainder)
             else:
                 ack = random.choice(_WAKE_ACKS)
                 self.bus.transcript("assistant", ack, final=True)
@@ -951,7 +970,7 @@ class Orchestrator:
         # filtered above). Mute the mic when you don't want Otto listening.
         if self.settings.voice.stt.always_listen:
             print(f"[otto] always-listen: {text!r}", file=sys.stderr, flush=True)
-            self.submit_user_input(text)
+            self._dispatch_voice_command(text)
             return
         # "phrase" backend = software wake word: act on speech that begins with the wake
         # phrase (e.g. "hey otto"), or greet + await the command when it's said alone.
@@ -964,13 +983,13 @@ class Orchestrator:
                     self._status("idle", "Ready")     # ignore ambient speech
                 return
             if remainder.strip():
-                self.submit_user_input(remainder)     # "hey otto, what time is it"
+                self._dispatch_voice_command(remainder)   # "hey otto, what time is it"
             else:
                 self._enter_awaiting_command()        # just "hey otto" — wait for command
             return
         if self.settings.voice.stt.wakeword_backend == "efficientword":
             return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
-        self.submit_user_input(text)
+        self._dispatch_voice_command(text)
 
     # Utterances that put Otto to sleep (checked after stripping a leading greeting/wake word,
     # so "otto, stop listening" works too). Whole-utterance match to avoid false triggers.
@@ -996,6 +1015,96 @@ class Orchestrator:
         self.bus.transcript("assistant", ack, final=True)
         self._status("idle", "Sleeping — say the wake word")
         self._voice_out(ack)
+
+    # -- voice command dispatch (refine + dictation) ----------------------
+    def _dispatch_voice_command(self, text: str) -> None:
+        """Route a heard command: optionally clean it up (refine), then either type it into
+        the focused app (dictation mode) or send it to Claude.
+
+        Fast path — the default (no refine, no dictation) — sends straight to Claude
+        synchronously (lowest latency, unchanged behavior). Otherwise it runs async so a
+        refine model call or the (blocking) paste never stalls the event loop."""
+        if not self.settings.voice.stt.refine and not self._dictation:
+            self.submit_user_input(text)
+            return
+        if self._loop is not None:
+            self._loop.create_task(self._dispatch_async(text))
+        else:
+            self.submit_user_input(text)
+
+    async def _dispatch_async(self, text: str) -> None:
+        if self.settings.voice.stt.refine:
+            try:
+                from .voice.refine import refine_transcript
+                text = await refine_transcript(
+                    text, model=self.settings.voice.stt.refine_model)
+            except Exception:
+                pass
+        if self._dictation:
+            try:
+                from .voice.dictation import paste_text
+                self.bus.transcript("user", text, final=True)   # show what was dictated
+                ok = await asyncio.to_thread(paste_text, text)
+                if not ok:
+                    self.notify("Dictation", "Couldn't type that — is Accessibility granted?")
+            except Exception as e:
+                self.notify("Dictation error", str(e))
+            return
+        self.submit_user_input(text)
+
+    _DICTATION_ON = {"start dictation", "start dictating", "dictation mode",
+                     "dictation on", "start typing", "type what i say"}
+    _DICTATION_OFF = {"stop dictation", "stop dictating", "dictation off",
+                      "exit dictation", "stop typing", "talk to claude"}
+
+    def _is_dictation_command(self, text: str) -> bool:
+        words = _norm_words(text)
+        trigger = (_norm_words(self.settings.voice.stt.wake_words)[-1:] or ["otto"])[0]
+        while words and (words[0] in _GREETINGS or _wordish(words[0], trigger)):
+            words = words[1:]
+        phrase = " ".join(words)
+        return phrase in self._DICTATION_ON or phrase in self._DICTATION_OFF
+
+    def set_dictation(self, on: bool) -> None:
+        """Turn dictation-anywhere on/off (persisted). In dictation mode, speech is typed into
+        the focused app instead of sent to Claude."""
+        self._dictation = bool(on)
+        try:
+            self.settings.voice.stt.dictation_mode = self._dictation
+            self._persist_setting(("voice", "stt", "dictation_mode"), self._dictation)
+        except Exception:
+            pass
+        ack = ("Dictation on — I'll type what you say into the focused app."
+               if self._dictation else "Dictation off — back to talking with Claude.")
+        self.bus.transcript("assistant", ack, final=True)
+        self._status("idle", "Dictation" if self._dictation else "Ready")
+        self._voice_out(ack)
+
+    # -- per-project (workspace) voice ------------------------------------
+    def _apply_project_voice(self) -> None:
+        """Speak the focused project in its configured voice (falls back to the default)."""
+        if self.mouth is None:
+            return
+        tts = self.settings.voice.tts
+        default = tts.kokoro_voice if tts.engine == "kokoro" else tts.voice
+        voice = tts.project_voices.get(self.focused, default)
+        try:
+            self.mouth.set_voice(voice or "")
+        except Exception:
+            pass
+
+    def _persist_setting(self, path: tuple[str, ...], value) -> None:
+        """Write a single nested key into the on-disk config.yaml."""
+        import yaml
+        from .config import config_path
+        cfg_file = config_path()
+        data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+        data = data or {}
+        node = data
+        for k in path[:-1]:
+            node = node.setdefault(k, {})
+        node[path[-1]] = value
+        save_config(data)
 
     def _match_wake(self, text: str) -> tuple[bool, str]:
         """Does `text` start with the wake phrase (fuzzily)? -> (matched, command).

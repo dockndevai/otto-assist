@@ -84,6 +84,7 @@ class OttoApp(rumps.App):
         self.chat_menu = rumps.MenuItem("Chat")
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
+        self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
         self.menu = [
             self.status_item,
             None,
@@ -95,6 +96,7 @@ class OttoApp(rumps.App):
             self.chat_menu,
             self.mic_item,
             self.voice_item,
+            self.dictation_item,
             None,
             rumps.MenuItem("Restart", callback=self.restart),
             rumps.MenuItem("Quit Orrin", callback=self.quit_app),
@@ -342,6 +344,12 @@ class OttoApp(rumps.App):
     def toggle_voice(self, _) -> None:
         self.orch.voice_muted = not self.orch.voice_muted
         self.voice_item.title = "Unmute voice" if self.orch.voice_muted else "Mute voice"
+
+    def toggle_dictation(self, _) -> None:
+        if self._loop is not None:
+            want = not self.orch._dictation
+            self._loop.call_soon_threadsafe(lambda: self.orch.set_dictation(want))
+            self.dictation_item.title = "Dictation mode ✓" if want else "Dictation mode"
 
     def restart(self, _) -> None:
         # Exit cleanly; launchd (KeepAlive) relaunches a fresh process that rebuilds the
