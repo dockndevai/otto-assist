@@ -1269,3 +1269,124 @@ def test_per_project_voice(monkeypatch):
     orch.set_voice("Karen")
     assert orch.settings.voice.tts.project_voices[orch.focused] == "Karen"
     assert orch.mouth.voice == "Karen"
+
+
+def test_pending_answer_bypasses_wake_word():
+    """A spoken answer to Orrin's own ask_user/confirm question is taken directly — no wake
+    word — even in phrase wake-word mode; but the echo of the question is ignored."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.always_listen = False       # would normally require "hey otto"
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+
+        # 1) echo of the question while Orrin is still speaking → ignored
+        class Speaking:
+            def is_playing(self): return True
+            def recently_active(self, w=1.5): return True
+        orch.mouth = Speaking()
+        orch._pending_answer = orch._loop.create_future()
+        orch._on_voice_final("I'm about to create or change files. Should I go ahead?")
+        assert not orch._pending_answer.done()              # echo dropped
+
+        # 2) the real answer once Orrin is quiet → resolves the pending answer, no wake word
+        orch.mouth = None
+        orch._on_voice_final("yes go ahead")
+        assert orch._pending_answer.done() and orch._pending_answer.result() == "yes go ahead"
+    asyncio.run(run())
+
+
+def test_speakable_strips_markdown_and_urls():
+    from otto.orchestrator import _speakable
+    s = _speakable("Here: - [SuperLabs Blog](https://blog.superlabs.co/) and `code` and **bold**")
+    assert "http" not in s and "](" not in s and "*" not in s and "`" not in s
+    assert "SuperLabs Blog" in s and "bold" in s
+    assert _speakable("visit https://example.com/x now").count("http") == 0
+
+
+def test_spoken_reply_is_capped():
+    """A long, markdown-y reply is not narrated in full: Orrin speaks the start, then says the
+    rest is on screen."""
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.settings.voice.tts.max_spoken_chars = 60
+    spoken = []
+    class M:
+        def stop(self): ...
+        def is_playing(self): return False
+    orch.mouth = M()
+    orch._voice_out = lambda t: spoken.append(t)   # capture what would be spoken
+    orch._spoken_chars = 0; orch._speak_done = False
+    orch._speak_capped("This first sentence is a concise answer.")
+    orch._speak_capped("Then a second, much longer sentence that would blow past the spoken cap entirely.")
+    orch._speak_capped("And a third that must never be spoken.")
+    joined = " ".join(spoken)
+    assert "concise answer" in joined
+    assert "The rest is on screen." in joined
+    assert "third that must never" not in joined
+    assert orch._speak_done is True
+
+
+def test_follow_up_window_no_wake_word_needed():
+    """After a reply, a follow-up window lets the next command run without the wake word."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "efficientword"  # normally needs a wake trigger
+        orch.settings.voice.stt.always_listen = False
+        # open the follow-up window (what _run_turn does after a focused reply)
+        orch._enter_awaiting_command(greet=False, timeout=15)
+        assert orch._awaiting_command is True
+        sent = []
+        orch._dispatch_voice_command = lambda t, **k: sent.append(t)
+        orch._on_voice_final("what's the weather")     # no wake word
+        assert sent == ["what's the weather"]           # taken as the command
+        assert orch._awaiting_command is False           # window consumed
+    asyncio.run(run())
+
+
+def test_is_noise_heuristic():
+    from otto.voice.noise import is_noise
+    for junk in ["", ".", "  ", "S.", "you", "Thank you.", "okay",
+                 "team team team team team team team", "hi hi hi hi hi hi hi"]:
+        assert is_noise(junk) is True, junk
+    for real in ["what's the weather today", "check the MCP server status",
+                 "create a file called notes"]:
+        assert is_noise(real) is False, real
+
+
+def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.filter_hallucinations = True
+        orch.settings.voice.stt.hands_free_verify = True
+        orch.settings.voice.stt.refine = False
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+
+        # heuristic: obvious junk dropped, never reaches the brain
+        orch._dispatch_voice_command("you", hands_free=True)   # heuristic filler → dropped
+        await asyncio.sleep(0)
+        assert sent == []
+
+        # hands-free semantic gate says NO → dropped
+        import otto.voice.noise as noise
+        async def fake_verify(text, model="haiku"): return False
+        monkeypatch.setattr(noise, "is_real_command", fake_verify)
+        orch._dispatch_voice_command("check the guitar back duty", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == []
+
+        # a real hands-free command (gate says YES) → passes through
+        async def yes_verify(text, model="haiku"): return True
+        monkeypatch.setattr(noise, "is_real_command", yes_verify)
+        orch._dispatch_voice_command("what's the weather", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == ["what's the weather"]
+
+        # deliberate (push-to-talk) skips the filter entirely — even short input goes through
+        sent.clear()
+        orch._dispatch_voice_command("stop", deliberate=True)
+        await asyncio.sleep(0)
+        assert sent == ["stop"]
+    asyncio.run(run())
