@@ -1269,3 +1269,28 @@ def test_per_project_voice(monkeypatch):
     orch.set_voice("Karen")
     assert orch.settings.voice.tts.project_voices[orch.focused] == "Karen"
     assert orch.mouth.voice == "Karen"
+
+
+def test_pending_answer_bypasses_wake_word():
+    """A spoken answer to Orrin's own ask_user/confirm question is taken directly — no wake
+    word — even in phrase wake-word mode; but the echo of the question is ignored."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.always_listen = False       # would normally require "hey otto"
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+
+        # 1) echo of the question while Orrin is still speaking → ignored
+        class Speaking:
+            def is_playing(self): return True
+            def recently_active(self, w=1.5): return True
+        orch.mouth = Speaking()
+        orch._pending_answer = orch._loop.create_future()
+        orch._on_voice_final("I'm about to create or change files. Should I go ahead?")
+        assert not orch._pending_answer.done()              # echo dropped
+
+        # 2) the real answer once Orrin is quiet → resolves the pending answer, no wake word
+        orch.mouth = None
+        orch._on_voice_final("yes go ahead")
+        assert orch._pending_answer.done() and orch._pending_answer.result() == "yes go ahead"
+    asyncio.run(run())
