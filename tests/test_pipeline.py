@@ -1463,3 +1463,26 @@ def test_augment_path_prepends_tool_dirs(monkeypatch, tmp_path):
     parts = os.environ["PATH"].split(os.pathsep)
     assert str(node) in parts                      # newest node bin added
     assert parts[-2:] == ["/usr/bin", "/bin"]      # originals preserved at the end
+
+
+def test_wake_is_silent_and_debounced():
+    """Wake word starts listening WITHOUT the repetitive spoken greeting, and repeat fires are
+    debounced so the detector can't spam the greet/listen state."""
+    orch = Orchestrator(load_settings(), EventBus())
+    spoken = []
+    orch._voice_out = lambda t: spoken.append(t)
+    orch.mouth = None
+    orch.settings.voice.stt.wake_greeting = False
+    orch._last_wake = 0.0
+    orch._on_eff_wake()
+    assert orch._awaiting_command is True and spoken == []      # listening, silent
+    # already awaiting → ignored; then clear and fire again within the debounce window → ignored
+    orch._on_eff_wake(); assert spoken == []
+    orch._awaiting_command = False
+    orch._on_eff_wake()
+    assert orch._awaiting_command is False                      # debounced, no re-arm
+    # with the greeting enabled it does speak (bypass debounce by resetting the timestamp)
+    orch.settings.voice.stt.wake_greeting = True
+    orch._awaiting_command = False; orch._last_wake = 0.0
+    orch._on_eff_wake()
+    assert spoken and orch._awaiting_command is True
