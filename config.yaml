@@ -20,6 +20,10 @@ brain:
   use_claude_config: true      # load your ~/.claude settings, MCP, subagents, skills, CLAUDE.md
   continue_conversation: false  # resume project chat on launch (false = fresh each launch)
   register_mcp: true           # expose /mcp so `claude mcp add otto` gives Claude voice+screen
+  # Agentic tools (browser / computer-use) whose actions run without a per-click spoken
+  # confirm, so a computer-use loop isn't interrupted. Destructive shell + write connector
+  # calls still confirm. Empty the list to force confirmation on everything.
+  auto_allow_tools: ["mcp__playwright__", "mcp__computer-use__"]
 
 memory:                        # persistent, cross-session memory (OTTO_HOME/memory)
   enabled: true                # master switch for the whole memory store
