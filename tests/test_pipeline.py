@@ -1424,3 +1424,30 @@ def test_server_blocks_cross_origin_mutations():
     # a spoofed Host (DNS-rebinding) is rejected even with no Origin
     bad = TestClient(app, base_url="http://evil.example")
     assert bad.post("/api/dictation", json={"on": True}).status_code == 403
+
+
+def test_auto_allow_agentic_tools_but_confirm_writes():
+    """Browser/computer-use actions run through the loop without a per-step confirm; a
+    consequential connector write still asks."""
+    async def run():
+        s = load_settings()
+        s.brain.permission = "voice"
+        b = ClaudeBrain(FakeCtx(), s)
+        for t in ("mcp__playwright__browser_click", "mcp__computer-use__computer",
+                  "mcp__computer-use__app_type"):
+            assert isinstance(await b._permission(t, {}, None), PermissionResultAllow), t
+        # a write-verb connector tool is NOT auto-allowed → defers to confirm (declined here)
+        ctx = FakeCtx(); ctx._answer = False
+        b2 = ClaudeBrain(ctx, s)
+        r = await b2._permission("mcp__crm__delete_record", {}, None)
+        assert isinstance(r, PermissionResultDeny)
+    asyncio.run(run())
+
+
+def test_voice_wrapper_is_astra_style():
+    from otto.brain.agent import VOICE_WRAPPER
+    low = VOICE_WRAPPER.lower()
+    assert "proactive" in low and "decisive" in low          # Astra-style manners
+    assert "lead with the answer" in low
+    assert "render_canvas is OPTIONAL" in VOICE_WRAPPER       # required invariants kept
+    assert "text-to-speech" in VOICE_WRAPPER

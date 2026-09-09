@@ -192,7 +192,12 @@ class Ears:
         while self._running:
             try:
                 text = self._recorder.text()  # blocks: (wake ->) record -> transcribe
-            except Exception:
+            except Exception as e:
+                # Don't hot-spin the CPU (and go silently deaf) on a persistent recorder error:
+                # log it and back off briefly before retrying.
+                import logging
+                logging.getLogger("otto").warning("recorder error: %r", e)
+                time.sleep(0.5)
                 continue
             if text and self._running:
                 self._post(self._on_final, text.strip())
