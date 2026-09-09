@@ -72,6 +72,12 @@ class BrainConfig(BaseModel):
     sessions: dict[str, str] = Field(default_factory=dict)
     extra_dirs: list[str] = Field(default_factory=list)  # extra readable dirs (~ expanded)
     use_claude_config: bool = True              # load the user's ~/.claude settings/MCP/agents
+    # Agentic tools whose actions run WITHOUT a per-step spoken confirmation, so a computer-use
+    # / browser loop isn't interrupted on every click. (Destructive shell + write-verb connector
+    # calls still confirm; the model is told to ask before genuinely consequential steps.) These
+    # are tool-name prefixes; clear the list to force confirmation on everything.
+    auto_allow_tools: list[str] = Field(
+        default_factory=lambda: ["mcp__playwright__", "mcp__computer-use__"])
     continue_conversation: bool = False          # resume the project's latest Claude session
     register_mcp: bool = True                   # expose /mcp for `claude mcp add otto`
 

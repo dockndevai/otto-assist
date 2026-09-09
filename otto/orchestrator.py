@@ -1352,7 +1352,11 @@ class Orchestrator:
                                 "Brain error",
                                 ev.get("error_text") or "The model returned an error.")
                         sid = ev.get("session_id")   # a new chat mints its id on turn 1
-                        if sid:
+                        # Only persist when the chat id actually changed — it's stable after
+                        # turn 1, so writing config.yaml every turn was needless disk + YAML
+                        # work on the loop.
+                        if sid and sid != getattr(ws, "_persisted_sid", None):
+                            ws._persisted_sid = sid
                             try:
                                 self._persist_session(p, sid)
                             except Exception:
