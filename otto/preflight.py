@@ -142,6 +142,48 @@ def accessibility_trusted() -> bool:
         return False
 
 
+# IOKit HID access = macOS "Input Monitoring", what a global key monitor actually needs. We
+# query/request it directly (AXIsProcessTrusted only reflects Accessibility, a different grant).
+_IOHID_LISTEN = 1                       # kIOHIDRequestTypeListenEvent
+_IOHID_GRANTED, _IOHID_DENIED = 0, 1    # kIOHIDAccessType*
+
+
+def _iokit():
+    import ctypes
+    lib = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+    lib.IOHIDCheckAccess.restype = ctypes.c_int
+    lib.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+    lib.IOHIDRequestAccess.restype = ctypes.c_bool
+    lib.IOHIDRequestAccess.argtypes = [ctypes.c_uint32]
+    return lib
+
+
+def input_monitoring_status() -> str:
+    """"granted" / "denied" / "unknown" for Input Monitoring (the global-hotkey permission)."""
+    if not _IS_MAC:
+        return "unknown"
+    try:
+        v = _iokit().IOHIDCheckAccess(_IOHID_LISTEN)
+        return {0: "granted", 1: "denied"}.get(v, "unknown")
+    except Exception:
+        return "unknown"
+
+
+def request_input_monitoring() -> bool:
+    """Ask macOS for Input Monitoring — registers this app in the list and prompts on first ask.
+    MUST run on the main thread (like the mic prompt). Returns True if already/now granted."""
+    if not _IS_MAC:
+        return False
+    try:
+        ok = bool(_iokit().IOHIDRequestAccess(_IOHID_LISTEN))
+        if not ok:
+            open_privacy_pane("input_monitoring")   # already-denied: send them to the toggle
+        return ok
+    except Exception:
+        open_privacy_pane("input_monitoring")
+        return False
+
+
 def prompt_accessibility() -> None:
     """Ask macOS to show the 'add this app to Accessibility' prompt (best effort)."""
     if not _IS_MAC:
@@ -219,18 +261,18 @@ def check_claude_cli(settings: Settings) -> Check:
 def check_accessibility(settings: Settings) -> Check:
     # Only *required* if the global push-to-talk hotkey is enabled; otherwise informational.
     needed = settings.voice.hotkey.enabled
-    # The global push-to-talk key monitor needs Input Monitoring; we use Accessibility trust as
-    # a best-effort proxy (there's no simple public status API for Input Monitoring).
     c = Check("accessibility", "Input Monitoring (global hotkey)", required=needed,
               pane="input_monitoring")
-    trusted = accessibility_trusted()
-    if trusted:
+    # Query the actual Input Monitoring grant (what the key monitor needs); fall back to the
+    # Accessibility trust bit only if the IOKit query is unavailable.
+    status = input_monitoring_status()
+    granted = status == "granted" or (status == "unknown" and accessibility_trusted())
+    if granted:
         c.status, c.detail = "ok", "Granted."
     elif needed:
         c.status = "fail"
-        c.detail = "The push-to-talk hotkey needs Input Monitoring (and/or Accessibility)."
-        c.fix = ("Enable Orrin under System Settings → Privacy & Security → Input Monitoring "
-                 "(and Accessibility if prompted).")
+        c.detail = "The push-to-talk hotkey needs Input Monitoring."
+        c.fix = "Enable Orrin under System Settings → Privacy & Security → Input Monitoring."
     else:
         c.status = "warn"
         c.detail = "Not granted (only needed if you enable the global push-to-talk hotkey)."
