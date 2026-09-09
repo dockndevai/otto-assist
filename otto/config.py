@@ -125,6 +125,13 @@ class STTConfig(BaseModel):
     wakeword_backend: str = "phrase"
     wake_words: str = "hey otto"
     wake_word_sensitivity: float = 0.6
+    # Speak a greeting ("what can I do?") when the wake word fires. OFF by default: it's
+    # repetitive, and on a speaker it feeds the wake detector its own voice → a greet loop.
+    # When off, Orrin just starts listening (shown on the dashboard) and acts on your command.
+    wake_greeting: bool = False
+    # Ignore repeat wake-word fires within this many seconds (debounce the detector so it can't
+    # re-trigger on echo/ambient and spam the listen state).
+    wake_debounce_seconds: float = 3.0
     # For backend "oww": path to a custom openWakeWord model (.onnx/.tflite), e.g. a
     # trained "hey otto". Empty = use openWakeWord's built-in phrases via `wake_words`.
     oww_model_path: str = ""
