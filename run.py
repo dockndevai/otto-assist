@@ -14,6 +14,8 @@ from otto.server.events import EventBus
 
 
 async def main_async() -> None:
+    from otto.paths import augment_path
+    augment_path()   # so node/npx-based MCP tools (browser, computer-use) can be spawned
     load_env()
     settings = load_settings()
     bus = EventBus()

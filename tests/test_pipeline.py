@@ -1451,3 +1451,15 @@ def test_voice_wrapper_is_astra_style():
     assert "lead with the answer" in low
     assert "render_canvas is OPTIONAL" in VOICE_WRAPPER       # required invariants kept
     assert "text-to-speech" in VOICE_WRAPPER
+
+
+def test_augment_path_prepends_tool_dirs(monkeypatch, tmp_path):
+    import os
+    import otto.paths as paths
+    node = tmp_path / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"; node.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))     # Path.home() -> tmp_path
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    paths.augment_path()
+    parts = os.environ["PATH"].split(os.pathsep)
+    assert str(node) in parts                      # newest node bin added
+    assert parts[-2:] == ["/usr/bin", "/bin"]      # originals preserved at the end
