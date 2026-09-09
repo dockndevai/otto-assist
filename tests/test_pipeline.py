@@ -1390,3 +1390,37 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         await asyncio.sleep(0)
         assert sent == ["stop"]
     asyncio.run(run())
+
+
+def test_bash_classifier_blocks_find_and_open():
+    """Security: `find` (can -delete/-exec) and `open` (launches apps/URLs) are NOT auto-run."""
+    from otto.brain.agent import _bash_is_read_only, _is_read_only
+    assert _bash_is_read_only("find . -delete") is False
+    assert _bash_is_read_only("find . -name '*.py'") is False
+    assert _bash_is_read_only("open -a Calculator") is False
+    assert _bash_is_read_only("open https://example.com") is False
+    # spawning a subagent is consequential, no longer auto-approved
+    assert _is_read_only("Task") is False
+    # genuine reads still flow freely
+    assert _bash_is_read_only("git status") is True and _bash_is_read_only("date") is True
+
+
+def test_server_blocks_cross_origin_mutations():
+    """Security: a cross-site page cannot drive the agent; same-origin/no-origin still works."""
+    from fastapi.testclient import TestClient
+    app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
+    c = TestClient(app, base_url="http://127.0.0.1:8000")   # Host = 127.0.0.1:8000
+    # cross-site Origin on a mutating route → blocked
+    r = c.post("/api/dictation", json={"on": True}, headers={"origin": "https://evil.example"})
+    assert r.status_code == 403
+    # our own dashboard origin → allowed
+    r = c.post("/api/dictation", json={"on": False},
+               headers={"origin": "http://127.0.0.1:8000"})
+    assert r.status_code == 200
+    # no Origin (local CLI / MCP) → allowed
+    assert c.post("/api/dictation", json={"on": False}).status_code == 200
+    # GET is never guarded
+    assert c.get("/api/voices").status_code == 200
+    # a spoofed Host (DNS-rebinding) is rejected even with no Origin
+    bad = TestClient(app, base_url="http://evil.example")
+    assert bad.post("/api/dictation", json={"on": True}).status_code == 403

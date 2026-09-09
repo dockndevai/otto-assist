@@ -38,7 +38,31 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         except Exception:
             mcp_app = None
 
-    app = FastAPI(title="Otto", lifespan=lifespan)
+    app = FastAPI(title="Orrin", lifespan=lifespan)
+
+    # -- local-only guard --------------------------------------------------
+    # The server binds to loopback, but browsers do NOT apply CORS to WebSockets and will send
+    # cross-site POSTs, so a random web page could otherwise drive the agent (submit turns,
+    # switch project, change config). Reject any request whose Origin isn't our own dashboard,
+    # and require the Host header to be loopback (defeats DNS-rebinding). Requests with no Origin
+    # (local CLI tools, the MCP client) are allowed — they can't be forged by a remote page.
+    _port = orch.settings.server.port
+    _ok_origins = {f"http://127.0.0.1:{_port}", f"http://localhost:{_port}"}
+    _ok_hosts = {f"127.0.0.1:{_port}", f"localhost:{_port}"}
+
+    def _origin_ok(headers) -> bool:
+        if headers.get("host", "") not in _ok_hosts:
+            return False
+        origin = headers.get("origin")
+        return origin is None or origin in _ok_origins
+
+    @app.middleware("http")
+    async def _guard(request, call_next):
+        # Read-only GETs are harmless; guard everything that mutates state.
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not _origin_ok(request.headers):
+            return JSONResponse({"error": "forbidden: cross-origin request blocked"},
+                                status_code=403)
+        return await call_next(request)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -249,6 +273,11 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     # -- event stream ------------------------------------------------------
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
+        # Reject cross-site sockets before accepting — a random web page must not be able to
+        # open this and drive the agent (see the local-only guard above).
+        if not _origin_ok(websocket.headers):
+            await websocket.close(code=1008)   # policy violation
+            return
         await websocket.accept()
         queue = bus.subscribe()
         # Replay saved conversation so a reloaded/reopened dashboard shows history — the
