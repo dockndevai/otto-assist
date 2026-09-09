@@ -487,6 +487,12 @@ class Orchestrator:
         return preflight.open_privacy_pane(which)
 
     def _on_eff_wake(self) -> None:
+        # While asleep ("stop listening"), ignore the acoustic detector entirely — it false-fires
+        # on ambient/echo and would wake Otto right back. Waking from sleep goes through the
+        # transcript wake-word match instead (see the _sleeping branch in _on_voice_final), so a
+        # spoken "hey otto" still wakes it, but noise can't.
+        if self._sleeping:
+            return
         # Echo guard: the wake listener has its own mic and hears Otto's own voice through the
         # speaker — ignore detections while Otto is speaking or just spoke (widened window).
         if self.mouth is not None and self.mouth.recently_active(window=2.5):
