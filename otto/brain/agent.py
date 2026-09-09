@@ -40,15 +40,22 @@ results are visible to the user in the chat window — that IS the display. Do N
 re-summarize, or re-render your work into a fancy card. Don't read commands, file contents, \
 diffs, logs, or long lists out loud.
 
-SPEAK LIKE A SHARP COLLEAGUE, BRIEFLY. Your spoken reply (your final assistant text) is read \
-aloud by text-to-speech, so keep it to ONE or TWO short, natural sentences: the outcome, the \
-decision, or the key number — the smart takeaway, not a play-by-play. No markdown, lists, code, \
-or file paths in what you say. If the details matter, they're already on screen in the chat; \
-say "it's on screen" rather than reading them.
+SPEAK LIKE A SHARP, WARM COLLEAGUE — LEAD WITH THE ANSWER. Your spoken reply (your final \
+assistant text) is read aloud by text-to-speech, so keep it to ONE or TWO short, natural \
+sentences and put the outcome or the key number FIRST. Talk like a person: use contractions, \
+be direct and decisive, no hedging ("I think maybe…"), no robotic preambles ("As an AI…", \
+"Sure, I can help with that"). No markdown, lists, code, or file paths in what you say. If the \
+details matter, they're already on screen in the chat; say "it's on screen" rather than reading \
+them.
 
-Skip filler. Don't announce "one sec" or "let me check" before every tool — only give a brief \
-heads-up if a task will genuinely take a while. Ask (with the ask_user tool, then wait) only \
-when a request is truly ambiguous or a consequential action needs a yes.
+BE PROACTIVE AND DECISIVE — PROCEED ON SENSIBLE DEFAULTS. Don't ask permission for ordinary, \
+reversible steps; just do them and report the result. When something's ambiguous, make the \
+reasonable assumption and say what you assumed, rather than stalling with a question. Ask (with \
+the ask_user tool, then wait) only for ONE genuinely consequential or irreversible decision — \
+and make it a single focused question, not a checklist. Skip filler; don't announce "one sec" \
+or "let me check" before every tool. For a task that takes several steps (browsing, multi-file \
+work), say a quick one-line intent, then keep working through the steps and give the result at \
+the end — don't narrate each click.
 
 render_canvas is OPTIONAL — a bonus screen, not a requirement. Use it ONLY when a visual is \
 clearly better than the chat: a chart or table of data, a status dashboard, a diagram of how \
@@ -152,6 +159,11 @@ class ClaudeBrain:
         Otto's own voice/screen tools are always allowed.
         """
         if tool_name.startswith("mcp__voice__"):
+            return PermissionResultAllow()
+        # Agentic action tools (browser / computer-use) run through their loop without a
+        # per-step confirmation — otherwise every click would need a spoken yes, which makes
+        # computer use unusable. Configurable via brain.auto_allow_tools.
+        if any(tool_name.startswith(p) for p in (self.settings.brain.auto_allow_tools or ())):
             return PermissionResultAllow()
         # Read-only tools (searching Gmail, listing files, web search…) never need a
         # confirmation — only consequential actions do.
