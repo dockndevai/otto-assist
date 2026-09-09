@@ -165,6 +165,7 @@ class Orchestrator:
         # Software ("phrase") wake word: await the command after "hey otto".
         self._awaiting_command = False
         self._await_handle = None
+        self._last_wake = 0.0     # debounce timestamp for wake-word detections
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
@@ -486,14 +487,21 @@ class Orchestrator:
         return preflight.open_privacy_pane(which)
 
     def _on_eff_wake(self) -> None:
-        # Echo guard: the wake listener also hears Otto's own voice through the speaker —
-        # ignore detections while Otto is speaking (or just spoke) to avoid a feedback loop.
-        if self.mouth is not None and self.mouth.recently_active():
+        # Echo guard: the wake listener has its own mic and hears Otto's own voice through the
+        # speaker — ignore detections while Otto is speaking or just spoke (widened window).
+        if self.mouth is not None and self.mouth.recently_active(window=2.5):
             return
         if self._awaiting_command:
-            return   # already greeted and waiting; don't greet again
+            return   # already listening for the command; don't re-fire
+        # Debounce: the detector can fire repeatedly on echo/ambient — one activation per window.
+        now = time.monotonic()
+        if now - self._last_wake < self.settings.voice.stt.wake_debounce_seconds:
+            return
+        self._last_wake = now
         print("[otto] wake word detected", file=sys.stderr, flush=True)
-        self._enter_awaiting_command()   # greet warmly, then capture the command
+        # Silent by default (no repetitive spoken greeting that also feeds the detector); just
+        # start listening. Config voice.stt.wake_greeting re-enables the spoken ack.
+        self._enter_awaiting_command(greet=self.settings.voice.stt.wake_greeting)
 
     async def stop(self) -> None:
         if self.ears:
@@ -1036,7 +1044,8 @@ class Orchestrator:
             if remainder.strip():
                 self._dispatch_voice_command(remainder)   # "hey otto, what time is it"
             else:
-                self._enter_awaiting_command()        # just "hey otto" — wait for command
+                self._enter_awaiting_command(         # just "hey otto" — wait for command
+                    greet=self.settings.voice.stt.wake_greeting)
             return
         if self.settings.voice.stt.wakeword_backend == "efficientword":
             return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
@@ -1201,12 +1210,13 @@ class Orchestrator:
             return True, " ".join(norm[1:])
         return False, ""
 
-    def _enter_awaiting_command(self, greet: bool = True, timeout: float = 12) -> None:
-        """Wait for a command with no wake word. `greet=True` (wake word heard alone) greets
-        and waits; `greet=False` is a silent follow-up window opened right after a reply, so a
-        natural back-and-forth doesn't need "hey otto" before every turn."""
+    def _enter_awaiting_command(self, greet: bool = True, timeout: float = 12,
+                                follow_up: bool = False) -> None:
+        """Wait for a command with no wake word. `greet` speaks a short ack; `follow_up` marks a
+        post-reply window (hands-free, stricter noise gate). A wake-word activation is not a
+        follow-up even when it's silent — the two are independent."""
         self._awaiting_command = True
-        self._follow_up_active = not greet     # silent window = hands-free (stricter noise gate)
+        self._follow_up_active = follow_up
         self._status("listening", "Listening…")
         if greet:
             ack = random.choice(_WAKE_ACKS)
@@ -1388,7 +1398,7 @@ class Orchestrator:
                     if (fu and fu > 0 and reply and not self._sleeping
                             and not self._dictation
                             and not (self._pending_answer and not self._pending_answer.done())):
-                        self._enter_awaiting_command(greet=False, timeout=fu)
+                        self._enter_awaiting_command(greet=False, follow_up=True, timeout=fu)
                     else:
                         self._status("idle", "Ready")
                 else:

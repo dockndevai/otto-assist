@@ -56,6 +56,8 @@ voice:
     wakeword_backend: "phrase"
     wake_words: "hey otto"     # for "phrase": the trigger phrase ("hey" is optional to say)
     wake_word_sensitivity: 0.6
+    wake_greeting: false       # speak "what can I do?" on wake (off = just listen silently)
+    wake_debounce_seconds: 3.0 # ignore repeat wake fires within this window (anti-spam)
     # Reliable hands-free "hey otto": train a free openWakeWord model (see docs/HEY_OTTO.md),
     # then set backend "oww" and point here (scripts/install_wake_word.sh does this for you).
     oww_model_path: ""         # e.g. ~/Library/Application Support/Otto/hey_otto.onnx
