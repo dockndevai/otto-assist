@@ -209,8 +209,10 @@ class ClaudeBrain:
 
 
 # Built-in tools that only read; and verb patterns for classifying MCP tools.
+# Task (subagent spawn) is deliberately NOT here: a subagent can perform consequential tool
+# calls that may not re-enter this confirmation, so spawning one is itself consequential.
 _READ_BUILTINS = {"Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite",
-                  "NotebookRead", "Task"}
+                  "NotebookRead"}
 _WRITE_VERBS = re.compile(
     r"(send|create|delete|remove|update|write|edit|trash|move|archive|reply|forward|"
     r"draft|post|add|set|modify|label|insert|upload|share|rename|revoke|cancel|pay|buy)",
@@ -221,9 +223,11 @@ _READ_VERBS = re.compile(
 
 
 # Shell commands that only read state — safe to run without a spoken confirmation.
+# NOT read-only, so deliberately excluded: `find` (can `-delete`/`-exec` arbitrary commands)
+# and `open` (launches apps/URLs — a side-effecting exec, not a read).
 _BASH_READ_CMDS = {"date", "ls", "pwd", "cat", "head", "tail", "echo", "whoami", "df",
                    "du", "uptime", "cal", "which", "type", "printenv", "hostname", "uname",
-                   "wc", "find", "grep", "rg", "stat", "file", "open"}
+                   "wc", "grep", "rg", "stat", "file"}
 _BASH_DANGER = re.compile(r"([|;&><`$]|\brm\b|\bsudo\b|\bmv\b|\bcp\b|\bkill\b|\bdd\b|"
                           r"\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bgit\s+(push|commit|reset)|"
                           r"\bgh\s+\w+\s+(create|delete|edit|merge|close))")
