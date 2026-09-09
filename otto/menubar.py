@@ -300,6 +300,14 @@ class OttoApp(rumps.App):
         if not self.settings.voice.hotkey.enabled:
             return
         try:
+            # Register/prompt for Input Monitoring for THIS process on the main thread — a
+            # background service is a separate TCC context, so it must ask for itself (a grant
+            # given to some other process/terminal doesn't apply here).
+            from .preflight import request_input_monitoring
+            request_input_monitoring()
+        except Exception as e:
+            print(f"[otto] input-monitoring request error: {e}", file=sys.stderr, flush=True)
+        try:
             from .voice.hotkey_mac import MacHotkey
 
             def press():
