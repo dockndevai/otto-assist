@@ -1486,3 +1486,19 @@ def test_wake_is_silent_and_debounced():
     orch._awaiting_command = False; orch._last_wake = 0.0
     orch._on_eff_wake()
     assert spoken and orch._awaiting_command is True
+
+
+def test_sleep_holds_against_acoustic_wake():
+    """After 'stop listening', the noisy acoustic detector must NOT wake Otto; only a spoken
+    wake word (via transcript) does."""
+    orch = Orchestrator(load_settings(), EventBus())
+    orch._voice_out = lambda t: None
+    orch.mouth = None
+    orch._sleeping = True
+    orch._last_wake = 0.0
+    orch._on_eff_wake()                       # acoustic fire while asleep → ignored
+    assert orch._awaiting_command is False and orch._sleeping is True
+    # a spoken wake word wakes it (sleeping branch → _match_wake)
+    orch.settings.voice.stt.wake_words = "hey otto"
+    orch._on_voice_final("hey otto")
+    assert orch._sleeping is False
