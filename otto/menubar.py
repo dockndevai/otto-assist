@@ -67,6 +67,8 @@ class OttoApp(rumps.App):
             super().__init__("Orrin", icon=_icon("idle"), template=False, quit_button=None)
         else:
             super().__init__("Orrin", title="Orrin", quit_button=None)
+        from .paths import augment_path
+        augment_path()   # so node/npx-based MCP tools (browser, computer-use) can be spawned
         self.settings = load_settings()
         self.bus = EventBus()
         self.orch = Orchestrator(self.settings, self.bus)
