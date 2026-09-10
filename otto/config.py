@@ -57,6 +57,21 @@ CONFIG_FILE = DATA_CONFIG if DATA_CONFIG.exists() else PACKAGED_DEFAULT
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
+    # Remote access for the mobile app. OFF by default — the server stays loopback-only and
+    # behaves exactly as before. When enabled, the server ALSO binds beyond loopback (so a phone
+    # on the LAN or over a Tailscale/tunnel address can reach it) and accepts connections that
+    # present the bearer token: `Authorization: Bearer <token>` (HTTP + WS) or `?token=<token>`
+    # (WS fallback for clients that can't set headers). Loopback browser access is unchanged.
+    allow_remote: bool = False
+    auth_token: str = ""        # shared secret for remote clients; auto-filled when remote is on
+
+    def bind_host(self) -> str:
+        """Host uvicorn should bind. Loopback-only unless remote access is enabled, in which
+        case bind all interfaces so LAN / Tailscale / tunnel addresses can reach it (every
+        non-loopback connection still needs the token)."""
+        if self.allow_remote and self.host in ("127.0.0.1", "localhost"):
+            return "0.0.0.0"
+        return self.host
 
 
 class BrainConfig(BaseModel):
@@ -157,6 +172,10 @@ class TTSConfig(BaseModel):
     # full text is always on screen. This is enforced regardless of how verbose the model is,
     # and markdown/URLs/code are stripped from speech. 0 disables the cap.
     max_spoken_chars: int = 240
+    # When a phone (authenticated remote client) is connected, don't also speak the reply
+    # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
+    # driving it remotely. The dashboard on the Mac itself does NOT count as remote.
+    mute_when_remote: bool = True
     # Per-project voice override (project path -> voice id/name). When you focus a project,
     # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
     # `voice`/`kokoro_voice` for projects with no entry.
