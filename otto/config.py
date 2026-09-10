@@ -172,6 +172,10 @@ class TTSConfig(BaseModel):
     # full text is always on screen. This is enforced regardless of how verbose the model is,
     # and markdown/URLs/code are stripped from speech. 0 disables the cap.
     max_spoken_chars: int = 240
+    # When a phone (authenticated remote client) is connected, don't also speak the reply
+    # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
+    # driving it remotely. The dashboard on the Mac itself does NOT count as remote.
+    mute_when_remote: bool = True
     # Per-project voice override (project path -> voice id/name). When you focus a project,
     # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
     # `voice`/`kokoro_voice` for projects with no entry.

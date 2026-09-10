@@ -359,11 +359,16 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         # Reject cross-site sockets before accepting — a random web page must not be able to
         # open this and drive the agent (see the guard above). A loopback dashboard passes
         # _origin_ok; the mobile app passes _authed with its bearer token (header or ?token=).
-        if not (_origin_ok(websocket.headers)
-                or _authed(websocket.headers, websocket.query_params.get("token"))):
+        local_ok = _origin_ok(websocket.headers)
+        is_remote = (not local_ok) and _authed(
+            websocket.headers, websocket.query_params.get("token"))
+        if not (local_ok or is_remote):
             await websocket.close(code=1008)   # policy violation
             return
         await websocket.accept()
+        # Track connected phones so the Mac can stay quiet while you're driving it remotely.
+        if is_remote:
+            orch.remote_clients += 1
         queue = bus.subscribe()
         # Replay saved conversation so a reloaded/reopened dashboard shows history — the
         # focused project's own log, from the per-project memory store.
@@ -432,6 +437,8 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         finally:
             pump_task.cancel()
             bus.unsubscribe(queue)
+            if is_remote:
+                orch.remote_clients = max(0, orch.remote_clients - 1)
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     if mcp_app is not None:

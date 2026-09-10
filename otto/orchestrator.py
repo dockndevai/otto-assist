@@ -150,6 +150,7 @@ class Orchestrator:
         self._eff = None        # EfficientWord-Net custom wake-word listener
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending_answer: asyncio.Future[str] | None = None
+        self.remote_clients = 0      # authenticated phone clients currently connected (WS)
         self._speech_buf = ""
         self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
         self._speak_done = False     # cap reached → stop speaking the rest of this reply
@@ -216,6 +217,10 @@ class Orchestrator:
         long it takes to say it, plus a cooldown — so Otto never transcribes its own voice."""
         t = (text or "").strip()
         if not t or self.mouth is None or self.voice_muted:
+            return
+        # When a phone is connected it speaks the reply itself — don't also play it aloud on
+        # the Mac (talking to an empty room when you're remote). The local dashboard doesn't count.
+        if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
             return
         self.mouth.speak(t)
         # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.

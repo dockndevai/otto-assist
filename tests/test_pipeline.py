@@ -242,6 +242,32 @@ def test_pairing_endpoint_local_only():
     assert remote.get("/api/pairing").status_code == 403
 
 
+def test_mute_local_speech_when_remote():
+    # When a phone is connected, _voice_out must not play locally (the phone speaks it).
+    s = load_settings()
+    s.voice.tts.mute_when_remote = True
+    orch = Orchestrator(s, EventBus())
+
+    class _Mouth:
+        def __init__(self): self.said = []
+        def speak(self, t): self.said.append(t)
+    orch.mouth = _Mouth()
+    orch.voice_muted = False
+
+    orch.remote_clients = 0
+    orch._voice_out("local only")
+    assert orch.mouth.said == ["local only"]      # no phone -> speaks on the Mac
+
+    orch.remote_clients = 1
+    orch._voice_out("should be silent on mac")
+    assert orch.mouth.said == ["local only"]       # phone connected -> Mac stays quiet
+
+    # Opt-out: if the user turns the setting off, the Mac speaks even with a phone connected.
+    s.voice.tts.mute_when_remote = False
+    orch._voice_out("speak anyway")
+    assert orch.mouth.said == ["local only", "speak anyway"]
+
+
 def test_mcp_server_builds():
     mcp = build_mcp(Orchestrator(load_settings(), EventBus()))
     assert mcp is not None
