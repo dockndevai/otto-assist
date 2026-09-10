@@ -178,6 +178,8 @@ def test_app_routes_and_mcp():
             "/api/session/rename"} <= paths
     # per-project history replay endpoint
     assert "/api/history" in paths
+    # mobile pairing endpoint
+    assert "/api/pairing" in paths
     # captures + dictation endpoints
     assert {"/api/captures", "/api/dictation"} <= paths
     # parallel-workspace endpoints
@@ -185,6 +187,85 @@ def test_app_routes_and_mcp():
             "/api/workspace/close"} <= paths
     # MCP sub-app mounted when register_mcp is on.
     assert any("/mcp" in getattr(r, "path", "") for r in app.routes)
+
+
+def test_server_bind_host():
+    from otto.config import ServerConfig
+    assert ServerConfig().bind_host() == "127.0.0.1"          # loopback-only by default
+    assert ServerConfig(allow_remote=True).bind_host() == "0.0.0.0"  # all interfaces when remote
+    # An explicit non-loopback host is respected as-is.
+    assert ServerConfig(host="10.0.0.5", allow_remote=True).bind_host() == "10.0.0.5"
+
+
+def test_remote_bearer_auth_guard():
+    from fastapi.testclient import TestClient
+    s = load_settings()
+    s.server.allow_remote = True
+    s.server.auth_token = "secret-abc"
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    c = TestClient(app)  # cross-origin: Host defaults to "testserver", so only a token gets in
+    # A mutating request with no credentials is blocked...
+    assert c.put("/api/config", json={"config": {}}).status_code == 403
+    # ...the wrong token is blocked...
+    assert c.put("/api/config", json={"config": {}},
+                 headers={"Authorization": "Bearer nope"}).status_code == 403
+    # ...the correct bearer token passes the guard (and the ?token= fallback too).
+    assert c.put("/api/config", json={"config": {}},
+                 headers={"Authorization": "Bearer secret-abc"}).status_code != 403
+    assert c.put("/api/config?token=secret-abc", json={"config": {}}).status_code != 403
+
+
+def test_remote_off_rejects_token():
+    # With remote access OFF, a token must NOT grant access — loopback-only behaviour is intact.
+    from fastapi.testclient import TestClient
+    s = load_settings()
+    s.server.allow_remote = False
+    s.server.auth_token = "secret-abc"
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    c = TestClient(app)
+    assert c.put("/api/config", json={"config": {}},
+                 headers={"Authorization": "Bearer secret-abc"}).status_code == 403
+
+
+def test_pairing_endpoint_local_only():
+    from fastapi.testclient import TestClient
+    s = load_settings()
+    s.server.allow_remote = True
+    s.server.auth_token = "tok-xyz"
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    # Loopback caller sees the token + addresses; a cross-origin caller is refused.
+    local = TestClient(app, base_url="http://127.0.0.1:8000")
+    r = local.get("/api/pairing")
+    assert r.status_code == 200 and r.json()["token"] == "tok-xyz"
+    assert r.json()["allow_remote"] is True
+    remote = TestClient(app, base_url="http://evil.example")
+    assert remote.get("/api/pairing").status_code == 403
+
+
+def test_mute_local_speech_when_remote():
+    # When a phone is connected, _voice_out must not play locally (the phone speaks it).
+    s = load_settings()
+    s.voice.tts.mute_when_remote = True
+    orch = Orchestrator(s, EventBus())
+
+    class _Mouth:
+        def __init__(self): self.said = []
+        def speak(self, t): self.said.append(t)
+    orch.mouth = _Mouth()
+    orch.voice_muted = False
+
+    orch.remote_clients = 0
+    orch._voice_out("local only")
+    assert orch.mouth.said == ["local only"]      # no phone -> speaks on the Mac
+
+    orch.remote_clients = 1
+    orch._voice_out("should be silent on mac")
+    assert orch.mouth.said == ["local only"]       # phone connected -> Mac stays quiet
+
+    # Opt-out: if the user turns the setting off, the Mac speaks even with a phone connected.
+    s.voice.tts.mute_when_remote = False
+    orch._voice_out("speak anyway")
+    assert orch.mouth.said == ["local only", "speak anyway"]
 
 
 def test_mcp_server_builds():

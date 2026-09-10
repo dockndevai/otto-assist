@@ -7,7 +7,7 @@ import asyncio
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +18,36 @@ from ..sessions import list_sessions
 from .events import EventBus
 
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def _local_addresses() -> list[str]:
+    """Best-effort list of IPv4 addresses the phone could reach this Mac on — the LAN address
+    and any Tailscale address (100.64/10, CGNAT range). Ordered Tailscale-first since that's
+    the one that works from anywhere. Never raises."""
+    import socket
+
+    addrs: list[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in addrs and not ip.startswith("127."):
+                addrs.append(ip)
+    except Exception:
+        pass
+    # A UDP connect() reveals the primary outbound LAN IP without sending anything.
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip not in addrs:
+            addrs.append(ip)
+    except Exception:
+        pass
+    # Tailscale addresses (100.64.0.0/10) work from anywhere — surface them first.
+    tailscale = [a for a in addrs if a.startswith("100.")]
+    others = [a for a in addrs if not a.startswith("100.")]
+    return tailscale + others
 
 
 def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
@@ -40,15 +70,45 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
 
     app = FastAPI(title="Orrin", lifespan=lifespan)
 
-    # -- local-only guard --------------------------------------------------
+    # -- access guard ------------------------------------------------------
     # The server binds to loopback, but browsers do NOT apply CORS to WebSockets and will send
     # cross-site POSTs, so a random web page could otherwise drive the agent (submit turns,
     # switch project, change config). Reject any request whose Origin isn't our own dashboard,
     # and require the Host header to be loopback (defeats DNS-rebinding). Requests with no Origin
     # (local CLI tools, the MCP client) are allowed — they can't be forged by a remote page.
+    #
+    # Remote access (the mobile app) opts in via server.allow_remote + a bearer token: an
+    # authenticated request is trusted regardless of Origin/Host, because a random web page can't
+    # know the token. Everything else still falls back to the loopback-only rule, so with remote
+    # OFF the behaviour is exactly as before.
+    import hmac
+    import secrets as _secrets
+
     _port = orch.settings.server.port
     _ok_origins = {f"http://127.0.0.1:{_port}", f"http://localhost:{_port}"}
     _ok_hosts = {f"127.0.0.1:{_port}", f"localhost:{_port}"}
+
+    _srv = orch.settings.server
+    if _srv.allow_remote and not _srv.auth_token:
+        # First time remote is enabled with no token: mint a strong one and persist it, so the
+        # user can read it (menu bar / GET /api/pairing) and paste it into the phone app.
+        _srv.auth_token = _secrets.token_urlsafe(24)
+        try:
+            save_config(orch.settings)
+        except Exception:
+            pass
+
+    def _authed(headers, query_token: str | None = None) -> bool:
+        """True if remote access is on and the request presents the correct bearer token,
+        via `Authorization: Bearer <token>` or a `?token=` query param (WS fallback)."""
+        token = orch.settings.server.auth_token
+        if not (orch.settings.server.allow_remote and token):
+            return False
+        presented = query_token
+        auth = headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            presented = auth[7:].strip()
+        return bool(presented) and hmac.compare_digest(presented, token)
 
     def _origin_ok(headers) -> bool:
         if headers.get("host", "") not in _ok_hosts:
@@ -58,10 +118,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
 
     @app.middleware("http")
     async def _guard(request, call_next):
-        # Read-only GETs are harmless; guard everything that mutates state.
-        if request.method not in ("GET", "HEAD", "OPTIONS") and not _origin_ok(request.headers):
-            return JSONResponse({"error": "forbidden: cross-origin request blocked"},
-                                status_code=403)
+        # Read-only GETs are harmless; guard everything that mutates state. A valid bearer token
+        # (remote app) is accepted regardless of Origin — it can't be forged by a web page.
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            if not (_origin_ok(request.headers)
+                    or _authed(request.headers, request.query_params.get("token"))):
+                return JSONResponse({"error": "forbidden: cross-origin request blocked"},
+                                    status_code=403)
         return await call_next(request)
 
     @app.get("/")
@@ -75,6 +138,26 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     @app.get("/settings")
     async def settings_page() -> FileResponse:
         return FileResponse(WEB_DIR / "settings.html")
+
+    # -- mobile pairing ---------------------------------------------------
+    # What the phone needs to connect: the token + reachable addresses. Only served to a
+    # LOOPBACK caller (the local dashboard / menu bar) so a remote client can't fetch the
+    # secret it doesn't already have. Meant to back a "Pair phone" QR/details screen.
+    @app.get("/api/pairing")
+    async def get_pairing(request: Request) -> JSONResponse:
+        if not _origin_ok(request.headers):
+            return JSONResponse({"error": "pairing details are only available locally"},
+                                status_code=403)
+        srv = orch.settings.server
+        return JSONResponse({
+            "allow_remote": srv.allow_remote,
+            "port": srv.port,
+            "token": srv.auth_token,
+            "addresses": _local_addresses(),   # LAN + Tailscale IPs to try
+            "hint": ("Enable server.allow_remote and restart to accept phone connections."
+                     if not srv.allow_remote else
+                     "Paste an address + this token into the Orrin phone app."),
+        })
 
     # -- config + projects API --------------------------------------------
     @app.get("/api/config")
@@ -274,11 +357,18 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         # Reject cross-site sockets before accepting — a random web page must not be able to
-        # open this and drive the agent (see the local-only guard above).
-        if not _origin_ok(websocket.headers):
+        # open this and drive the agent (see the guard above). A loopback dashboard passes
+        # _origin_ok; the mobile app passes _authed with its bearer token (header or ?token=).
+        local_ok = _origin_ok(websocket.headers)
+        is_remote = (not local_ok) and _authed(
+            websocket.headers, websocket.query_params.get("token"))
+        if not (local_ok or is_remote):
             await websocket.close(code=1008)   # policy violation
             return
         await websocket.accept()
+        # Track connected phones so the Mac can stay quiet while you're driving it remotely.
+        if is_remote:
+            orch.remote_clients += 1
         queue = bus.subscribe()
         # Replay saved conversation so a reloaded/reopened dashboard shows history — the
         # focused project's own log, from the per-project memory store.
@@ -347,6 +437,8 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         finally:
             pump_task.cancel()
             bus.unsubscribe(queue)
+            if is_remote:
+                orch.remote_clients = max(0, orch.remote_clients - 1)
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     if mcp_app is not None:

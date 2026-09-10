@@ -33,7 +33,7 @@ async def main_async() -> None:
 
     config = uvicorn.Config(
         app,
-        host=settings.server.host,
+        host=settings.server.bind_host(),   # 0.0.0.0 when remote access is enabled
         port=settings.server.port,
         log_level="warning",
         loop="asyncio",
