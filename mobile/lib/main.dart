@@ -71,6 +71,7 @@ class _HomePageState extends State<HomePage> {
 
   final _tts = FlutterTts();
   bool _speaking = false;
+  bool _replaying = false; // true while the server replays saved history on connect
 
   final List<Line> _lines = [];
   final _scroll = ScrollController();
@@ -158,7 +159,7 @@ class _HomePageState extends State<HomePage> {
         _onEvent,
         onDone: _onClosed,
         onError: (_) => _onClosed(),
-        cancelOnError: true,
+        cancelOnError: false, // one bad event must not tear down the whole socket
       );
       setState(() {
         _connected = true;
@@ -184,6 +185,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onEvent(dynamic raw) {
+    try {
+      _handleEvent(raw);
+    } catch (_) {
+      // Never let a single malformed/unexpected event kill the connection.
+    }
+  }
+
+  void _handleEvent(dynamic raw) {
     Map<String, dynamic> ev;
     try {
       ev = jsonDecode(raw as String) as Map<String, dynamic>;
@@ -192,12 +201,24 @@ class _HomePageState extends State<HomePage> {
     }
     final t = ev['type'] as String? ?? '';
     switch (t) {
+      case 'history_start':
+        // The server replays this project's saved conversation on connect. Show it, but
+        // start fresh and DON'T speak it — otherwise every reconnect re-reads the whole
+        // history aloud (and floods TTS).
+        setState(() {
+          _replaying = true;
+          _lines.clear();
+        });
+        break;
+      case 'history_end':
+        setState(() => _replaying = false);
+        break;
       case 'transcript_final':
         final role = ev['role'] == 'assistant' ? 'otto' : 'you';
         final text = (ev['text'] as String? ?? '').trim();
         if (text.isEmpty) return;
         _push(role, text);
-        if (role == 'otto') _speak(text);
+        if (role == 'otto' && !_replaying) _speak(text);
         break;
       case 'assistant_delta':
         // Stream Otto's words into the last 'otto' line as they arrive.
