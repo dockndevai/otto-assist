@@ -232,7 +232,7 @@ class OttoApp(rumps.App):
         await self.orch.start()
         config = uvicorn.Config(
             create_app(self.orch, self.bus),
-            host=self.settings.server.host,
+            host=self.settings.server.bind_host(),   # 0.0.0.0 when remote access is enabled
             port=self.settings.server.port,
             log_level="warning",
             loop="asyncio",

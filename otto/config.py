@@ -57,6 +57,21 @@ CONFIG_FILE = DATA_CONFIG if DATA_CONFIG.exists() else PACKAGED_DEFAULT
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
+    # Remote access for the mobile app. OFF by default — the server stays loopback-only and
+    # behaves exactly as before. When enabled, the server ALSO binds beyond loopback (so a phone
+    # on the LAN or over a Tailscale/tunnel address can reach it) and accepts connections that
+    # present the bearer token: `Authorization: Bearer <token>` (HTTP + WS) or `?token=<token>`
+    # (WS fallback for clients that can't set headers). Loopback browser access is unchanged.
+    allow_remote: bool = False
+    auth_token: str = ""        # shared secret for remote clients; auto-filled when remote is on
+
+    def bind_host(self) -> str:
+        """Host uvicorn should bind. Loopback-only unless remote access is enabled, in which
+        case bind all interfaces so LAN / Tailscale / tunnel addresses can reach it (every
+        non-loopback connection still needs the token)."""
+        if self.allow_remote and self.host in ("127.0.0.1", "localhost"):
+            return "0.0.0.0"
+        return self.host
 
 
 class BrainConfig(BaseModel):

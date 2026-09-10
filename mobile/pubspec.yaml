@@ -1,0 +1,23 @@
+name: orrin_mobile
+description: "Orrin — a voice remote to your Orrin server on your Mac."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  web_socket_channel: ^3.0.1
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.0
+  shared_preferences: ^2.3.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
