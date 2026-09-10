@@ -237,25 +237,52 @@ _READ_VERBS = re.compile(
 # Shell commands that only read state — safe to run without a spoken confirmation.
 # NOT read-only, so deliberately excluded: `find` (can `-delete`/`-exec` arbitrary commands)
 # and `open` (launches apps/URLs — a side-effecting exec, not a read).
-_BASH_READ_CMDS = {"date", "ls", "pwd", "cat", "head", "tail", "echo", "whoami", "df",
-                   "du", "uptime", "cal", "which", "type", "printenv", "hostname", "uname",
-                   "wc", "grep", "rg", "stat", "file"}
-_BASH_DANGER = re.compile(r"([|;&><`$]|\brm\b|\bsudo\b|\bmv\b|\bcp\b|\bkill\b|\bdd\b|"
-                          r"\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bgit\s+(push|commit|reset)|"
-                          r"\bgh\s+\w+\s+(create|delete|edit|merge|close))")
+# Includes common macOS status readers (pmset/sw_vers/sysctl/vm_stat/…) and the text filters
+# people pipe status through (awk/sed/cut/sort/…) so a spoken "how's my battery and disk?"
+# — which becomes a `pmset -g batt | grep … ; df -H / | awk …` pipeline — runs without a
+# confirmation. awk/sed can still WRITE, but only via redirection or -i, both blocked below.
+_BASH_READ_CMDS = {"date", "ls", "pwd", "cat", "head", "tail", "echo", "printf", "whoami",
+                   "df", "du", "uptime", "cal", "which", "type", "printenv", "env",
+                   "hostname", "uname", "arch", "sw_vers", "vm_stat", "sysctl", "ps",
+                   "pmset",  # guarded to `-g` (get) by _BASH_DANGER; other forms mutate power
+                   "id", "groups", "basename", "dirname", "realpath", "seq",
+                   "wc", "grep", "egrep", "fgrep", "rg", "awk", "sed", "cut", "tr",
+                   "sort", "uniq", "column", "rev", "stat", "file"}
+# Anything that mutates state, escalates, reaches the network, sleeps/powers the machine, or
+# runs an arbitrary command — checked across the WHOLE command string so it can't hide in a
+# later pipe segment. Shell operators (| ; & && ||) are NOT here: they're split out and each
+# segment is validated on its own, which is stricter than a blanket veto.
+_BASH_DANGER = re.compile(
+    r"(`|\$\(|[<>]|\brm\b|\bsudo\b|\bmv\b|\bcp\b|\bkill\b|\bpkill\b|\bdd\b|\btee\b|\bln\b|"
+    r"\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bxargs\b|\beval\b|"
+    r"\bosascript\b|\blaunchctl\b|\bdiskutil\b|\btmutil\b|\bnvram\b|\bshutdown\b|\breboot\b|"
+    r"\b\w+\s+-i\b|"                                  # in-place edit, e.g. sed -i / perl -i
+    r"\bpmset\b(?!\s+-g)|\bsysctl\b(?=\s+-w)|"        # pmset only for -g (get); no sysctl -w
+    r"\bgit\s+(push|commit|reset|clean|rebase|checkout|restore)|"
+    r"\bgh\s+\w+\s+(create|delete|edit|merge|close))")
+_BASH_SPLIT = re.compile(r"\|\||&&|[|;&]")            # pipe / sequence / background operators
 
 
 def _bash_is_read_only(command: str) -> bool:
     cmd = command.strip()
     if not cmd or _BASH_DANGER.search(cmd):
         return False
-    first = cmd.split()[0] if cmd.split() else ""
-    if first in _BASH_READ_CMDS:
-        return True
-    # read-only subcommands of common tools
-    if re.match(r"^(git\s+(status|log|diff|show|branch)|gh\s+\w+\s+(list|view|status))", cmd):
-        return True
-    return False
+    # A compound command is read-only only if EVERY segment is. Splitting and checking each
+    # segment's leading word is stricter than the old single-word check: `df | xargs rm` now
+    # fails on the `xargs`/`rm` segment instead of passing on `df`.
+    for seg in _BASH_SPLIT.split(cmd):
+        seg = seg.strip()
+        if not seg:
+            continue
+        first = seg.split()[0]
+        if first in _BASH_READ_CMDS:
+            continue
+        # read-only subcommands of common tools
+        if re.match(r"^(git\s+(status|log|diff|show|branch)|gh\s+\w+\s+(list|view|status)|"
+                    r"defaults\s+read|scutil\s+--get)\b", seg):
+            continue
+        return False
+    return True
 
 
 def _is_read_only(tool_name: str) -> bool:
