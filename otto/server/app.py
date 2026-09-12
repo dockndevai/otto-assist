@@ -91,10 +91,17 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     _srv = orch.settings.server
     if _srv.allow_remote and not _srv.auth_token:
         # First time remote is enabled with no token: mint a strong one and persist it, so the
-        # user can read it (menu bar / GET /api/pairing) and paste it into the phone app.
+        # user can read it (menu bar / GET /api/pairing) and paste it into the phone app — and
+        # so it stays STABLE across restarts (otherwise the phone would need re-pairing every
+        # launch). save_config takes the full config *dict*, not the settings object.
         _srv.auth_token = _secrets.token_urlsafe(24)
         try:
-            save_config(orch.settings)
+            cfg = config_path()
+            data = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
+            data.setdefault("server", {})
+            data["server"]["allow_remote"] = True
+            data["server"]["auth_token"] = _srv.auth_token
+            save_config(data)
         except Exception:
             pass
 
