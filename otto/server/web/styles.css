@@ -1,14 +1,18 @@
 /* ===== Theme tokens (dark base; light via system pref unless forced) ===== */
 :root {
-  --bg: #070b14; --bg-2: #0b1120; --panel: rgba(17, 24, 39, 0.98); --panel-solid: #111827;
-  --card: #121a2b; --card-2: #0f1626; --overlay: rgba(4, 7, 15, 0.66);
+  --bg: #06080f; --bg-2: #080b16; --panel: rgba(13, 18, 32, 0.98); --panel-solid: #0d1220;
+  --card: #111a2e; --card-2: #0d1424; --overlay: rgba(4, 6, 13, 0.7);
   --fill: rgba(255, 255, 255, 0.05); --fill-2: rgba(255, 255, 255, 0.03);
-  --border: rgba(120, 160, 220, 0.14); --hairline: rgba(255, 255, 255, 0.05);
-  --text: #e8edf7; --muted: #8494ab; --dim: #55627a;
-  --cyan: #38bdf8; --blue: #3b82f6; --purple: #a855f7; --teal: #2dd4bf; --pink: #ec4899;
-  --focus: rgba(56, 189, 248, 0.5); --on-accent: #04121a;
-  --shadow: rgba(0, 0, 0, 0.45); --shadow-strong: rgba(0, 0, 0, 0.6);
-  --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+  --border: rgba(120, 165, 230, 0.15); --hairline: rgba(255, 255, 255, 0.05);
+  --text: #e8eefb; --muted: #93a0bd; --dim: #5c6a8a;
+  --cyan: #63e0ff; --blue: #4f7bff; --purple: #8a5cff; --teal: #43e0a4; --pink: #ff5d7d;
+  --focus: rgba(99, 224, 255, 0.5); --on-accent: #04121a;
+  --shadow: rgba(0, 0, 0, 0.5); --shadow-strong: rgba(0, 0, 0, 0.65);
+  --ok: #43e0a4; --warn: #ffc24b; --err: #ff5d7d;
+  /* Deck typography: a technical display face, a clean body, a mono for readouts/labels. */
+  --font-disp: "Chakra Petch", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
@@ -40,9 +44,21 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+body { font-family: var(--font-body);
   color: var(--text); overflow: hidden; background: var(--bg); transition: background-color .3s, color .3s; }
 kbd { font: inherit; }
+
+/* ===== Deck typography: display face for names/headings, mono for technical labels ===== */
+.brandname, .greet h1, .empty-view h2, .setup-titles h2, .sgroup h3, .hero .h1, .hero h1, .hero h2,
+.lb-mid b, .listenpill span, .card .big, .tile .big {
+  font-family: var(--font-disp); letter-spacing: .02em; }
+.brandname { letter-spacing: .16em; text-transform: uppercase; font-weight: 700; }
+.brandsub, .ptt-label, .ptt-sub, .sb-item, .sb-ver, .wakebadge, .tiny, .cd-head b, .drawer-head span,
+.navbtn, .listenpill #talkState, .lb-sub, #lbSub {
+  font-family: var(--font-mono); }
+.brandsub, .ptt-label, .sb-item, .wakebadge, .drawer-head span {
+  text-transform: uppercase; letter-spacing: .18em; font-size: 10.5px; }
+.sb-item b { font-family: var(--font-mono); letter-spacing: .04em; }
 
 /* ===== Shell: sidebar | main | chat ===== */
 .app { display: grid; grid-template-columns: 248px 1fr; height: 100vh; transition: grid-template-columns .2s ease; }
@@ -99,11 +115,21 @@ kbd { font: inherit; }
 .ham { font-size: 17px; }
 .greet h1 { margin: 0; font-size: 22px; font-weight: 750; letter-spacing: -.2px; }
 .greet p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
-.hero-orb { justify-self: center; }
-.orb { width: 52px; height: 52px; border-radius: 50%;
-  background: radial-gradient(circle at 38% 32%, #d9fbff, var(--mood) 46%, color-mix(in srgb, var(--mood) 55%, var(--purple)) 96%);
-  box-shadow: 0 0 30px color-mix(in srgb, var(--mood) 45%, transparent), 0 0 60px color-mix(in srgb, var(--mood) 22%, transparent);
+.hero-orb { justify-self: center; position: relative; }
+.orb { width: 52px; height: 52px; border-radius: 50%; position: relative;
+  background: radial-gradient(circle at 42% 34%, #ffffff 4%, #fff2cf 26%, var(--mood) 56%, color-mix(in srgb, var(--mood) 50%, var(--purple)) 98%);
+  box-shadow: 0 0 26px color-mix(in srgb, var(--mood) 60%, transparent), 0 0 64px color-mix(in srgb, var(--mood) 30%, transparent), inset 0 0 12px rgba(255,255,255,.5);
   animation: breathe 4s ease-in-out infinite; }
+/* Radiant corona on the hero core — a slowly rotating ray halo, like the deck's voice core. */
+.hero-orb.orb::before { content: ""; position: absolute; inset: -14px; border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg,
+    color-mix(in srgb, var(--mood) 55%, transparent) 0deg 1.4deg, transparent 1.4deg 6deg);
+  -webkit-mask: radial-gradient(circle, transparent 52%, #000 56%, #000 74%, transparent 82%);
+          mask: radial-gradient(circle, transparent 52%, #000 56%, #000 74%, transparent 82%);
+  opacity: .55; animation: spin 26s linear infinite; pointer-events: none; }
+.hero-orb.orb::after { content: ""; position: absolute; inset: -10px; border-radius: 50%;
+  box-shadow: 0 0 40px 6px color-mix(in srgb, var(--mood) 35%, transparent); pointer-events: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .app.state-listening .orb, .app.state-listening .brandorb { animation-duration: 1.2s; }
 .app.state-speaking .orb, .app.state-speaking .brandorb { animation-duration: .8s; }
 .app.state-thinking .orb, .app.state-thinking .brandorb { animation-duration: 1.6s; }
