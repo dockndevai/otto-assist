@@ -331,6 +331,35 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         items = orch.memory.list_captures(project or orch.current_project, limit=limit)
         return JSONResponse({"captures": items})
 
+    # -- project memory (what Orrin remembers about the current project) ---
+    @app.get("/api/memory")
+    async def get_memory() -> JSONResponse:
+        p = orch.current_project
+        facts: list[str] = []
+        summary: list[str] = []
+        docs: list[str] = []
+        try:
+            pdir = orch.memory.project_dir(p)
+
+            def _bullets(path):
+                if not path.exists():
+                    return []
+                out = []
+                for ln in path.read_text().splitlines():
+                    s = ln.strip()
+                    if s.startswith("- ") or s.startswith("* "):
+                        out.append(s[2:].strip())
+                return out
+            facts = _bullets(pdir / "project.md")
+            summary = _bullets(pdir / "summary.md")
+            docs = [(d.get("title") or d.get("name") or "note")
+                    for d in orch.memory.list_docs(p)][:8]
+        except Exception:
+            pass
+        return JSONResponse({"project": p, "name": Path(p).name,
+                             "facts": facts, "summary": summary,
+                             "docs": docs, "doc_count": len(docs)})
+
     # -- dictation-anywhere toggle ----------------------------------------
     @app.get("/api/dictation")
     async def get_dictation() -> JSONResponse:
