@@ -37,8 +37,7 @@
       </div>
 
       <nav class="side-nav">
-        <button class="navbtn active" data-nav="home"><span class="ni">🏠</span> Home</button>
-        <button class="navbtn" data-nav="projects"><span class="ni">🛰</span> Projects</button>
+        <button class="navbtn active" data-nav="home"><span class="ni">🛰</span> Home</button>
         <button class="navbtn" data-nav="convo"><span class="ni">💬</span> Conversations<i class="ndot" id="dotConvo"></i></button>
         <button class="navbtn" data-nav="visuals"><span class="ni">🖼</span> Visuals<i class="ndot" id="dotVisuals"></i></button>
         <button class="navbtn" data-nav="skills"><span class="ni">✨</span> Skills</button>
@@ -72,26 +71,19 @@
       </header>
 
       <div class="content">
-        <!-- ---- HOME (clean assistant + a few live metrics; details live in other tabs) ---- -->
+        <!-- ---- HOME: Orrin as a living presence inside a pannable map of your projects ---- -->
         <section class="view" data-view="home">
-          <div class="dash">
-            <div class="asst">
-              <div class="asst-top">Orrin Assistant</div>
-              <div class="asst-orbwrap"><span class="orb hero-orb asst-orb" id="homeOrb"></span></div>
-              <button class="asst-pill" id="homeTalk">Talk to Orrin</button>
-              <div class="asst-copy"><b id="asstHead">Ready when you are.</b>
-                <span id="asstSub">Say “Otto”, or tap Talk.</span></div>
+          <div class="atlas" id="atlas">
+            <svg class="atlas-links" id="atlasLinks"></svg>
+            <div class="atlas-nodes" id="atlasNodes"></div>
+            <div class="companion" id="companion">
+              <span class="orb hero-orb comp-orb" id="compOrb"></span>
+              <div class="comp-name">ORRIN</div>
+              <div class="comp-say" id="compSay">Ready when you are.</div>
+              <div class="comp-chips" id="compChips"></div>
             </div>
-            <div class="mgrid" id="mgrid"></div>
-          </div>
-        </section>
-
-        <!-- ---- PROJECTS (the hub-and-spoke of all Claude projects) ---- -->
-        <section class="view" data-view="projects">
-          <div class="deckstage" id="deckStage">
-            <svg class="deck-links" id="deckLinks" preserveAspectRatio="none"></svg>
-            <div class="deck-core" id="deckCore"><span class="dc-orb orb"></span><span class="dc-name">ORRIN</span><span class="dc-role">Voice Core · Router</span></div>
-            <div class="deck-nodes" id="deckNodes"></div>
+            <div class="atlas-hint" id="atlasHint">drag to explore · scroll to zoom</div>
+            <button class="atlas-recenter" id="atlasRecenter" title="Recenter">⌖</button>
           </div>
         </section>
 
