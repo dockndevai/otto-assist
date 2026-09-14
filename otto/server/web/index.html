@@ -38,6 +38,7 @@
 
       <nav class="side-nav">
         <button class="navbtn active" data-nav="home"><span class="ni">🏠</span> Home</button>
+        <button class="navbtn" data-nav="projects"><span class="ni">🛰</span> Projects</button>
         <button class="navbtn" data-nav="convo"><span class="ni">💬</span> Conversations<i class="ndot" id="dotConvo"></i></button>
         <button class="navbtn" data-nav="visuals"><span class="ni">🖼</span> Visuals<i class="ndot" id="dotVisuals"></i></button>
         <button class="navbtn" data-nav="skills"><span class="ni">✨</span> Skills</button>
@@ -71,15 +72,27 @@
       </header>
 
       <div class="content">
-        <!-- ---- HOME ---- -->
+        <!-- ---- HOME (clean assistant + a few live metrics; details live in other tabs) ---- -->
         <section class="view" data-view="home">
+          <div class="dash">
+            <div class="asst">
+              <div class="asst-top">Orrin Assistant</div>
+              <div class="asst-orbwrap"><span class="orb hero-orb asst-orb" id="homeOrb"></span></div>
+              <button class="asst-pill" id="homeTalk">Talk to Orrin</button>
+              <div class="asst-copy"><b id="asstHead">Ready when you are.</b>
+                <span id="asstSub">Say “Otto”, or tap Talk.</span></div>
+            </div>
+            <div class="mgrid" id="mgrid"></div>
+          </div>
+        </section>
+
+        <!-- ---- PROJECTS (the hub-and-spoke of all Claude projects) ---- -->
+        <section class="view" data-view="projects">
           <div class="deckstage" id="deckStage">
             <svg class="deck-links" id="deckLinks" preserveAspectRatio="none"></svg>
             <div class="deck-core" id="deckCore"><span class="dc-orb orb"></span><span class="dc-name">ORRIN</span><span class="dc-role">Voice Core · Router</span></div>
             <div class="deck-nodes" id="deckNodes"></div>
           </div>
-          <div class="hero" id="hero"></div>
-          <div class="grid" id="homeGrid"></div>
         </section>
 
         <!-- ---- VISUALS ---- -->
