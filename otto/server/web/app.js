@@ -280,8 +280,17 @@ function initHomeFX() { initCompanionCanvas(); initAtlasBg(); }
 function initCompanionCanvas() {
   const cv = $("compCanvas"); if (!cv || cv._on) return; cv._on = true;
   const ctx = cv.getContext("2d"); const DPR = Math.min(2, window.devicePixelRatio || 1);
-  const N = 340, P = [];
+  // Points on a fibonacci sphere, joined into a network (each to its nearest neighbours) —
+  // a rotating "vision graph" globe rather than loose dots.
+  const N = 240, P = [];
   for (let i = 0; i < N; i++) { const y = 1 - (i / (N - 1)) * 2; const r = Math.sqrt(1 - y * y); const t = i * 2.399963; P.push([Math.cos(t) * r, y, Math.sin(t) * r]); }
+  const edges = [], seen = new Set();
+  for (let i = 0; i < N; i++) {
+    const d = [];
+    for (let j = 0; j < N; j++) if (j !== i) d.push([P[i][0] * P[j][0] + P[i][1] * P[j][1] + P[i][2] * P[j][2], j]);
+    d.sort((a, b) => b[0] - a[0]);
+    for (let k = 0; k < 3; k++) { const j = d[k][1], key = i < j ? i + "_" + j : j + "_" + i; if (!seen.has(key)) { seen.add(key); edges.push([i, j]); } }
+  }
   let ang = 0;
   function frame() {
     const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
@@ -289,22 +298,25 @@ function initCompanionCanvas() {
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, size, size);
     const cx = size / 2, cy = size / 2, R = size * 0.44;
     const active = appEl.classList.contains("is-active");
-    ang += active ? 0.013 : 0.005;
+    ang += active ? 0.011 : 0.004;
     const ca = Math.cos(ang), sa = Math.sin(ang), ct = Math.cos(0.42), stt = Math.sin(0.42);
-    const proj = [];
-    for (const p of P) {
-      const x = p[0] * ca - p[2] * sa, z0 = p[0] * sa + p[2] * ca, y = p[1];
-      proj.push([x, y * ct - z0 * stt, y * stt + z0 * ct]);
+    const pr = P.map((p) => { const x = p[0] * ca - p[2] * sa, z0 = p[0] * sa + p[2] * ca, y = p[1]; return [x, y * ct - z0 * stt, y * stt + z0 * ct]; });
+    // network edges (depth-faded)
+    ctx.lineWidth = 1;
+    for (const [i, j] of edges) {
+      const a = pr[i], b = pr[j], depth = ((a[2] + b[2]) / 2 + 1) / 2;
+      ctx.beginPath(); ctx.moveTo(cx + a[0] * R, cy + a[1] * R); ctx.lineTo(cx + b[0] * R, cy + b[1] * R);
+      ctx.strokeStyle = `rgba(96,150,240,${0.03 + depth * 0.22})`; ctx.stroke();
     }
-    proj.sort((a, b) => a[2] - b[2]);
-    for (const p of proj) {
-      const depth = (p[2] + 1) / 2, x = cx + p[0] * R, y = cy + p[1] * R;
-      ctx.beginPath(); ctx.arc(x, y, 0.5 + depth * 1.7, 0, 7);
-      ctx.fillStyle = `rgba(${Math.round(110 + depth * 130)},${Math.round(200 + depth * 45)},255,${0.12 + depth * 0.8})`;
-      ctx.fill();
+    // nodes on top, back-to-front
+    const order = pr.map((_, i) => i).sort((i, j) => pr[i][2] - pr[j][2]);
+    for (const i of order) {
+      const p = pr[i], depth = (p[2] + 1) / 2, x = cx + p[0] * R, y = cy + p[1] * R;
+      ctx.beginPath(); ctx.arc(x, y, 0.6 + depth * 1.5, 0, 7);
+      ctx.fillStyle = `rgba(${Math.round(125 + depth * 125)},${Math.round(205 + depth * 45)},255,${0.18 + depth * 0.78})`; ctx.fill();
     }
     const gl = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
-    gl.addColorStop(0, `rgba(150,200,255,${active ? 0.3 : 0.18})`); gl.addColorStop(1, "rgba(150,200,255,0)");
+    gl.addColorStop(0, `rgba(150,200,255,${active ? 0.26 : 0.15})`); gl.addColorStop(1, "rgba(150,200,255,0)");
     ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
     if (!reduce) requestAnimationFrame(frame);
   }
