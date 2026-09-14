@@ -207,6 +207,43 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         asyncio.create_task(orch.switch_project(path))
         return JSONResponse({"ok": True})
 
+    @app.post("/api/say")
+    async def api_say(payload: dict) -> JSONResponse:
+        """Send Otto a line of text and (by default) wait for its spoken reply — so an
+        external voice front-end (a macOS/iOS Siri Shortcut that dictates the text) can drive
+        Otto without relying on Otto's own microphone. Otto also speaks the reply aloud on the
+        Mac as usual. Local (loopback) callers are allowed by the same guard as the dashboard;
+        remote callers need the bearer token."""
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "text required"}, status_code=400)
+        if not payload.get("wait", True):
+            orch.submit_user_input(text)
+            return JSONResponse({"ok": True})
+        # Subscribe BEFORE submitting so we don't miss the reply, then wait for the next
+        # assistant-final transcript (Otto's answer to this turn).
+        queue = bus.subscribe()
+        try:
+            orch.submit_user_input(text)
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + float(payload.get("timeout", 90))
+            reply = ""
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    ev = await asyncio.wait_for(queue.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                if (ev.get("type") == "transcript" and ev.get("role") == "assistant"
+                        and ev.get("final")):
+                    reply = ev.get("text") or ""
+                    break
+            return JSONResponse({"ok": True, "reply": reply})
+        finally:
+            bus.unsubscribe(queue)
+
     # -- parallel workspaces (each a project running its own Claude) -------
     @app.get("/api/workspaces")
     async def get_workspaces() -> JSONResponse:
