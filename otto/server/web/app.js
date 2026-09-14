@@ -53,6 +53,7 @@ function openChat() { appEl.classList.add("chat-open"); updateNavActive(); docum
 function closeChat() { appEl.classList.remove("chat-open"); updateNavActive(); }
 $("chatToggle").onclick = () => appEl.classList.contains("chat-open") ? closeChat() : openChat();
 $("chatClose").onclick = closeChat;
+{ const sb = $("settingsBtn"); if (sb) sb.onclick = () => showView(view === "settings" ? "home" : "settings"); }
 { const hb = $("hamburger"); if (hb) hb.onclick = () => appEl.classList.toggle("nav-open"); }
 { const sc = $("scrim"); if (sc) sc.onclick = () => appEl.classList.remove("nav-open"); }
 
