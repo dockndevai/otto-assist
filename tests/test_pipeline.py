@@ -144,6 +144,10 @@ def test_permission_routing():
         b = ClaudeBrain(ctx, s)
         s.brain.permission = "auto"
         assert isinstance(await b._permission("Bash", {"command": "ls"}, None), PermissionResultAllow)
+        # bypass (the default) allows even a write tool with no confirm — full-access session.
+        s.brain.permission = "bypass"
+        assert isinstance(await b._permission("Write", {"file_path": "/tmp/x", "content": "y"}, None),
+                          PermissionResultAllow)
         s.brain.permission = "deny"
         assert isinstance(await b._permission("Bash", {}, None), PermissionResultDeny)
         # Otto's own voice/screen tools are always allowed, even under deny.

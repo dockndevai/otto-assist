@@ -125,8 +125,8 @@
             <section class="sgroup"><h3>Brain</h3>
               <div class="two">
                 <label class="field"><span>Model</span><input id="setBrainModel" placeholder="Claude default" /></label>
-                <label class="field"><span>Permission prompts</span>
-                  <select id="setPerm"><option value="voice">voice — ask me</option><option value="auto">auto — approve</option><option value="deny">deny — reject</option></select></label>
+                <label class="field"><span>Session access level</span>
+                  <select id="setPerm"><option value="bypass">Full access — never asks</option><option value="voice">Ask me by voice</option><option value="deny">Read-only — block writes</option></select></label>
               </div>
               <label class="chk"><input type="checkbox" id="setContinue" /> Continue the project's latest session</label>
               <label class="chk"><input type="checkbox" id="setMcp" /> Expose Orrin as an MCP for Claude (/mcp)</label>

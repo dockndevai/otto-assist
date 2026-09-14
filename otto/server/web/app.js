@@ -238,7 +238,7 @@ function renderConstellation() {
   const subs = [
     { k: "sub", lab: "VOX", role: "Voice I/O", stat: outOn ? "ready" : "muted", sc: outOn ? "" : "i" },
     { k: "sub", lab: "MNEMO", role: "Memory", stat: (cfg.memory && cfg.memory.enabled === false) ? "off" : "on", sc: "" },
-    { k: "sub", lab: "SENTRY", role: "Permissions", stat: br.permission === "auto" ? "auto" : "guarding", sc: "" },
+    { k: "sub", lab: "SENTRY", role: "Permissions", stat: br.permission === "voice" ? "guarding" : br.permission === "deny" ? "read-only" : "full access", sc: "" },
     { k: "sub", lab: "RELAY", role: "Mobile Link", stat: remote ? "online" : "off", sc: remote ? "" : "i" },
   ];
   // Live workspaces (the real parallel Claude sessions), focused first, capped.
@@ -408,7 +408,7 @@ async function loadConfig() {
     $("setWake").value = s.wake_words ?? "otto"; $("setModel").value = s.model ?? "small.en";
     $("setMic").checked = v.input_enabled !== false; $("setSpeak").checked = v.output_enabled !== false;
     $("setTts").value = t.engine ?? "system"; $("setBrainModel").value = b.model ?? "";
-    $("setPerm").value = b.permission ?? "voice"; $("setContinue").checked = b.continue_conversation === true;
+    $("setPerm").value = (b.permission === "auto" ? "bypass" : (b.permission ?? "bypass")); $("setContinue").checked = b.continue_conversation === true;
     $("setMcp").checked = b.register_mcp !== false; $("setPath").textContent = r.path || "";
     $("muteMic").classList.toggle("off", v.input_enabled === false); $("muteVoice").classList.toggle("off", v.output_enabled === false);
     renderStats();

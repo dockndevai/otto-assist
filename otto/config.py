@@ -77,9 +77,12 @@ class ServerConfig(BaseModel):
 class BrainConfig(BaseModel):
     type: Literal["claude"] = "claude"          # pluggable brain; only Claude for now
     model: str = ""                             # "" -> use Claude's default model
-    # How to handle Claude's permission prompts for consequential tools:
-    #   voice -> Otto asks you aloud/on-screen; auto -> approve; deny -> reject
-    permission: Literal["voice", "auto", "deny"] = "voice"
+    # Session access level — how Otto handles Claude's permission prompts for consequential tools.
+    # Change it in the dashboard (Settings → Session access level). Default is full access so a
+    # voice/phone session isn't blocked mid-task waiting for a spoken yes.
+    #   bypass -> full access, never asks (SDK bypassPermissions); auto -> approve via callback;
+    #   voice  -> Otto asks you aloud/on-screen; deny -> reject writes (read-only).
+    permission: Literal["bypass", "auto", "voice", "deny"] = "bypass"
     project_dir: str = "~"                       # current project (the brain's cwd)
     projects: list[str] = Field(default_factory=list)   # pinned projects for the switcher
     # Last-used chat (Claude session id) per project path — so switching back to a project
