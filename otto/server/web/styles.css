@@ -531,3 +531,11 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
    companion's ray-ring; keep the glowing sphere + the project dots that carry meaning. */
 .topbar .hero-orb, #orb { display: none; }
 .hero-orb.comp-orb::before { display: none; }
+
+/* ===== Jarvis dotted sphere + vector backdrop (enterprise HUD) ===== */
+.atlas-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: .9; }
+.atlas-links { z-index: 1; } .atlas-nodes { z-index: 2; } .companion { z-index: 5; }
+.comp-canvas { width: 168px; height: 168px; display: block; filter: drop-shadow(0 0 26px color-mix(in srgb, var(--blue) 40%, transparent)); }
+/* a single crisp ring frames the sphere — enterprise, not glowy */
+.companion .comp-canvas { border-radius: 50%; }
+.comp-name { margin-top: 14px; letter-spacing: .34em; color: color-mix(in srgb, var(--ink) 90%, var(--blue)); }
