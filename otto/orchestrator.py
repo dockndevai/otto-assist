@@ -237,11 +237,90 @@ class Orchestrator:
 
     # A quick spoken acknowledgment the instant a command lands — so Otto feels alive and
     # responsive (Jarvis-style "On it"), and the wait for Claude's real reply isn't dead air.
-    _ACKS = ("On it.", "Sure.", "Got it.", "Let me check.", "One sec.", "Right away.", "Okay—")
+    # The ack is chosen to fit the intent: an action gets "On it.", a question gets a
+    # thinking beat, so it sounds like it actually understood you rather than a canned bark.
+    _ACKS_DO = ("On it.", "Right away.", "Sure thing.", "Got it.", "Okay—", "Consider it done.")
+    _ACKS_ASK = ("Let me check.", "One sec.", "Looking into it.", "Let me see.", "Checking.")
 
-    def _ack(self) -> None:
+    def _ack(self, intent: str = "command") -> None:
         import random
-        self._voice_out(random.choice(self._ACKS))
+        pool = self._ACKS_ASK if intent == "question" else self._ACKS_DO
+        self._voice_out(random.choice(pool))
+
+    # -- intent identification -------------------------------------------------
+    # Before doing any work, decide what KIND of thing you just said, so Otto reacts like a
+    # person would: chit-chat gets a warm instant reply (no Claude round-trip, no "On it."),
+    # a question gets a thinking ack + an answer, an action gets "On it." + the work.
+    _CASUAL_EXACT = {
+        "hi", "hey", "hello", "yo", "hiya", "hey there", "hi there", "hello there",
+        "good morning", "morning", "good afternoon", "good evening", "good night",
+        "goodnight", "night", "how are you", "how are you doing", "how's it going",
+        "hows it going", "how you doing", "what's up", "whats up", "sup", "you there",
+        "you awake", "are you there", "are you awake", "thanks", "thank you",
+        "thanks a lot", "thank you so much", "cheers", "ta", "much appreciated",
+        "nice", "cool", "great", "awesome", "perfect", "sweet", "lovely", "nice one",
+        "good job", "well done", "good work", "bye", "goodbye", "see you", "see ya",
+        "talk later", "later", "ok", "okay", "alright", "got it", "sounds good",
+        "never mind", "nevermind", "forget it", "no worries", "you good", "howdy",
+    }
+    _QUESTION_STARTS = (
+        "what", "why", "how", "when", "where", "who", "whom", "whose", "which",
+        "can you", "could you", "would you", "will you", "do you", "does", "did",
+        "is ", "are ", "am i", "should", "have you", "has ", "was ", "were ",
+        "tell me", "explain", "describe", "any idea", "do we", "is there", "are there",
+    )
+
+    def _classify_intent(self, text: str) -> str:
+        """Return 'casual' (chit-chat / social), 'question', or 'command' (an action to do).
+
+        Deliberately conservative: casual only fires on a whole-utterance social phrase, so a
+        real request that merely contains a greeting ("hi, open the repo") is never swallowed."""
+        norm = " ".join(_norm_words(text))
+        if not norm:
+            return "casual"
+        if norm in self._CASUAL_EXACT:
+            return "casual"
+        # A short social opener followed by nothing substantive ("hey otto" already stripped).
+        if len(norm.split()) <= 3 and norm.split()[0] in {
+                "hi", "hey", "hello", "yo", "thanks", "cheers", "bye", "morning", "howdy"}:
+            return "casual"
+        if text.strip().endswith("?") or norm.startswith(self._QUESTION_STARTS):
+            return "question"
+        return "command"
+
+    # Warm, instant, local replies for chit-chat — no Claude turn, so it feels alive and human
+    # instead of spinning up a full agent run just to say hello.
+    _CASUAL_REPLIES = {
+        "greet": ("Hey — what are we working on?", "Hi there. What can I do?",
+                  "Hey. Ready when you are.", "Yes? I'm here."),
+        "how": ("Doing great — ready when you are.", "All good here. What's up?",
+                "Running smooth. What do you need?"),
+        "thanks": ("Anytime.", "You got it.", "Happy to help.", "Of course."),
+        "praise": ("Thanks!", "Appreciated.", "Glad it landed."),
+        "bye": ("Talk soon.", "Catch you later.", "I'll be here."),
+        "ack": ("Okay.", "Got it.", "Sure."),
+    }
+
+    def _casual_reply(self, text: str) -> str:
+        import random
+        norm = " ".join(_norm_words(text))
+        if any(w in norm for w in ("thank", "cheers", "appreciat", "much oblig")):
+            key = "thanks"
+        elif any(w in norm for w in ("how are", "how's it", "hows it", "how you", "what's up",
+                                     "whats up", "sup", "you there", "you awake", "you good")):
+            key = "how"
+        elif any(w in norm for w in ("nice", "cool", "great", "awesome", "perfect", "sweet",
+                                     "lovely", "good job", "well done", "good work")):
+            key = "praise"
+        elif any(w in norm for w in ("bye", "goodbye", "see you", "see ya", "later", "goodnight",
+                                     "good night", "night")):
+            key = "bye"
+        elif norm.split() and norm.split()[0] in {"hi", "hey", "hello", "yo", "hiya", "howdy",
+                                                  "morning", "good"}:
+            key = "greet"
+        else:
+            key = "ack"
+        return random.choice(self._CASUAL_REPLIES[key])
 
     def _schedule_unmute(self) -> None:
         if self._loop is None:
@@ -1067,7 +1146,22 @@ class Orchestrator:
                     greet=self.settings.voice.stt.wake_greeting)
             return
         if self.settings.voice.stt.wakeword_backend == "efficientword":
-            return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
+            if self._eff is not None:
+                return   # wake handled acoustically by EffWakeWord -> greet + await; ignore rest
+            # The acoustic listener never came up (deps missing / failed to load). Don't go
+            # silently deaf: degrade to software phrase matching so speech is still acted on.
+            matched, remainder = self._match_wake(text)
+            print(f"[otto] heard (eff-fallback): {text!r} | matched={matched} cmd={remainder!r}",
+                  file=sys.stderr, flush=True)
+            if not matched:
+                if self.state == "listening":
+                    self._status("idle", "Ready")
+                return
+            if remainder.strip():
+                self._dispatch_voice_command(remainder)
+            else:
+                self._enter_awaiting_command(greet=self.settings.voice.stt.wake_greeting)
+            return
         self._dispatch_voice_command(text)
 
     # Utterances that put Otto to sleep (checked after stripping a leading greeting/wake word,
@@ -1115,15 +1209,34 @@ class Orchestrator:
         # lowest-intent context. After a deliberate wake word we stay snappy (no model call);
         # any junk that still slips through is caught by the dead-reply suppression on output.
         need_verify = hands_free and stt.hands_free_verify and not deliberate
+        # Intent first: react like a person, not a switch. Chit-chat ("hey", "how are you",
+        # "thanks") gets a warm INSTANT reply right here — no Claude round-trip, no "On it." —
+        # then a short hands-free window so you can keep talking. A question or an action flows
+        # on to Claude with an ack that fits what you asked. Dictation types verbatim, so it
+        # opts out of intent shaping.
+        intent = "command"
+        if not self._dictation:
+            intent = self._classify_intent(text)
+            if intent == "casual":
+                reply = self._casual_reply(text)
+                print(f"[otto] casual: {text!r} -> {reply!r}", file=sys.stderr, flush=True)
+                self.bus.transcript("user", text, final=True)
+                self.bus.transcript("assistant", reply, final=True)
+                self._status("idle", "Ready")
+                self._voice_out(reply)
+                # Keep the conversation open, hands-free — no need to say the wake word again.
+                self._enter_awaiting_command(greet=False, follow_up=True)
+                return
         if not stt.refine and not self._dictation and not need_verify:
-            self._ack(); self.submit_user_input(text)   # fast path — ack instantly, no model calls
+            self._ack(intent); self.submit_user_input(text)   # fast path — ack, no model calls
             return
         if self._loop is not None:
-            self._loop.create_task(self._dispatch_async(text, need_verify))
+            self._loop.create_task(self._dispatch_async(text, need_verify, intent))
         else:
             self.submit_user_input(text)
 
-    async def _dispatch_async(self, text: str, verify: bool = False) -> None:
+    async def _dispatch_async(self, text: str, verify: bool = False,
+                              intent: str = "command") -> None:
         if verify:
             try:
                 from .voice.noise import is_real_command
@@ -1150,7 +1263,7 @@ class Orchestrator:
             except Exception as e:
                 self.notify("Dictation error", str(e))
             return
-        self._ack(); self.submit_user_input(text)   # acknowledge, then run the turn
+        self._ack(intent); self.submit_user_input(text)   # acknowledge, then run the turn
 
     _DICTATION_ON = {"start dictation", "start dictating", "dictation mode",
                      "dictation on", "start typing", "type what i say"}

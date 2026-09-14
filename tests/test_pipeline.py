@@ -341,6 +341,61 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
 
 
+def test_classify_intent():
+    orch = Orchestrator(load_settings(), EventBus())
+    for t in ("hey", "hello", "how are you", "thanks", "good morning", "cool"):
+        assert orch._classify_intent(t) == "casual", t
+    for t in ("what time is it", "why did the build fail", "tell me about the project",
+              "is the server up?"):
+        assert orch._classify_intent(t) == "question", t
+    for t in ("open the repo", "create a new file", "fix the login bug", "run the tests"):
+        assert orch._classify_intent(t) == "command", t
+    # A real request that merely opens with a greeting is NOT swallowed as casual.
+    assert orch._classify_intent("hey open the repo") == "command"
+
+
+def test_casual_talk_replies_locally_without_claude():
+    """Chit-chat gets an instant local reply and opens a hands-free window — no Claude turn."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "phrase"
+        sent, said = [], []
+        orch.submit_user_input = lambda t: sent.append(t)
+        orch._voice_out = lambda t: said.append(t)
+        orch._dispatch_voice_command("how are you", deliberate=True)
+        assert sent == []                       # never bothered Claude
+        assert said and said[0]                 # spoke a reply
+        assert orch._awaiting_command is True    # conversation stays open, hands-free
+        # A real command still reaches Claude and gets an ack.
+        sent.clear(); said.clear()
+        orch._cancel_await()
+        orch._dispatch_voice_command("open the repo", deliberate=True)
+        assert sent == ["open the repo"]
+    asyncio.run(run())
+
+
+def test_efficientword_falls_back_to_phrase_when_listener_absent():
+    """If the acoustic wake listener never came up (deps missing), speech must not be dropped —
+    it degrades to software phrase matching instead of going deaf."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.wakeword_backend = "efficientword"
+        orch.settings.voice.stt.wake_words = "hey otto"
+        orch._eff = None                        # listener failed to load / not bundled
+        seen = {}
+        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        orch._voice_out = lambda t: None
+        orch._on_voice_final("hey otto open my email")
+        assert seen.get("cmd") == "open my email"
+        # Non-wake ambient speech is still ignored (not blindly dispatched).
+        seen.clear()
+        orch._on_voice_final("just talking to someone else")
+        assert "cmd" not in seen
+    asyncio.run(run())
+
+
 def test_pretrust_silero_vad_skips_prompt():
     """The ears must not hang on torch.hub's 'trust this repo? (y/N)' prompt in a
     non-interactive process (launchd/service) — that EOFErrors and leaves Otto deaf."""
