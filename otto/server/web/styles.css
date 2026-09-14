@@ -598,3 +598,20 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
 .brandorb { width: 38px; height: 38px; background: transparent !important; box-shadow: none !important;
   animation: none !important; filter: drop-shadow(0 0 9px color-mix(in srgb, var(--blue) 45%, transparent)); }
 .app.side-collapsed .brandorb { width: 42px; height: 42px; }
+
+/* ===== Header nav (sidebar removed) ===== */
+.app { grid-template-columns: 1fr; }
+.app.chat-open { grid-template-columns: 1fr 384px; }
+.topbar { display: flex !important; align-items: center; gap: 22px; grid-template-columns: none !important;
+  padding: 13px 24px 13px 20px; border-bottom: 1px solid var(--border); background: var(--bg-2); }
+.tb-brand { display: flex; align-items: center; gap: 10px; flex: none; }
+.tb-brand .brandorb { width: 30px !important; height: 30px !important; }
+.tb-brand .brandname { font-family: var(--font-disp); font-weight: 700; letter-spacing: .18em; text-transform: uppercase; font-size: 15px; color: var(--ink); }
+.topnav { display: flex; align-items: center; gap: 4px; }
+.topnav .navbtn { width: auto; padding: 8px 15px; border-radius: 10px; font-size: 13px; font-family: var(--font-mono);
+  letter-spacing: .04em; text-transform: none; }
+.topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.statuschip { display: flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 11px; white-space: nowrap; }
+.statuschip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+@media (max-width: 720px) { .tb-brand .brandname { display: none; } .topnav .navbtn { padding: 8px 10px; } .statuschip { display: none; } }
