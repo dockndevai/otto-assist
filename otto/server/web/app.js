@@ -621,6 +621,7 @@ tick(); setInterval(tick, 30000);
 // ---- Init ----
 loadConfig();
 renderSystem();
+initGraphSphere("brandOrb");   // the sidebar logo is a mini vision-graph sphere
 showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
