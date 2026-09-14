@@ -360,6 +360,62 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                              "facts": facts, "summary": summary,
                              "docs": docs, "doc_count": len(docs)})
 
+    # -- deck: live state for the Home constellation (all real, no static data) --
+    @app.get("/api/deck")
+    async def get_deck() -> JSONResponse:
+        from . import data
+        b = orch.settings.brain
+        v = orch.settings.voice
+        checks = {c.key: c.status for c in (orch.preflight_checks or [])}
+        # Live workspaces (the real parallel Claude sessions).
+        workspaces = [{"name": ws.name, "state": ws.state,
+                       "focused": ws.project == orch.focused}
+                      for ws in orch.workspaces.values()]
+        # Real memory size for this project.
+        facts = 0
+        try:
+            pj = orch.memory.project_dir(orch.current_project) / "project.md"
+            if pj.exists():
+                facts = sum(1 for ln in pj.read_text().splitlines()
+                            if ln.strip()[:2] in ("- ", "* "))
+        except Exception:
+            pass
+        try:
+            mcp = data.mcp_count(orch.focused)
+        except Exception:
+            mcp = 0
+        remote = orch.remote_clients
+        perm = b.permission
+        # Each subsystem's status is derived from LIVE state, never hardcoded.
+        subs = [
+            {"key": "vox", "label": "VOX", "role": "Voice I/O",
+             "status": (v.tts.engine if checks.get("voice_output") == "ok" else "off"),
+             "level": "ok" if checks.get("voice_output") == "ok" else "idle"},
+            {"key": "ears", "label": "EARS", "role": "Speech",
+             "status": (v.stt.model if checks.get("microphone") == "ok"
+                        else "blocked" if checks.get("microphone") == "bad" else "off"),
+             "level": "ok" if checks.get("microphone") == "ok" else "warn"},
+            {"key": "mnemo", "label": "MNEMO", "role": "Memory",
+             "status": (f"{facts} facts" if facts else "empty"),
+             "level": "ok" if facts else "idle"},
+            {"key": "sentry", "label": "SENTRY", "role": "Permissions",
+             "status": ("full access" if perm in ("bypass", "auto")
+                        else "read-only" if perm == "deny" else "guarding"),
+             "level": "ok"},
+            {"key": "relay", "label": "RELAY", "role": "Mobile Link",
+             "status": (f"{remote} live" if remote
+                        else "ready" if orch.settings.server.allow_remote else "off"),
+             "level": "ok" if remote else "idle"},
+            {"key": "nexus", "label": "NEXUS", "role": "Connectors",
+             "status": (f"{mcp} active" if mcp else "none"),
+             "level": "ok" if mcp else "idle"},
+        ]
+        return JSONResponse({
+            "project": {"name": Path(orch.current_project).name,
+                        "path": orch.current_project,
+                        "claude": checks.get("claude_test") == "ok"},
+            "workspaces": workspaces, "subsystems": subs})
+
     # -- dictation-anywhere toggle ----------------------------------------
     @app.get("/api/dictation")
     async def get_dictation() -> JSONResponse:
