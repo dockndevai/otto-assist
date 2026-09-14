@@ -341,6 +341,21 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
 
 
+def test_wake_word_buried_in_long_media_blob():
+    """When the mic captured a long run of media audio and the user said 'hey otto, do X' at
+    the end, the whole thing arrives as one huge utterance. Extract the command after the LAST
+    wake word — but only for abnormally long captures, so normal sentences still need a prefix."""
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.settings.voice.stt.wake_words = "hey otto"
+    filler = "the aircraft was loaded with over eleven thousand litres of fuel internally " * 3
+    blob = filler + "hey otto go check what the mcp server was"
+    matched, cmd = orch._match_wake(blob)
+    assert matched is True
+    assert cmd == "go check what the mcp server was"
+    # A short sentence mentioning the wake word mid-way is still NOT a trigger.
+    assert orch._match_wake("i told someone hey otto yesterday") == (False, "")
+
+
 def test_classify_intent():
     orch = Orchestrator(load_settings(), EventBus())
     for t in ("hey", "hello", "how are you", "thanks", "good morning", "cool"):
