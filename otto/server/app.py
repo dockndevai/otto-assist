@@ -236,8 +236,8 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     ev = await asyncio.wait_for(queue.get(), timeout=remaining)
                 except asyncio.TimeoutError:
                     break
-                if (ev.get("type") == "transcript" and ev.get("role") == "assistant"
-                        and ev.get("final")):
+                if (ev.get("type") == "transcript_final"
+                        and ev.get("role") == "assistant"):
                     reply = ev.get("text") or ""
                     break
             return JSONResponse({"ok": True, "reply": reply})
