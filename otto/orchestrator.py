@@ -235,6 +235,14 @@ class Orchestrator:
                 pass
             self._schedule_unmute()
 
+    # A quick spoken acknowledgment the instant a command lands — so Otto feels alive and
+    # responsive (Jarvis-style "On it"), and the wait for Claude's real reply isn't dead air.
+    _ACKS = ("On it.", "Sure.", "Got it.", "Let me check.", "One sec.", "Right away.", "Okay—")
+
+    def _ack(self) -> None:
+        import random
+        self._voice_out(random.choice(self._ACKS))
+
     def _schedule_unmute(self) -> None:
         if self._loop is None:
             return
@@ -1108,7 +1116,7 @@ class Orchestrator:
         # any junk that still slips through is caught by the dead-reply suppression on output.
         need_verify = hands_free and stt.hands_free_verify and not deliberate
         if not stt.refine and not self._dictation and not need_verify:
-            self.submit_user_input(text)          # fast path — no model calls
+            self._ack(); self.submit_user_input(text)   # fast path — ack instantly, no model calls
             return
         if self._loop is not None:
             self._loop.create_task(self._dispatch_async(text, need_verify))
@@ -1142,7 +1150,7 @@ class Orchestrator:
             except Exception as e:
                 self.notify("Dictation error", str(e))
             return
-        self.submit_user_input(text)
+        self._ack(); self.submit_user_input(text)   # acknowledge, then run the turn
 
     _DICTATION_ON = {"start dictation", "start dictating", "dictation mode",
                      "dictation on", "start typing", "type what i say"}
