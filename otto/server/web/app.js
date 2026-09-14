@@ -137,7 +137,7 @@ function handle(ev) {
     case "history_end": { replaying = false; const d = document.createElement("div"); d.className = "divider"; d.textContent = "— now —"; transcriptEl.appendChild(d); scroll(); return; }
     case "ask_user": openChat(); $("input").focus(); setMood("warn", 12000); return;
     case "project": setFocused(ev.path, ev.name || ev.path); return;
-    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); return;
+    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderConstellation(); return;
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
     case "mood": setMood(ev.level, 25000); return;
@@ -220,6 +220,60 @@ async function renderHome() {
   const qa = $("qactions");
   QUICK.forEach((q) => { const b = document.createElement("button"); b.className = "qbtn"; b.innerHTML = `<span class="qi">${q.i}</span>${escapeHtml(q.t)}`;
     b.onclick = () => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: q.p })); openChat(); } }; qa.appendChild(b); });
+  renderConstellation();
+}
+
+// ---- Deck constellation: subsystems + live workspaces as agent nodes wired to the core ----
+function renderConstellation() {
+  const stage = $("deckStage"), nodesEl = $("deckNodes"), links = $("deckLinks");
+  if (!stage || !nodesEl || !links) return;
+  const W = stage.clientWidth, H = stage.clientHeight;
+  if (!W || !H) return;
+  const coreX = 0.72 * W, coreY = 0.46 * H;
+
+  // Fixed subsystem nodes (derive live status where we can).
+  const v = cfg.voice || {}, br = cfg.brain || {}, sv = cfg.server || {};
+  const outOn = v.output_enabled !== false;
+  const remote = !!sv.allow_remote;
+  const subs = [
+    { k: "sub", lab: "VOX", role: "Voice I/O", stat: outOn ? "ready" : "muted", sc: outOn ? "" : "i" },
+    { k: "sub", lab: "MNEMO", role: "Memory", stat: (cfg.memory && cfg.memory.enabled === false) ? "off" : "on", sc: "" },
+    { k: "sub", lab: "SENTRY", role: "Permissions", stat: br.permission === "auto" ? "auto" : "guarding", sc: "" },
+    { k: "sub", lab: "RELAY", role: "Mobile Link", stat: remote ? "online" : "off", sc: remote ? "" : "i" },
+  ];
+  // Live workspaces (the real parallel Claude sessions), focused first, capped.
+  const wss = (lastWorkspaces || []).slice(0, 4).map((w) => ({
+    k: "ws", focus: w.project === focusedWs,
+    lab: (w.name || "chat").toUpperCase().slice(0, 10),
+    role: "Workspace",
+    stat: w.state && w.state !== "idle" ? w.state : "ready",
+    sc: w.state === "working" || w.state === "thinking" ? "w" : "",
+  }));
+  const list = wss.concat(subs);
+  const n = list.length;
+
+  // Spread nodes across a broad left-facing arc around the core.
+  const A0 = 96 * Math.PI / 180, A1 = 264 * Math.PI / 180;
+  const Rx = Math.min(W * 0.30, 300), Ry = H * 0.36;
+  let nhtml = "", lhtml =
+    '<defs><linearGradient id="dl" x1="0" y1="0" x2="1" y2="0">' +
+    '<stop offset="0" stop-color="var(--cyan)" stop-opacity="0"/>' +
+    '<stop offset="1" stop-color="var(--cyan)" stop-opacity=".5"/></linearGradient></defs>';
+  list.forEach((nd, i) => {
+    const a = A0 + (A1 - A0) * (n === 1 ? 0.5 : i / (n - 1));
+    let x = coreX + Rx * Math.cos(a), y = coreY + Ry * Math.sin(a);
+    x = Math.max(58, Math.min(W - 58, x)); y = Math.max(30, Math.min(H - 34, y));
+    const cls = "deck-node " + (nd.k === "sub" ? "sub" : "") + (nd.focus ? " focus" : "");
+    nhtml += `<div class="${cls}" style="left:${x}px;top:${y}px">` +
+      `<span class="np"></span><span class="nl">${escapeHtml(nd.lab)}</span>` +
+      `<span class="nr">${escapeHtml(nd.role)}</span>` +
+      `<span class="ns ${nd.sc}">${escapeHtml(nd.stat)}</span></div>`;
+    lhtml += `<line x1="${x}" y1="${y}" x2="${coreX}" y2="${coreY}" stroke="url(#dl)" stroke-width="1.1"/>`;
+    lhtml += `<circle r="2" fill="var(--cyan)"><animateMotion dur="${(3 + (i % 3)).toFixed(1)}s" repeatCount="indefinite" path="M ${x.toFixed(0)} ${y.toFixed(0)} L ${coreX.toFixed(0)} ${coreY.toFixed(0)}"/></circle>`;
+  });
+  links.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  links.innerHTML = lhtml;
+  nodesEl.innerHTML = nhtml;
 }
 
 async function renderSystem() {
@@ -411,6 +465,7 @@ showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
+let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") renderConstellation(); }, 150); });
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
 connect();
