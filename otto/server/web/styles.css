@@ -430,3 +430,6 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
 
 /* collapsed: show only the brand orb + fold toggle */
 .app.side-collapsed .brandtext { display: none; }
+
+/* centered hub for the project graph */
+.deck-core { left: 50%; }

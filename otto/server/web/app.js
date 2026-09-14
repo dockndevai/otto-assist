@@ -245,33 +245,31 @@ function drawConstellation() {
   if (!stage || !nodesEl || !links) return;
   const W = stage.clientWidth, H = stage.clientHeight;
   if (!W || !H) return;
-  const coreX = 0.72 * W, coreY = 0.46 * H;
-  const d = deckData || { workspaces: [], subsystems: [] };
-  const lvl = (l) => (l === "warn" ? "w" : l === "ok" ? "" : "i");
-  // Real workspaces (cyan) + real subsystems (violet) — nothing hardcoded.
-  const wss = (d.workspaces || []).slice(0, 8).map((w) => ({
-    sub: false, focus: !!w.focused, active: !!w.active,
-    lab: (w.name || "chat").toUpperCase().slice(0, 10),
-    role: "Workspace", stat: (w.state && w.state !== "idle") ? w.state : "ready",
-    sc: (w.state === "working" || w.state === "thinking") ? "w" : "", desc: w.desc || "" }));
-  const subs = (d.subsystems || []).map((s) => ({
-    sub: true, focus: false, active: !!s.active,
-    lab: s.label, role: s.role, stat: s.status, sc: lvl(s.level), desc: s.desc || "" }));
-  const list = wss.concat(subs);
+  const coreX = 0.5 * W, coreY = 0.47 * H;   // centered hub
+  const d = deckData || {};
+  // Nodes = all Claude projects going on (hub-and-spoke). Current is highlighted; a project with
+  // a live workspace pulses. Falls back to workspaces if the project list is unavailable.
+  let list = (d.projects || []).map((p) => ({
+    focus: !!p.current, active: !!p.active && !p.current,
+    lab: (p.name || "project").toUpperCase().slice(0, 15), role: "Project",
+    stat: p.current ? "current" : (p.active ? "open" : "idle"),
+    sc: (p.current || p.active) ? "" : "i", desc: p.desc || "" }));
+  if (!list.length) list = (d.workspaces || []).map((w) => ({
+    focus: !!w.focused, active: !!w.active, lab: (w.name || "chat").toUpperCase().slice(0, 15),
+    role: "Workspace", stat: w.state || "ready", sc: "", desc: w.desc || "" }));
   const n = list.length || 1;
 
-  // Spread nodes across a broad left-facing arc around the core.
-  const A0 = 96 * Math.PI / 180, A1 = 264 * Math.PI / 180;
-  const Rx = Math.min(W * 0.30, 300), Ry = H * 0.36;
+  // Arrange projects in a full circle around the centered core (hub-and-spoke).
+  const Rx = Math.min(W * 0.40, 400), Ry = H * 0.40;
   let nhtml = "", lhtml =
     '<defs><linearGradient id="dl" x1="0" y1="0" x2="1" y2="0">' +
     '<stop offset="0" stop-color="var(--cyan)" stop-opacity="0"/>' +
     '<stop offset="1" stop-color="var(--cyan)" stop-opacity=".5"/></linearGradient></defs>';
   list.forEach((nd, i) => {
-    const a = A0 + (A1 - A0) * (n === 1 ? 0.5 : i / (n - 1));
+    const a = -Math.PI / 2 + i * 2 * Math.PI / n;   // start at top, go around
     let x = coreX + Rx * Math.cos(a), y = coreY + Ry * Math.sin(a);
-    x = Math.max(58, Math.min(W - 58, x)); y = Math.max(30, Math.min(H - 34, y));
-    const cls = "deck-node " + (nd.sub ? "sub" : "") + (nd.focus ? " focus" : "") + (nd.active ? " active" : "");
+    x = Math.max(62, Math.min(W - 62, x)); y = Math.max(30, Math.min(H - 34, y));
+    const cls = "deck-node " + (nd.focus ? " focus" : "") + (nd.active ? " active" : "");
     const tip = `<span class="deck-tip"><span class="tt">${escapeHtml(nd.lab)}</span>` +
       (nd.desc ? `<span class="td">${escapeHtml(nd.desc)}</span>` : "") +
       `<span class="ts">${escapeHtml(nd.role)} · ${escapeHtml(nd.stat)}</span></span>`;
