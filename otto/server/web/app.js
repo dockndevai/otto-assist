@@ -209,7 +209,7 @@ let atlasPan = { x: 0, y: 0, s: 1 }; // pan offset (px) + zoom scale
 
 async function renderAtlas() {       // fetch live projects, lay them out, draw + refresh companion
   try { deckData = await (await fetch("/api/deck")).json(); } catch (_) {}
-  layoutAtlas(); drawAtlas(); buildChips();
+  layoutAtlas(); drawAtlas(); buildChips(); initHomeFX();
   const say = $("compSay"), d = deckData || {}, pj = d.project || {};
   if (say && !say.dataset.live) say.textContent = pj.claude
     ? `Everything's connected — working in ${pj.name || "your project"}.`
@@ -272,6 +272,70 @@ function buildChips() {
 function setCompSay(text) {
   const el = $("compSay"); if (!el || !text) return;
   el.dataset.live = "1"; el.textContent = text.length > 160 ? text.slice(0, 158) + "…" : text;
+}
+
+// Jarvis-style dotted particle sphere for the companion + a subtle vector backdrop.
+function initHomeFX() { initCompanionCanvas(); initAtlasBg(); }
+
+function initCompanionCanvas() {
+  const cv = $("compCanvas"); if (!cv || cv._on) return; cv._on = true;
+  const ctx = cv.getContext("2d"); const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const N = 340, P = [];
+  for (let i = 0; i < N; i++) { const y = 1 - (i / (N - 1)) * 2; const r = Math.sqrt(1 - y * y); const t = i * 2.399963; P.push([Math.cos(t) * r, y, Math.sin(t) * r]); }
+  let ang = 0;
+  function frame() {
+    const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+    const size = cv.clientWidth || 168; if (cv.width !== Math.round(size * DPR)) cv.width = cv.height = Math.round(size * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, size, size);
+    const cx = size / 2, cy = size / 2, R = size * 0.44;
+    const active = appEl.classList.contains("is-active");
+    ang += active ? 0.013 : 0.005;
+    const ca = Math.cos(ang), sa = Math.sin(ang), ct = Math.cos(0.42), stt = Math.sin(0.42);
+    const proj = [];
+    for (const p of P) {
+      const x = p[0] * ca - p[2] * sa, z0 = p[0] * sa + p[2] * ca, y = p[1];
+      proj.push([x, y * ct - z0 * stt, y * stt + z0 * ct]);
+    }
+    proj.sort((a, b) => a[2] - b[2]);
+    for (const p of proj) {
+      const depth = (p[2] + 1) / 2, x = cx + p[0] * R, y = cy + p[1] * R;
+      ctx.beginPath(); ctx.arc(x, y, 0.5 + depth * 1.7, 0, 7);
+      ctx.fillStyle = `rgba(${Math.round(110 + depth * 130)},${Math.round(200 + depth * 45)},255,${0.12 + depth * 0.8})`;
+      ctx.fill();
+    }
+    const gl = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    gl.addColorStop(0, `rgba(150,200,255,${active ? 0.3 : 0.18})`); gl.addColorStop(1, "rgba(150,200,255,0)");
+    ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.fill();
+    if (!reduce) requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+function initAtlasBg() {
+  const cv = $("atlasBg"); if (!cv || cv._on) return; cv._on = true;
+  const ctx = cv.getContext("2d"); const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const parts = [];
+  for (let i = 0; i < 42; i++) parts.push({ x: Math.random(), y: Math.random(), s: 0.4 + Math.random() * 1.3, vx: (Math.random() - 0.5) * 0.0006, vy: (Math.random() - 0.5) * 0.0006 });
+  let t = 0;
+  function frame() {
+    const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
+    const W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) { requestAnimationFrame(frame); return; }
+    if (cv.width !== Math.round(W * DPR)) { cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR); }
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, W, H);
+    const cx = W / 2, cy = H * 0.46, gap = 36;
+    ctx.fillStyle = "rgba(140,152,220,0.05)";
+    for (let x = cx % gap; x < W; x += gap) for (let y = cy % gap; y < H; y += gap) ctx.fillRect(x, y, 1.4, 1.4);
+    const maxR = Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy));
+    for (let i = 0; i < 3; i++) {
+      const ph = ((t / 260) + i / 3) % 1, R = ph * maxR;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7);
+      ctx.strokeStyle = `rgba(124,108,246,${0.14 * (1 - ph)})`; ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(150,170,240,0.22)";
+    for (const p of parts) { p.x += p.vx; p.y += p.vy; if (p.x < 0) p.x = 1; if (p.x > 1) p.x = 0; if (p.y < 0) p.y = 1; if (p.y > 1) p.y = 0; ctx.beginPath(); ctx.arc(p.x * W, p.y * H, p.s, 0, 7); ctx.fill(); }
+    t++; if (!reduce) requestAnimationFrame(frame);
+  }
+  frame();
 }
 
 // Pan (drag) + zoom (wheel) on the atlas; the companion stays fixed at center.
