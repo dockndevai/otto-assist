@@ -526,3 +526,8 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
   cursor: pointer; font-size: 16px; }
 .atlas-recenter:hover { color: var(--ink); border-color: var(--focus); }
 @media (prefers-reduced-motion: reduce) { .anode.active .ap::after { animation: none; } }
+
+/* Fewer circles: drop the redundant top-bar orb (the companion is the one orb) and the
+   companion's ray-ring; keep the glowing sphere + the project dots that carry meaning. */
+.topbar .hero-orb, #orb { display: none; }
+.hero-orb.comp-orb::before { display: none; }
