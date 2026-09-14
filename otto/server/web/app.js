@@ -31,7 +31,7 @@ function setMood(level, ms) { if (!MOODS.includes(level)) level = "info"; moodOv
 setInterval(applyMood, 1500);
 
 // ---- Nav / views / chat drawer / hamburger ----
-const MAIN_VIEWS = ["home", "visuals", "skills", "mcp", "settings"];
+const MAIN_VIEWS = ["home", "visuals", "settings"];   // visuals not in nav; kept for render_canvas
 function showView(name) {
   if (name === "convo") { openChat(); return; }
   view = name;
@@ -53,8 +53,8 @@ function openChat() { appEl.classList.add("chat-open"); updateNavActive(); docum
 function closeChat() { appEl.classList.remove("chat-open"); updateNavActive(); }
 $("chatToggle").onclick = () => appEl.classList.contains("chat-open") ? closeChat() : openChat();
 $("chatClose").onclick = closeChat;
-$("hamburger").onclick = () => appEl.classList.toggle("nav-open");
-$("scrim").onclick = () => appEl.classList.remove("nav-open");
+{ const hb = $("hamburger"); if (hb) hb.onclick = () => appEl.classList.toggle("nav-open"); }
+{ const sc = $("scrim"); if (sc) sc.onclick = () => appEl.classList.remove("nav-open"); }
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -615,7 +615,7 @@ function lerp(a, b, t) { return a.map((v, i) => Math.round(v + (b[i] - v) * t));
 
 // ---- Greeting + clock ----
 function greeting() { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; }
-function tick() { $("greet").textContent = greeting(); }
+function tick() { const g = $("greet"); if (g) g.textContent = greeting(); const wg = $("wsGreet"); if (wg && view === "home") wg.textContent = greeting(); }
 tick(); setInterval(tick, 30000);
 
 // ---- Init ----
@@ -630,13 +630,9 @@ let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conT
 setInterval(() => { if (view === "home") renderWorkspace(); }, 15000);   // refresh live state
 { const ht = $("homeTalk"); if (ht) ht.onclick = () => { const m = $("mic"); if (m) m.click(); }; }   // Talk pill → mic
 
-// Foldable sidebar (persisted). Collapsing changes the stage width, so redraw the constellation.
-try { if (localStorage.getItem("otto-side") === "1") appEl.classList.add("side-collapsed"); } catch (e) {}
-{ const sf = $("sideFold"); if (sf) sf.onclick = () => {
-    const on = appEl.classList.toggle("side-collapsed");
-    try { localStorage.setItem("otto-side", on ? "1" : "0"); } catch (e) {}
-    /* workspace reflows via CSS */
-  }; }
+// Sidebar was removed (header nav now); clear any stale collapse flag so header nav shows.
+try { localStorage.removeItem("otto-side"); } catch (e) {}
+appEl.classList.remove("side-collapsed");
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
 connect();
