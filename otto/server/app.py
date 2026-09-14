@@ -369,7 +369,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         checks = {c.key: c.status for c in (orch.preflight_checks or [])}
         # Live workspaces (the real parallel Claude sessions).
         workspaces = [{"name": ws.name, "state": ws.state,
-                       "focused": ws.project == orch.focused}
+                       "focused": ws.project == orch.focused,
+                       "active": ws.state in ("working", "thinking", "speaking"),
+                       "desc": f"Workspace “{ws.name}” — a parallel Claude session, "
+                               f"currently {ws.state}."}
                       for ws in orch.workspaces.values()]
         # Real memory size for this project.
         facts = 0
@@ -390,25 +393,33 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         subs = [
             {"key": "vox", "label": "VOX", "role": "Voice I/O",
              "status": (v.tts.engine if checks.get("voice_output") == "ok" else "off"),
-             "level": "ok" if checks.get("voice_output") == "ok" else "idle"},
+             "level": "ok" if checks.get("voice_output") == "ok" else "idle",
+             "desc": "Text-to-speech — the voice Orrin speaks replies with."},
             {"key": "ears", "label": "EARS", "role": "Speech",
              "status": (v.stt.model if checks.get("microphone") == "ok"
                         else "blocked" if checks.get("microphone") == "bad" else "off"),
-             "level": "ok" if checks.get("microphone") == "ok" else "warn"},
+             "level": "ok" if checks.get("microphone") == "ok" else "warn",
+             "desc": "Speech-to-text — the Whisper model that hears you; needs the microphone."},
             {"key": "mnemo", "label": "MNEMO", "role": "Memory",
              "status": (f"{facts} facts" if facts else "empty"),
-             "level": "ok" if facts else "idle"},
+             "level": "ok" if facts else "idle",
+             "desc": "Persistent memory — what Orrin remembers about this project across sessions."},
             {"key": "sentry", "label": "SENTRY", "role": "Permissions",
              "status": ("full access" if perm in ("bypass", "auto")
                         else "read-only" if perm == "deny" else "guarding"),
-             "level": "ok"},
+             "level": "ok",
+             "desc": "Access guard — how much Orrin can do without asking. Change it in Settings."},
             {"key": "relay", "label": "RELAY", "role": "Mobile Link",
              "status": (f"{remote} live" if remote
                         else "ready" if orch.settings.server.allow_remote else "off"),
-             "level": "ok" if remote else "idle"},
+             "level": "ok" if remote else "idle", "active": bool(remote),
+             "desc": ("Phone connected — talking to Orrin remotely." if remote
+                      else "Mobile link — connect the phone app to talk from anywhere."
+                      if orch.settings.server.allow_remote else "Mobile link is off.")},
             {"key": "nexus", "label": "NEXUS", "role": "Connectors",
              "status": (f"{mcp} active" if mcp else "none"),
-             "level": "ok" if mcp else "idle"},
+             "level": "ok" if mcp else "idle",
+             "desc": "MCP connectors — the external tools Claude can use in this session."},
         ]
         return JSONResponse({
             "project": {"name": Path(orch.current_project).name,

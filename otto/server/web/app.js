@@ -249,12 +249,14 @@ function drawConstellation() {
   const d = deckData || { workspaces: [], subsystems: [] };
   const lvl = (l) => (l === "warn" ? "w" : l === "ok" ? "" : "i");
   // Real workspaces (cyan) + real subsystems (violet) — nothing hardcoded.
-  const wss = (d.workspaces || []).slice(0, 4).map((w) => ({
-    sub: false, focus: !!w.focused, lab: (w.name || "chat").toUpperCase().slice(0, 10),
+  const wss = (d.workspaces || []).slice(0, 8).map((w) => ({
+    sub: false, focus: !!w.focused, active: !!w.active,
+    lab: (w.name || "chat").toUpperCase().slice(0, 10),
     role: "Workspace", stat: (w.state && w.state !== "idle") ? w.state : "ready",
-    sc: (w.state === "working" || w.state === "thinking") ? "w" : "" }));
+    sc: (w.state === "working" || w.state === "thinking") ? "w" : "", desc: w.desc || "" }));
   const subs = (d.subsystems || []).map((s) => ({
-    sub: true, focus: false, lab: s.label, role: s.role, stat: s.status, sc: lvl(s.level) }));
+    sub: true, focus: false, active: !!s.active,
+    lab: s.label, role: s.role, stat: s.status, sc: lvl(s.level), desc: s.desc || "" }));
   const list = wss.concat(subs);
   const n = list.length || 1;
 
@@ -269,11 +271,14 @@ function drawConstellation() {
     const a = A0 + (A1 - A0) * (n === 1 ? 0.5 : i / (n - 1));
     let x = coreX + Rx * Math.cos(a), y = coreY + Ry * Math.sin(a);
     x = Math.max(58, Math.min(W - 58, x)); y = Math.max(30, Math.min(H - 34, y));
-    const cls = "deck-node " + (nd.sub ? "sub" : "") + (nd.focus ? " focus" : "");
+    const cls = "deck-node " + (nd.sub ? "sub" : "") + (nd.focus ? " focus" : "") + (nd.active ? " active" : "");
+    const tip = `<span class="deck-tip"><span class="tt">${escapeHtml(nd.lab)}</span>` +
+      (nd.desc ? `<span class="td">${escapeHtml(nd.desc)}</span>` : "") +
+      `<span class="ts">${escapeHtml(nd.role)} · ${escapeHtml(nd.stat)}</span></span>`;
     nhtml += `<div class="${cls}" style="left:${x}px;top:${y}px">` +
       `<span class="np"></span><span class="nl">${escapeHtml(nd.lab)}</span>` +
       `<span class="nr">${escapeHtml(nd.role)}</span>` +
-      `<span class="ns ${nd.sc}">${escapeHtml(nd.stat)}</span></div>`;
+      `<span class="ns ${nd.sc}">${escapeHtml(nd.stat)}</span>${tip}</div>`;
     lhtml += `<line x1="${x}" y1="${y}" x2="${coreX}" y2="${coreY}" stroke="url(#dl)" stroke-width="1.1"/>`;
     lhtml += `<circle r="2" fill="var(--cyan)"><animateMotion dur="${(3 + (i % 3)).toFixed(1)}s" repeatCount="indefinite" path="M ${x.toFixed(0)} ${y.toFixed(0)} L ${coreX.toFixed(0)} ${coreY.toFixed(0)}"/></circle>`;
   });
@@ -477,6 +482,14 @@ setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
 let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") drawConstellation(); }, 150); });
 setInterval(() => { if (view === "home") renderConstellation(); }, 15000);   // refresh live node state
+
+// Foldable sidebar (persisted). Collapsing changes the stage width, so redraw the constellation.
+try { if (localStorage.getItem("otto-side") === "1") appEl.classList.add("side-collapsed"); } catch (e) {}
+{ const sf = $("sideFold"); if (sf) sf.onclick = () => {
+    const on = appEl.classList.toggle("side-collapsed");
+    try { localStorage.setItem("otto-side", on ? "1" : "0"); } catch (e) {}
+    if (view === "home") setTimeout(drawConstellation, 230);
+  }; }
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
 connect();
