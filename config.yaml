@@ -11,9 +11,10 @@ server:
 brain:
   type: claude
   model: ""                    # blank = use Claude's default model
-  # How Claude's permission prompts (for consequential tools) are handled:
-  #   voice -> Otto asks you   |   auto -> approve   |   deny -> reject
-  permission: voice
+  # Session access level (change it in Settings → Session access level):
+  #   bypass -> full access, never asks   |   voice -> Otto asks you
+  #   auto -> approve via callback        |   deny -> read-only (block writes)
+  permission: bypass
   project_dir: "~"             # current project = the brain's working directory
   projects: []                 # pinned projects for the menu-bar switcher
   extra_dirs: []               # extra readable dirs beyond the project (~ expanded)

@@ -142,7 +142,10 @@ class ClaudeBrain:
             cwd=(self._cwd or str(self.settings.project_path)),
             add_dirs=extra_dirs,
             include_partial_messages=True,
-            permission_mode="default",
+            # Full-access sessions skip the SDK's own gating too; other levels go through the
+            # default flow where can_use_tool (_permission) asks/allows/denies per the setting.
+            permission_mode=("bypassPermissions"
+                             if b.permission in ("bypass", "auto") else "default"),
             **session_opts,
             **({"model": b.model} if b.model else {}),
         )
@@ -184,7 +187,7 @@ class ClaudeBrain:
         if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
             return PermissionResultAllow()
         mode = self.settings.brain.permission
-        if mode == "auto":
+        if mode in ("bypass", "auto"):
             return PermissionResultAllow()
         if mode == "deny":
             return PermissionResultDeny(message="Denied by Otto's permission setting.")
