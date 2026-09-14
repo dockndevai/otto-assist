@@ -136,7 +136,7 @@ function handle(ev) {
     case "history_start": { replaying = true; const w = win(curKey()); w.msgs = []; w.cur = null; transcriptEl.innerHTML = ""; partialUser = assistantBubble = null; return; }
     case "history_end": { replaying = false; const d = document.createElement("div"); d.className = "divider"; d.textContent = "— now —"; transcriptEl.appendChild(d); scroll(); return; }
     case "ask_user": openChat(); $("input").focus(); setMood("warn", 12000); return;
-    case "project": setFocused(ev.path, ev.name || ev.path); return;
+    case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderHome(); return;
     case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderConstellation(); return;
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
@@ -205,9 +205,20 @@ async function renderWeather() {
 async function renderHome() {
   renderWeather();
   const grid = $("homeGrid"); if (!grid) return;
-  let gh = null;
+  let gh = null, mem = null;
   try { gh = (await (await fetch("/api/github")).json()).github; } catch (_) {}
+  try { mem = await (await fetch("/api/memory")).json(); } catch (_) {}
   let html = "";
+  if (mem) {   // what Orrin remembers about the project it's working on now
+    const facts = (mem.facts || []).slice(-6).reverse();
+    const rows = facts.length
+      ? facts.map((f) => `<div class="memrow">${escapeHtml(f)}</div>`).join("")
+      : `<div class="memempty">Nothing remembered yet — talk to Orrin and it builds up.</div>`;
+    const docs = mem.doc_count ? `<div class="memdocs">📄 ${mem.doc_count} saved ${mem.doc_count === 1 ? "note" : "notes"}</div>` : "";
+    html += `<div class="card memcard"><div class="card-head"><b>🧠 Project Memory</b>` +
+      `<span class="memproj">📁 ${escapeHtml(mem.name || "—")}</span></div>` +
+      `<div class="memfacts">${rows}</div>${docs}</div>`;
+  }
   if (gh) {
     html += `<div class="card"><div class="card-head"><b>🐙 GitHub Activity</b></div><div class="ph">` +
       `<div class="ph-row"><span class="gh-n">${gh.open_prs}</span><div><b>Open PRs</b><span>${escapeHtml(gh.repo)}</span></div></div>` +
@@ -274,6 +285,9 @@ function renderConstellation() {
   links.setAttribute("viewBox", `0 0 ${W} ${H}`);
   links.innerHTML = lhtml;
   nodesEl.innerHTML = nhtml;
+  // The core reflects the project Orrin is currently working in.
+  const role = document.querySelector("#deckCore .dc-role");
+  if (role) role.textContent = (projName && projName !== "—") ? ("📁 " + projName) : "Voice Core · Router";
 }
 
 async function renderSystem() {
