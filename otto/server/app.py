@@ -437,11 +437,31 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                              else f"Claude project · {p.path}")})
         except Exception:
             pass
+        # Real 7-day activity (turns per day) for the current project — for the trend card.
+        import time as _t
+        activity = [0] * 7
+        try:
+            now = _t.time()
+            tp = orch.memory.project_dir(orch.current_project) / "turns.jsonl"
+            if tp.exists():
+                for ln in tp.read_text().splitlines():
+                    try:
+                        ts = json.loads(ln).get("ts", 0)
+                    except Exception:
+                        continue
+                    day = int((now - ts) // 86400)
+                    if 0 <= day < 7:
+                        activity[6 - day] += 1
+        except Exception:
+            pass
+        stats = {"projects": len(projects), "connectors": mcp,
+                 "workspaces": len(orch.workspaces), "facts": facts,
+                 "activity": activity}
         return JSONResponse({
             "project": {"name": Path(orch.current_project).name,
                         "path": orch.current_project,
                         "claude": checks.get("claude_test") == "ok"},
-            "projects": projects[:10],
+            "projects": projects[:10], "stats": stats,
             "workspaces": workspaces, "subsystems": subs})
 
     # -- dictation-anywhere toggle ----------------------------------------
