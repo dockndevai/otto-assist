@@ -585,3 +585,11 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
 .wbars { display: flex; align-items: flex-end; gap: 8px; height: 84px; margin-top: auto; }
 .wbars i { flex: 1; background: linear-gradient(180deg, var(--purple), color-mix(in srgb, var(--blue) 55%, transparent)); border-radius: 4px 4px 0 0; min-height: 6px; }
 @media (max-width: 900px) { .ws-grid { grid-template-columns: 1fr; } }
+
+/* Remove the sidebar push-to-talk mic circle — Talk lives in the home chip + the listening bar.
+   (#mic stays in the DOM, hidden, so those still trigger it.) */
+.side-ptt { display: none; }
+/* Collapsed sidebar: stack the brand orb over the fold toggle so the orb isn't clipped. */
+.app.side-collapsed .side-brand { flex-direction: column; gap: 10px; }
+.app.side-collapsed .sidefold { margin-left: 0; }
+.app.side-collapsed .brandorb { flex: none; }
