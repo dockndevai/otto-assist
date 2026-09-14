@@ -334,3 +334,33 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
   .chatdrawer { width: 100vw !important; max-width: 100vw !important; }
 }
 @media (min-width: 821px) { .ham { display: none; } }
+
+/* ===== Deck constellation (Home centerpiece) — agent nodes wired to the core ===== */
+.deckstage { position: relative; height: 340px; margin: 0 0 16px; border-radius: 18px;
+  border: 1px solid var(--border); overflow: hidden;
+  background:
+    radial-gradient(60% 70% at 72% 46%, color-mix(in srgb, var(--cyan) 12%, transparent), transparent 62%),
+    radial-gradient(50% 60% at 12% 84%, color-mix(in srgb, var(--purple) 16%, transparent), transparent 60%),
+    linear-gradient(180deg, var(--card), var(--card-2)); }
+.deck-links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+.deck-core { position: absolute; left: 72%; top: 46%; transform: translate(-50%,-50%); z-index: 3;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.deck-core .dc-orb { width: 72px; height: 72px; }
+.deck-core .dc-name { font-family: var(--font-disp); font-weight: 700; letter-spacing: .22em; font-size: 15px; margin-top: 8px; }
+.deck-core .dc-role { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .28em; font-size: 9px; color: var(--cyan); }
+.deck-node { position: absolute; transform: translate(-50%,-50%); z-index: 4;
+  display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; width: 116px; }
+.deck-node .np { width: 12px; height: 12px; border-radius: 50%; background: var(--cyan); position: relative;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cyan) 12%, transparent), 0 0 14px color-mix(in srgb, var(--cyan) 60%, transparent); }
+.deck-node.sub .np { background: var(--purple); box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 12%, transparent), 0 0 14px color-mix(in srgb, var(--purple) 60%, transparent); }
+.deck-node.focus .np { background: #fff; box-shadow: 0 0 0 5px color-mix(in srgb, var(--cyan) 22%, transparent), 0 0 20px var(--cyan); }
+.deck-node .np::after { content: ""; position: absolute; inset: -8px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--cyan) 30%, transparent); animation: nodeping 3.2s ease-out infinite; }
+.deck-node.sub .np::after { border-color: color-mix(in srgb, var(--purple) 34%, transparent); }
+.deck-node .nl { font-family: var(--font-disp); font-weight: 600; letter-spacing: .2em; font-size: 12px; color: var(--text); }
+.deck-node .nr { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .16em; font-size: 8.5px; color: var(--dim); }
+.deck-node .ns { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .1em; font-size: 8.5px; color: var(--ok); }
+.deck-node .ns.w { color: var(--warn); } .deck-node .ns.i { color: var(--dim); }
+@keyframes nodeping { 0% { transform: scale(.7); opacity: .8; } 70%,100% { transform: scale(2); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .deck-node .np::after { animation: none; } }
+@media (max-width: 900px) { .deckstage { height: 300px; } .deck-node { width: 92px; } .deck-node .nr { display: none; } }
