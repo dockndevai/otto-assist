@@ -73,18 +73,24 @@
       <div class="content">
         <!-- ---- HOME: Orrin as a living presence inside a pannable map of your projects ---- -->
         <section class="view" data-view="home">
-          <div class="atlas" id="atlas">
-            <canvas class="atlas-bg" id="atlasBg"></canvas>
-            <svg class="atlas-links" id="atlasLinks"></svg>
-            <div class="atlas-nodes" id="atlasNodes"></div>
-            <div class="companion" id="companion">
-              <canvas class="comp-canvas" id="compCanvas"></canvas>
-              <div class="comp-name">ORRIN</div>
-              <div class="comp-say" id="compSay">Ready when you are.</div>
-              <div class="comp-chips" id="compChips"></div>
+          <div class="ws">
+            <canvas class="ws-bg" id="wsBg"></canvas>
+            <div class="ws-hero">
+              <canvas class="ws-orb" id="wsOrb" width="140" height="140"></canvas>
+              <div class="ws-greet"><h2 id="wsGreet">Good afternoon</h2><p id="wsSay">Ready when you are.</p></div>
             </div>
-            <div class="atlas-hint" id="atlasHint">drag to explore · scroll to zoom</div>
-            <button class="atlas-recenter" id="atlasRecenter" title="Recenter">⌖</button>
+            <form class="cmdbar" id="cmdbar">
+              <span class="cmd-ic">⌘</span>
+              <input id="cmdInput" autocomplete="off" placeholder="Ask Orrin, or say what to build…" />
+              <button type="submit" class="cmd-send" title="Send">➤</button>
+            </form>
+            <div class="ws-chips" id="wsChips"></div>
+            <div class="ws-grid">
+              <section class="wpanel"><div class="wp-h"><span>Recent chats</span></div><div class="wp-body" id="wpRecent"></div></section>
+              <section class="wpanel"><div class="wp-h"><span>Active project</span><span class="wp-badge" id="wpProjName">—</span></div><div class="wp-body" id="wpProject"></div></section>
+              <section class="wpanel"><div class="wp-h"><span>Projects</span><span class="wp-badge" id="wpProjCount"></span></div><div class="wp-body" id="wpProjects"></div></section>
+              <section class="wpanel"><div class="wp-h"><span>Activity</span><span class="wp-sub" id="wpActSub"></span></div><div class="wp-body" id="wpActivity"></div></section>
+            </div>
           </div>
         </section>
 
