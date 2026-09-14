@@ -31,7 +31,7 @@ function setMood(level, ms) { if (!MOODS.includes(level)) level = "info"; moodOv
 setInterval(applyMood, 1500);
 
 // ---- Nav / views / chat drawer / hamburger ----
-const MAIN_VIEWS = ["home", "visuals", "skills", "mcp", "settings"];
+const MAIN_VIEWS = ["home", "projects", "visuals", "skills", "mcp", "settings"];
 function showView(name) {
   if (name === "convo") { openChat(); return; }
   view = name;
@@ -39,6 +39,7 @@ function showView(name) {
   updateNavActive();
   const nav = document.querySelector(`.navbtn[data-nav="${name}"]`); if (nav) nav.classList.remove("unread");
   if (name === "home") renderHome();
+  if (name === "projects") renderConstellation();
   if (name === "settings") { loadConfig(); loadProjects(); loadVoices(); }
   if (window.innerWidth <= 820) appEl.classList.remove("nav-open");
 }
@@ -202,36 +203,44 @@ async function renderWeather() {
      </div>`;
 }
 
+// Clean home: the assistant + a few live metric cards. Details live in other tabs.
 async function renderHome() {
-  renderWeather();
-  const grid = $("homeGrid"); if (!grid) return;
-  let gh = null, mem = null;
-  try { gh = (await (await fetch("/api/github")).json()).github; } catch (_) {}
-  try { mem = await (await fetch("/api/memory")).json(); } catch (_) {}
-  let html = "";
-  if (mem) {   // what Orrin remembers about the project it's working on now
-    const facts = (mem.facts || []).slice(-6).reverse();
-    const rows = facts.length
-      ? facts.map((f) => `<div class="memrow">${escapeHtml(f)}</div>`).join("")
-      : `<div class="memempty">Nothing remembered yet — talk to Orrin and it builds up.</div>`;
-    const docs = mem.doc_count ? `<div class="memdocs">📄 ${mem.doc_count} saved ${mem.doc_count === 1 ? "note" : "notes"}</div>` : "";
-    html += `<div class="card memcard"><div class="card-head"><b>🧠 Project Memory</b>` +
-      `<span class="memproj">📁 ${escapeHtml(mem.name || "—")}</span></div>` +
-      `<div class="memfacts">${rows}</div>${docs}</div>`;
-  }
-  if (gh) {
-    html += `<div class="card"><div class="card-head"><b>🐙 GitHub Activity</b></div><div class="ph">` +
-      `<div class="ph-row"><span class="gh-n">${gh.open_prs}</span><div><b>Open PRs</b><span>${escapeHtml(gh.repo)}</span></div></div>` +
-      `<div class="ph-row"><span class="gh-n">${gh.issues_assigned}</span><div><b>Issues assigned to you</b><span>this week</span></div></div>` +
-      `<div class="ph-row"><span class="gh-n">${gh.recent_commits}</span><div><b>Recent commits</b><span>last 7 days</span></div></div>` +
-      `</div><a class="cardbtn" href="${escapeHtml(gh.url)}" target="_blank" rel="noopener">Open GitHub ↗</a></div>`;
-  }
-  html += `<div class="card"><div class="card-head"><b>⚡ Quick Actions</b></div><div class="qlist" id="qactions"></div></div>`;
-  grid.innerHTML = html;
-  const qa = $("qactions");
-  QUICK.forEach((q) => { const b = document.createElement("button"); b.className = "qbtn"; b.innerHTML = `<span class="qi">${q.i}</span>${escapeHtml(q.t)}`;
-    b.onclick = () => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: q.p })); openChat(); } }; qa.appendChild(b); });
-  renderConstellation();
+  let d = {}; try { d = await (await fetch("/api/deck")).json(); } catch (_) {}
+  const s = d.stats || {}, pj = d.project || {};
+  const head = $("asstHead"), sub = $("asstSub");
+  if (head) head.textContent = pj.claude ? "Everything's connected." : "Ready when you are.";
+  if (sub) sub.textContent = (pj.name ? "📁 " + pj.name + "  ·  " : "") +
+    `${s.projects || 0} projects · ${s.connectors || 0} connectors · ${s.facts || 0} memories`;
+  const g = $("mgrid"); if (!g) return;
+
+  const act = (s.activity && s.activity.length) ? s.activity : [0, 0, 0, 0, 0, 0, 0];
+  const maxA = Math.max(1, ...act), turns = act.reduce((a, b) => a + b, 0);
+  const projs = d.projects || [];
+  const pbars = projs.slice(0, 10).map((p) =>
+    `<i class="${p.current ? "cur" : p.active ? "act" : ""}" style="height:${p.current ? 100 : p.active ? 68 : 34}%"></i>`).join("");
+  const conn = s.connectors || 0, dpct = Math.min(100, conn / 8 * 100);
+  const facts = s.facts || 0, gmax = Math.max(20, Math.ceil((facts + 1) / 10) * 10), gpct = Math.min(1, facts / gmax);
+  const W = 300, Hh = 60;
+  const pts = act.map((v, i) => [8 + i * (W - 16) / (act.length - 1), Hh - 8 - (v / maxA) * (Hh - 18)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(0) + " " + p[1].toFixed(0)).join(" ");
+  const area = `${line} L ${pts[pts.length - 1][0].toFixed(0)} ${Hh} L ${pts[0][0].toFixed(0)} ${Hh} Z`;
+
+  g.innerHTML =
+    `<div class="mcard"><div class="mc-h"><span>Claude projects</span><i class="mc-ic">🛰</i></div>
+       <div class="mc-big">${s.projects || 0}</div><div class="mc-bars">${pbars}</div></div>` +
+    `<div class="mcard center"><div class="mc-h"><span>Connectors</span></div>
+       <div class="donut" style="--p:${dpct.toFixed(0)}"><span>${conn}</span></div>
+       <div class="mc-cap">MCP active</div></div>` +
+    `<div class="mcard center"><div class="mc-h"><span>Memory</span></div>
+       <svg class="gauge" viewBox="0 0 120 66"><defs><linearGradient id="gg" x1="0" y1="0" x2="1" y2="0">
+         <stop offset="0" stop-color="var(--blue)"/><stop offset="1" stop-color="var(--purple)"/></linearGradient></defs>
+       <path d="M12 60 A48 48 0 0 1 108 60" fill="none" stroke="var(--fill)" stroke-width="9" stroke-linecap="round"/>
+       <path d="M12 60 A48 48 0 0 1 108 60" fill="none" stroke="url(#gg)" stroke-width="9" stroke-linecap="round" stroke-dasharray="${(gpct * 150).toFixed(0)} 999"/></svg>
+       <div class="mc-gval">${facts}<small>facts</small></div></div>` +
+    `<div class="mcard wide"><div class="mc-h"><span>Activity</span><span class="mc-sub">last 7 days · ${turns} turns</span></div>
+       <svg class="spark" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none"><defs>
+         <linearGradient id="sp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--purple)" stop-opacity=".45"/><stop offset="1" stop-color="var(--purple)" stop-opacity="0"/></linearGradient></defs>
+       <path d="${area}" fill="url(#sp)"/><path d="${line}" fill="none" stroke="var(--purple)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
 }
 
 // ---- Deck constellation: every node is live data from /api/deck (no static values) ----
@@ -478,8 +487,9 @@ showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
-let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") drawConstellation(); }, 150); });
-setInterval(() => { if (view === "home") renderConstellation(); }, 15000);   // refresh live node state
+let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "projects") drawConstellation(); }, 150); });
+setInterval(() => { if (view === "home") renderHome(); else if (view === "projects") renderConstellation(); }, 15000);   // refresh live state
+{ const ht = $("homeTalk"); if (ht) ht.onclick = () => { const m = $("mic"); if (m) m.click(); }; }   // Talk pill → mic
 
 // Foldable sidebar (persisted). Collapsing changes the stage width, so redraw the constellation.
 try { if (localStorage.getItem("otto-side") === "1") appEl.classList.add("side-collapsed"); } catch (e) {}
