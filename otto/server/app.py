@@ -132,7 +132,13 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     or _authed(request.headers, request.query_params.get("token"))):
                 return JSONResponse({"error": "forbidden: cross-origin request blocked"},
                                     status_code=403)
-        return await call_next(request)
+        resp = await call_next(request)
+        # Never let the in-app WKWebView serve a stale dashboard/asset after an update — each
+        # rebuild changes app.js/styles.css at the same URL, so cache them 'no-store'.
+        p = request.url.path
+        if p == "/" or p == "/settings" or p.startswith("/static"):
+            resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        return resp
 
     @app.get("/")
     async def index() -> FileResponse:
