@@ -476,3 +476,53 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
 .mc-gval small { font-family: var(--font-mono); font-size: 10px; font-weight: 400; color: var(--muted); margin-left: 5px; letter-spacing: .08em; }
 .spark { width: 100%; height: 66px; margin-top: auto; }
 @media (max-width: 900px) { .dash { grid-template-columns: 1fr; } }
+
+/* ===== Home: Companion (living presence) inside a pannable Atlas of projects ===== */
+.atlas { position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden;
+  border-radius: 20px; border: 1px solid var(--line); cursor: grab; touch-action: none;
+  background:
+    radial-gradient(60% 55% at 50% 46%, color-mix(in srgb, var(--purple) 14%, transparent), transparent 70%),
+    radial-gradient(40% 40% at 12% 88%, color-mix(in srgb, var(--blue) 14%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--card), var(--card-2)); }
+.atlas.grabbing { cursor: grabbing; }
+.atlas-links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+.atlas-nodes { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+
+/* project node in the map */
+.anode { position: absolute; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  pointer-events: auto; cursor: default; }
+.anode .ap { width: 13px; height: 13px; border-radius: 50%; background: var(--blue); position: relative;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 12%, transparent), 0 0 14px color-mix(in srgb, var(--blue) 55%, transparent); }
+.anode.current .ap { background: #fff; box-shadow: 0 0 0 5px color-mix(in srgb, var(--purple) 24%, transparent), 0 0 22px var(--purple); }
+.anode.active .ap { background: var(--warn); box-shadow: 0 0 0 5px color-mix(in srgb, var(--warn) 20%, transparent), 0 0 20px var(--warn); }
+.anode.active .ap::after { content: ""; position: absolute; inset: -7px; border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); animation: nodeping 2.6s ease-out infinite; }
+.anode .al2 { font-family: var(--font-disp); font-weight: 600; font-size: 12px; letter-spacing: .06em; color: var(--ink); white-space: nowrap; }
+.anode .as { font-family: var(--font-mono); font-size: 8.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--good); }
+.anode .as.i { color: var(--faint, var(--dim)); }
+
+/* the companion — fixed at centre, always readable */
+.companion { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%); z-index: 5;
+  display: flex; flex-direction: column; align-items: center; text-align: center; pointer-events: none; width: min(360px, 80%); }
+.comp-orb { width: 132px !important; height: 132px !important;
+  background: radial-gradient(circle at 42% 34%, #ffffff 2%, #d6e4ff 15%, var(--blue) 52%, var(--purple) 100%) !important;
+  box-shadow: 0 0 66px color-mix(in srgb, var(--purple) 50%, transparent), inset 0 0 34px rgba(255,255,255,.22) !important; }
+.hero-orb.comp-orb::before { inset: -20px; opacity: .55;
+  background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--blue) 60%, transparent) 0deg 1.4deg, transparent 1.4deg 6deg); }
+.comp-name { font-family: var(--disp, var(--font-disp)); font-weight: 700; letter-spacing: .28em; font-size: 13px; margin-top: 12px; color: var(--ink); }
+.comp-say { margin-top: 8px; font-size: 15px; line-height: 1.45; color: var(--muted); max-width: 340px;
+  background: color-mix(in srgb, var(--surface, var(--card)) 82%, transparent); border: 1px solid var(--line);
+  border-radius: 14px; padding: 9px 14px; backdrop-filter: blur(6px); }
+.comp-chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 12px; pointer-events: auto; }
+.chip { border: 1px solid color-mix(in srgb, var(--purple) 30%, var(--line)); background: color-mix(in srgb, var(--purple) 10%, transparent);
+  color: var(--ink); border-radius: 999px; padding: 7px 14px; cursor: pointer; font-family: var(--font-mono);
+  font-size: 11px; letter-spacing: .04em; }
+.chip:hover { background: color-mix(in srgb, var(--purple) 20%, transparent); }
+
+.atlas-hint { position: absolute; left: 16px; bottom: 12px; z-index: 4; font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint, var(--dim)); pointer-events: none; }
+.atlas-recenter { position: absolute; right: 14px; bottom: 12px; z-index: 6; width: 34px; height: 34px;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--surface, var(--card)); color: var(--muted);
+  cursor: pointer; font-size: 16px; }
+.atlas-recenter:hover { color: var(--ink); border-color: var(--focus); }
+@media (prefers-reduced-motion: reduce) { .anode.active .ap::after { animation: none; } }
