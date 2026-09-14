@@ -250,11 +250,19 @@ kbd { font: inherit; }
 .ghostbtn:hover { color: var(--text); border-color: var(--focus); }
 .transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .transcript:empty::after { content: "Say “Otto”, tap Talk, or type below."; color: var(--muted); font-size: 13px; }
-.msg { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px 13px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
-.msg .who { display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 3px; }
-.msg .who b { color: var(--purple); } .msg .who .t { color: var(--muted); }
-.msg.user { background: color-mix(in srgb, var(--cyan) 9%, var(--card)); border-color: color-mix(in srgb, var(--cyan) 30%, var(--border)); }
-.msg.user .who b { color: var(--cyan); } .msg.partial { opacity: .55; font-style: italic; }
+/* Deck chat bubbles — Otto left (cyan), You right (violet), mono call-sign labels. */
+.msg { max-width: 86%; align-self: flex-start;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--cyan) 8%, var(--card)), var(--card-2));
+  border: 1px solid color-mix(in srgb, var(--cyan) 22%, var(--border)); border-radius: 14px;
+  padding: 10px 14px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+.msg .who { display: flex; justify-content: space-between; gap: 10px; font-family: var(--font-mono);
+  font-size: 9px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 4px; }
+.msg .who b { color: var(--cyan); font-weight: 600; } .msg .who .t { color: var(--dim); }
+.msg.user { align-self: flex-end;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--purple) 16%, var(--card)), var(--card-2));
+  border-color: color-mix(in srgb, var(--purple) 34%, var(--border)); }
+.msg.user .who b { color: var(--purple); }
+.msg.partial { opacity: .55; font-style: italic; }
 .tool { align-self: flex-start; font-size: 10px; color: var(--muted); background: var(--fill-2); border: 1px solid var(--border); border-radius: 20px; padding: 3px 11px; } .tool b { color: var(--cyan); }
 .divider { align-self: center; font-size: 9px; letter-spacing: 2px; color: var(--muted); text-transform: uppercase; opacity: .6; }
 .cd-composer { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border); }
