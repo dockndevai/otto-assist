@@ -234,34 +234,29 @@ async function renderHome() {
   renderConstellation();
 }
 
-// ---- Deck constellation: subsystems + live workspaces as agent nodes wired to the core ----
-function renderConstellation() {
+// ---- Deck constellation: every node is live data from /api/deck (no static values) ----
+let deckData = null;
+async function renderConstellation() {   // fetch fresh live state, then draw
+  try { deckData = await (await fetch("/api/deck")).json(); } catch (_) {}
+  drawConstellation();
+}
+function drawConstellation() {
   const stage = $("deckStage"), nodesEl = $("deckNodes"), links = $("deckLinks");
   if (!stage || !nodesEl || !links) return;
   const W = stage.clientWidth, H = stage.clientHeight;
   if (!W || !H) return;
   const coreX = 0.72 * W, coreY = 0.46 * H;
-
-  // Fixed subsystem nodes (derive live status where we can).
-  const v = cfg.voice || {}, br = cfg.brain || {}, sv = cfg.server || {};
-  const outOn = v.output_enabled !== false;
-  const remote = !!sv.allow_remote;
-  const subs = [
-    { k: "sub", lab: "VOX", role: "Voice I/O", stat: outOn ? "ready" : "muted", sc: outOn ? "" : "i" },
-    { k: "sub", lab: "MNEMO", role: "Memory", stat: (cfg.memory && cfg.memory.enabled === false) ? "off" : "on", sc: "" },
-    { k: "sub", lab: "SENTRY", role: "Permissions", stat: br.permission === "voice" ? "guarding" : br.permission === "deny" ? "read-only" : "full access", sc: "" },
-    { k: "sub", lab: "RELAY", role: "Mobile Link", stat: remote ? "online" : "off", sc: remote ? "" : "i" },
-  ];
-  // Live workspaces (the real parallel Claude sessions), focused first, capped.
-  const wss = (lastWorkspaces || []).slice(0, 4).map((w) => ({
-    k: "ws", focus: w.project === focusedWs,
-    lab: (w.name || "chat").toUpperCase().slice(0, 10),
-    role: "Workspace",
-    stat: w.state && w.state !== "idle" ? w.state : "ready",
-    sc: w.state === "working" || w.state === "thinking" ? "w" : "",
-  }));
+  const d = deckData || { workspaces: [], subsystems: [] };
+  const lvl = (l) => (l === "warn" ? "w" : l === "ok" ? "" : "i");
+  // Real workspaces (cyan) + real subsystems (violet) — nothing hardcoded.
+  const wss = (d.workspaces || []).slice(0, 4).map((w) => ({
+    sub: false, focus: !!w.focused, lab: (w.name || "chat").toUpperCase().slice(0, 10),
+    role: "Workspace", stat: (w.state && w.state !== "idle") ? w.state : "ready",
+    sc: (w.state === "working" || w.state === "thinking") ? "w" : "" }));
+  const subs = (d.subsystems || []).map((s) => ({
+    sub: true, focus: false, lab: s.label, role: s.role, stat: s.status, sc: lvl(s.level) }));
   const list = wss.concat(subs);
-  const n = list.length;
+  const n = list.length || 1;
 
   // Spread nodes across a broad left-facing arc around the core.
   const A0 = 96 * Math.PI / 180, A1 = 264 * Math.PI / 180;
@@ -274,7 +269,7 @@ function renderConstellation() {
     const a = A0 + (A1 - A0) * (n === 1 ? 0.5 : i / (n - 1));
     let x = coreX + Rx * Math.cos(a), y = coreY + Ry * Math.sin(a);
     x = Math.max(58, Math.min(W - 58, x)); y = Math.max(30, Math.min(H - 34, y));
-    const cls = "deck-node " + (nd.k === "sub" ? "sub" : "") + (nd.focus ? " focus" : "");
+    const cls = "deck-node " + (nd.sub ? "sub" : "") + (nd.focus ? " focus" : "");
     nhtml += `<div class="${cls}" style="left:${x}px;top:${y}px">` +
       `<span class="np"></span><span class="nl">${escapeHtml(nd.lab)}</span>` +
       `<span class="nr">${escapeHtml(nd.role)}</span>` +
@@ -285,9 +280,10 @@ function renderConstellation() {
   links.setAttribute("viewBox", `0 0 ${W} ${H}`);
   links.innerHTML = lhtml;
   nodesEl.innerHTML = nhtml;
-  // The core reflects the project Orrin is currently working in.
+  // The core reflects the project Orrin is currently working in (live from /api/deck).
   const role = document.querySelector("#deckCore .dc-role");
-  if (role) role.textContent = (projName && projName !== "—") ? ("📁 " + projName) : "Voice Core · Router";
+  const pname = (d.project && d.project.name) || (projName !== "—" ? projName : null);
+  if (role) role.textContent = pname ? ("📁 " + pname) : "Voice Core · Router";
 }
 
 async function renderSystem() {
@@ -479,7 +475,8 @@ showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
-let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") renderConstellation(); }, 150); });
+let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") drawConstellation(); }, 150); });
+setInterval(() => { if (view === "home") renderConstellation(); }, 15000);   // refresh live node state
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
 connect();
