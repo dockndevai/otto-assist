@@ -31,15 +31,14 @@ function setMood(level, ms) { if (!MOODS.includes(level)) level = "info"; moodOv
 setInterval(applyMood, 1500);
 
 // ---- Nav / views / chat drawer / hamburger ----
-const MAIN_VIEWS = ["home", "projects", "visuals", "skills", "mcp", "settings"];
+const MAIN_VIEWS = ["home", "visuals", "skills", "mcp", "settings"];
 function showView(name) {
   if (name === "convo") { openChat(); return; }
   view = name;
   document.querySelectorAll(".view").forEach((s) => (s.hidden = s.dataset.view !== name));
   updateNavActive();
   const nav = document.querySelector(`.navbtn[data-nav="${name}"]`); if (nav) nav.classList.remove("unread");
-  if (name === "home") renderHome();
-  if (name === "projects") renderConstellation();
+  if (name === "home") renderAtlas();
   if (name === "settings") { loadConfig(); loadProjects(); loadVoices(); }
   if (window.innerWidth <= 820) appEl.classList.remove("nav-open");
 }
@@ -137,12 +136,12 @@ function handle(ev) {
     case "history_start": { replaying = true; const w = win(curKey()); w.msgs = []; w.cur = null; transcriptEl.innerHTML = ""; partialUser = assistantBubble = null; return; }
     case "history_end": { replaying = false; const d = document.createElement("div"); d.className = "divider"; d.textContent = "— now —"; transcriptEl.appendChild(d); scroll(); return; }
     case "ask_user": openChat(); $("input").focus(); setMood("warn", 12000); return;
-    case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderHome(); return;
-    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderConstellation(); return;
+    case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderAtlas(); return;
+    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderAtlas(); return;
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
     case "mood": setMood(ev.level, 25000); return;
-    case "session": { chatName = ev.title || "New chat"; renderStats(); if (view === "home") renderHome();
+    case "session": { chatName = ev.title || "New chat"; renderStats(); if (view === "home") renderAtlas();
       if (appEl.classList.contains("chat-open") && !$("chatMgr").hidden) (chatScope === "all") ? loadAllSessions($("chatSearch").value) : loadSessions(); return; }
     case "canvas_render": { const k = keyOf(ev), w = win(k); w.canvas = { content: ev.content, format: ev.format };
       if (k === curKey()) { showCanvas(ev.content, ev.format); markNavUnread("visuals"); } else { w.unread = true; } return; }
@@ -164,7 +163,7 @@ function ingestMsg(ev) {
         if (live) { if (partialUser) { partialUser.className = "msg user"; partialUser._body.textContent = ev.text; partialUser = null; } else bubble("user", ev.text);
           setCaption(ev.text, "user"); captionHideTimer = setTimeout(() => setCaption("", ""), 2600); setTopic(ev.text); } }
       else { const text = ev.text || w.cur || ""; w.cur = null; w.msgs.push({ role: "assistant", text });
-        if (live) { if (assistantBubble) { assistantBubble._body.textContent = text; assistantBubble = null; } else bubble("assistant", text); if (ALERT_RE.test(text)) setMood("warn", 7000); } }
+        if (live) { if (assistantBubble) { assistantBubble._body.textContent = text; assistantBubble = null; } else bubble("assistant", text); if (ALERT_RE.test(text)) setMood("warn", 7000); setCompSay(text); } }
       break;
     case "assistant_delta": w.cur = (w.cur || "") + ev.text;
       if (live) { if (!assistantBubble) assistantBubble = bubble("assistant", ""); assistantBubble._body.textContent = w.cur; scroll(); } break;
@@ -203,100 +202,105 @@ async function renderWeather() {
      </div>`;
 }
 
-// Clean home: the assistant + a few live metric cards. Details live in other tabs.
-async function renderHome() {
-  let d = {}; try { d = await (await fetch("/api/deck")).json(); } catch (_) {}
-  const s = d.stats || {}, pj = d.project || {};
-  const head = $("asstHead"), sub = $("asstSub");
-  if (head) head.textContent = pj.claude ? "Everything's connected." : "Ready when you are.";
-  if (sub) sub.textContent = (pj.name ? "📁 " + pj.name + "  ·  " : "") +
-    `${s.projects || 0} projects · ${s.connectors || 0} connectors · ${s.facts || 0} memories`;
-  const g = $("mgrid"); if (!g) return;
-
-  const act = (s.activity && s.activity.length) ? s.activity : [0, 0, 0, 0, 0, 0, 0];
-  const maxA = Math.max(1, ...act), turns = act.reduce((a, b) => a + b, 0);
-  const projs = d.projects || [];
-  const pbars = projs.slice(0, 10).map((p) =>
-    `<i class="${p.current ? "cur" : p.active ? "act" : ""}" style="height:${p.current ? 100 : p.active ? 68 : 34}%"></i>`).join("");
-  const conn = s.connectors || 0, dpct = Math.min(100, conn / 8 * 100);
-  const facts = s.facts || 0, gmax = Math.max(20, Math.ceil((facts + 1) / 10) * 10), gpct = Math.min(1, facts / gmax);
-  const W = 300, Hh = 60;
-  const pts = act.map((v, i) => [8 + i * (W - 16) / (act.length - 1), Hh - 8 - (v / maxA) * (Hh - 18)]);
-  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(0) + " " + p[1].toFixed(0)).join(" ");
-  const area = `${line} L ${pts[pts.length - 1][0].toFixed(0)} ${Hh} L ${pts[0][0].toFixed(0)} ${Hh} Z`;
-
-  g.innerHTML =
-    `<div class="mcard"><div class="mc-h"><span>Claude projects</span><i class="mc-ic">🛰</i></div>
-       <div class="mc-big">${s.projects || 0}</div><div class="mc-bars">${pbars}</div></div>` +
-    `<div class="mcard center"><div class="mc-h"><span>Connectors</span></div>
-       <div class="donut" style="--p:${dpct.toFixed(0)}"><span>${conn}</span></div>
-       <div class="mc-cap">MCP active</div></div>` +
-    `<div class="mcard center"><div class="mc-h"><span>Memory</span></div>
-       <svg class="gauge" viewBox="0 0 120 66"><defs><linearGradient id="gg" x1="0" y1="0" x2="1" y2="0">
-         <stop offset="0" stop-color="var(--blue)"/><stop offset="1" stop-color="var(--purple)"/></linearGradient></defs>
-       <path d="M12 60 A48 48 0 0 1 108 60" fill="none" stroke="var(--fill)" stroke-width="9" stroke-linecap="round"/>
-       <path d="M12 60 A48 48 0 0 1 108 60" fill="none" stroke="url(#gg)" stroke-width="9" stroke-linecap="round" stroke-dasharray="${(gpct * 150).toFixed(0)} 999"/></svg>
-       <div class="mc-gval">${facts}<small>facts</small></div></div>` +
-    `<div class="mcard wide"><div class="mc-h"><span>Activity</span><span class="mc-sub">last 7 days · ${turns} turns</span></div>
-       <svg class="spark" viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none"><defs>
-         <linearGradient id="sp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--purple)" stop-opacity=".45"/><stop offset="1" stop-color="var(--purple)" stop-opacity="0"/></linearGradient></defs>
-       <path d="${area}" fill="url(#sp)"/><path d="${line}" fill="none" stroke="var(--purple)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
-}
-
-// ---- Deck constellation: every node is live data from /api/deck (no static values) ----
+// ---- Companion + Atlas: Orrin as a living presence inside a pannable map of your projects ----
 let deckData = null;
-async function renderConstellation() {   // fetch fresh live state, then draw
-  try { deckData = await (await fetch("/api/deck")).json(); } catch (_) {}
-  drawConstellation();
-}
-function drawConstellation() {
-  const stage = $("deckStage"), nodesEl = $("deckNodes"), links = $("deckLinks");
-  if (!stage || !nodesEl || !links) return;
-  const W = stage.clientWidth, H = stage.clientHeight;
-  if (!W || !H) return;
-  const coreX = 0.5 * W, coreY = 0.47 * H;   // centered hub
-  const d = deckData || {};
-  // Nodes = all Claude projects going on (hub-and-spoke). Current is highlighted; a project with
-  // a live workspace pulses. Falls back to workspaces if the project list is unavailable.
-  let list = (d.projects || []).map((p) => ({
-    focus: !!p.current, active: !!p.active && !p.current,
-    lab: (p.name || "project").toUpperCase().slice(0, 15), role: "Project",
-    stat: p.current ? "current" : (p.active ? "open" : "idle"),
-    sc: (p.current || p.active) ? "" : "i", desc: p.desc || "" }));
-  if (!list.length) list = (d.workspaces || []).map((w) => ({
-    focus: !!w.focused, active: !!w.active, lab: (w.name || "chat").toUpperCase().slice(0, 15),
-    role: "Workspace", stat: w.state || "ready", sc: "", desc: w.desc || "" }));
-  const n = list.length || 1;
+let atlasWorld = [];                 // project nodes in world coordinates (spatial memory)
+let atlasPan = { x: 0, y: 0, s: 1 }; // pan offset (px) + zoom scale
 
-  // Arrange projects in a full circle around the centered core (hub-and-spoke).
-  const Rx = Math.min(W * 0.40, 400), Ry = H * 0.40;
-  let nhtml = "", lhtml =
-    '<defs><linearGradient id="dl" x1="0" y1="0" x2="1" y2="0">' +
-    '<stop offset="0" stop-color="var(--cyan)" stop-opacity="0"/>' +
-    '<stop offset="1" stop-color="var(--cyan)" stop-opacity=".5"/></linearGradient></defs>';
-  list.forEach((nd, i) => {
-    const a = -Math.PI / 2 + i * 2 * Math.PI / n;   // start at top, go around
-    let x = coreX + Rx * Math.cos(a), y = coreY + Ry * Math.sin(a);
-    x = Math.max(62, Math.min(W - 62, x)); y = Math.max(30, Math.min(H - 34, y));
-    const cls = "deck-node " + (nd.focus ? " focus" : "") + (nd.active ? " active" : "");
-    const tip = `<span class="deck-tip"><span class="tt">${escapeHtml(nd.lab)}</span>` +
-      (nd.desc ? `<span class="td">${escapeHtml(nd.desc)}</span>` : "") +
-      `<span class="ts">${escapeHtml(nd.role)} · ${escapeHtml(nd.stat)}</span></span>`;
-    nhtml += `<div class="${cls}" style="left:${x}px;top:${y}px">` +
-      `<span class="np"></span><span class="nl">${escapeHtml(nd.lab)}</span>` +
-      `<span class="nr">${escapeHtml(nd.role)}</span>` +
-      `<span class="ns ${nd.sc}">${escapeHtml(nd.stat)}</span>${tip}</div>`;
-    lhtml += `<line x1="${x}" y1="${y}" x2="${coreX}" y2="${coreY}" stroke="url(#dl)" stroke-width="1.1"/>`;
-    lhtml += `<circle r="2" fill="var(--cyan)"><animateMotion dur="${(3 + (i % 3)).toFixed(1)}s" repeatCount="indefinite" path="M ${x.toFixed(0)} ${y.toFixed(0)} L ${coreX.toFixed(0)} ${coreY.toFixed(0)}"/></circle>`;
-  });
-  links.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  links.innerHTML = lhtml;
-  nodesEl.innerHTML = nhtml;
-  // The core reflects the project Orrin is currently working in (live from /api/deck).
-  const role = document.querySelector("#deckCore .dc-role");
-  const pname = (d.project && d.project.name) || (projName !== "—" ? projName : null);
-  if (role) role.textContent = pname ? ("📁 " + pname) : "Voice Core · Router";
+async function renderAtlas() {       // fetch live projects, lay them out, draw + refresh companion
+  try { deckData = await (await fetch("/api/deck")).json(); } catch (_) {}
+  layoutAtlas(); drawAtlas(); buildChips();
+  const say = $("compSay"), d = deckData || {}, pj = d.project || {};
+  if (say && !say.dataset.live) say.textContent = pj.claude
+    ? `Everything's connected — working in ${pj.name || "your project"}.`
+    : "Ready when you are.";
 }
+
+function layoutAtlas() {
+  const projs = (deckData && deckData.projects) || [];
+  // Cluster by parent directory so related projects sit together (spatial memory).
+  const groups = {};
+  projs.forEach((p) => { const par = (p.path || "").replace(/\/[^/]*$/, "") || "~"; (groups[par] = groups[par] || []).push(p); });
+  const keys = Object.keys(groups), G = keys.length || 1;
+  atlasWorld = [];
+  keys.forEach((k, gi) => {
+    const base = -Math.PI / 2 + gi / G * Math.PI * 2, members = groups[k];
+    members.forEach((p, mi) => {
+      const a = base + (mi - (members.length - 1) / 2) * 0.34, r = 210 + mi * 74;
+      atlasWorld.push({ name: p.name, current: !!p.current, active: !!p.active && !p.current,
+        stat: p.current ? "current" : (p.active ? "open" : "idle"),
+        wx: Math.cos(a) * r, wy: Math.sin(a) * r });
+    });
+  });
+}
+
+function drawAtlas() {
+  const stage = $("atlas"), nodesEl = $("atlasNodes"), links = $("atlasLinks");
+  if (!stage || !nodesEl || !links) return;
+  const W = stage.clientWidth, H = stage.clientHeight; if (!W || !H) return;
+  const cx = W / 2, cy = H / 2, s = atlasPan.s;
+  let nhtml = "", lhtml =
+    '<defs><linearGradient id="al" x1="0" y1="0" x2="1" y2="0">' +
+    '<stop offset="0" stop-color="var(--purple)" stop-opacity="0"/>' +
+    '<stop offset="1" stop-color="var(--purple)" stop-opacity=".55"/></linearGradient></defs>';
+  atlasWorld.forEach((nd) => {
+    const x = cx + nd.wx * s + atlasPan.x, y = cy + nd.wy * s + atlasPan.y;
+    if (x < -50 || x > W + 50 || y < -50 || y > H + 50) return;      // cull off-screen
+    const sc = Math.max(0.7, Math.min(1.15, s)).toFixed(2);
+    const cls = "anode" + (nd.current ? " current" : "") + (nd.active ? " active" : "");
+    nhtml += `<div class="${cls}" style="left:${x.toFixed(0)}px;top:${y.toFixed(0)}px;transform:translate(-50%,-50%) scale(${sc})" title="${escapeHtml(nd.name + " · " + nd.stat)}">` +
+      `<span class="ap"></span><span class="al2">${escapeHtml(nd.name)}</span>` +
+      `<span class="as ${nd.current || nd.active ? "" : "i"}">${escapeHtml(nd.stat)}</span></div>`;
+    lhtml += `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(0)}" y2="${y.toFixed(0)}" stroke="url(#al)" stroke-width="${(1.1 * s).toFixed(2)}"/>`;
+  });
+  links.setAttribute("viewBox", `0 0 ${W} ${H}`); links.setAttribute("width", W); links.setAttribute("height", H);
+  links.innerHTML = lhtml; nodesEl.innerHTML = nhtml;
+}
+
+function buildChips() {
+  const c = $("compChips"); if (!c) return;
+  const chips = [
+    { t: "🎙 Talk", f: () => { const m = $("mic"); if (m) m.click(); } },
+    { t: "📋 Brief me", f: () => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: "Brief me — where are we?" })); openChat(); } } },
+    { t: "＋ New chat", f: () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "new_chat" })); } },
+  ];
+  c.innerHTML = "";
+  chips.forEach((ch) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = ch.t; b.onclick = ch.f; c.appendChild(b); });
+}
+
+// Orrin "speaks" on the companion — its latest reply, shown by the presence.
+function setCompSay(text) {
+  const el = $("compSay"); if (!el || !text) return;
+  el.dataset.live = "1"; el.textContent = text.length > 160 ? text.slice(0, 158) + "…" : text;
+}
+
+// Pan (drag) + zoom (wheel) on the atlas; the companion stays fixed at center.
+(function initAtlasInput() {
+  const wire = () => {
+    const stage = $("atlas"); if (!stage || stage._wired) return; stage._wired = true;
+    let drag = null;
+    stage.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".companion") || e.target.closest(".anode") || e.target.closest(".atlas-recenter")) return;
+      drag = { x: e.clientX, y: e.clientY }; try { stage.setPointerCapture(e.pointerId); } catch (_) {} stage.classList.add("grabbing");
+    });
+    stage.addEventListener("pointermove", (e) => {
+      if (!drag) return; atlasPan.x += e.clientX - drag.x; atlasPan.y += e.clientY - drag.y;
+      drag = { x: e.clientX, y: e.clientY }; drawAtlas();
+    });
+    const end = () => { drag = null; stage.classList.remove("grabbing"); };
+    stage.addEventListener("pointerup", end); stage.addEventListener("pointercancel", end);
+    stage.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const r = stage.getBoundingClientRect();
+      const mx = e.clientX - r.left - r.width / 2, my = e.clientY - r.top - r.height / 2;
+      const wx = (mx - atlasPan.x) / atlasPan.s, wy = (my - atlasPan.y) / atlasPan.s;
+      const ns = Math.max(0.45, Math.min(2.6, atlasPan.s * (e.deltaY < 0 ? 1.12 : 0.89)));
+      atlasPan.x = mx - wx * ns; atlasPan.y = my - wy * ns; atlasPan.s = ns; drawAtlas();
+    }, { passive: false });
+    const rc = $("atlasRecenter"); if (rc) rc.onclick = () => { atlasPan = { x: 0, y: 0, s: 1 }; drawAtlas(); };
+  };
+  if (document.readyState !== "loading") wire(); else document.addEventListener("DOMContentLoaded", wire);
+})();
 
 async function renderSystem() {
   try { const s = await (await fetch("/api/system")).json();
@@ -487,8 +491,8 @@ showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
-let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "projects") drawConstellation(); }, 150); });
-setInterval(() => { if (view === "home") renderHome(); else if (view === "projects") renderConstellation(); }, 15000);   // refresh live state
+let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") drawAtlas(); }, 150); });
+setInterval(() => { if (view === "home") renderAtlas(); }, 15000);   // refresh live state
 { const ht = $("homeTalk"); if (ht) ht.onclick = () => { const m = $("mic"); if (m) m.click(); }; }   // Talk pill → mic
 
 // Foldable sidebar (persisted). Collapsing changes the stage width, so redraw the constellation.
@@ -496,7 +500,7 @@ try { if (localStorage.getItem("otto-side") === "1") appEl.classList.add("side-c
 { const sf = $("sideFold"); if (sf) sf.onclick = () => {
     const on = appEl.classList.toggle("side-collapsed");
     try { localStorage.setItem("otto-side", on ? "1" : "0"); } catch (e) {}
-    if (view === "home") setTimeout(drawConstellation, 230);
+    if (view === "home") setTimeout(drawAtlas, 230);
   }; }
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
