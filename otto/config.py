@@ -138,6 +138,10 @@ class STTConfig(BaseModel):
     # the recorder trigger on clearer speech and ignore short noise blips.
     silero_sensitivity: float = 0.4
     min_length_of_recording: float = 0.5
+    # Cap a single capture: without a natural pause the VAD never ends a recording (e.g. a
+    # video/podcast playing into the mic), so force-finalize after this many seconds. Keeps
+    # Otto answering back-to-back asks instead of getting stuck on one endless utterance.
+    max_recording_seconds: float = 15.0
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

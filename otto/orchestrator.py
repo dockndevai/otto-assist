@@ -1340,6 +1340,18 @@ class Orchestrator:
         concat = "".join(phrase)
         if len(concat) >= 6 and _levenshtein(norm[0], concat) <= 2:
             return True, " ".join(norm[1:])
+        # Wake word buried LATE in a very long capture. This happens when the mic picked up
+        # continuous audio (a video/podcast on the speakers) and the user finally said
+        # "…hey otto, do X" near the end — the whole blob became one utterance. Only for
+        # abnormally long captures (never normal conversation, so "someone said hey otto
+        # later" still won't trigger): take the command after the LAST wake occurrence.
+        if len(norm) >= 30:
+            last = -1
+            for i, w in enumerate(norm):
+                if _wordish(w, trigger) or (len(concat) >= 6 and _levenshtein(w, concat) <= 2):
+                    last = i
+            if 0 <= last < len(norm) - 1:
+                return True, " ".join(norm[last + 1:])
         return False, ""
 
     def _enter_awaiting_command(self, greet: bool = True, timeout: float = 12,

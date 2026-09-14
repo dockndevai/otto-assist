@@ -104,10 +104,55 @@ class Ears:
         self._recorder = None
         self._thread: threading.Thread | None = None
         self._running = False
+        # Watchdog: a single recording must not grow unbounded. Without a pause the VAD never
+        # ends the capture (e.g. a video/podcast playing on the speakers into the mic), so cap
+        # it and force-finalize. Keeps Otto responsive to back-to-back asks instead of stuck
+        # accumulating one endless utterance.
+        self._max_record_s = float(
+            getattr(settings.voice.stt, "max_recording_seconds", 0) or 15.0)
+        self._watchdog: threading.Timer | None = None
 
     def _post(self, fn, *args) -> None:
         """Bounce a callback from the recorder thread onto the asyncio loop."""
         self._loop.call_soon_threadsafe(fn, *args)
+
+    # -- recording watchdog (force-finalize an over-long capture) --------------
+    def _rec_started(self) -> None:
+        """RealtimeSTT began a recording. Notify the orchestrator and arm the max-duration
+        watchdog so a never-ending capture (continuous ambient/media audio) still finalizes."""
+        self._post(self._on_speech_start)
+        self._cancel_watchdog()
+        if self._max_record_s > 0:
+            self._watchdog = threading.Timer(self._max_record_s, self._force_finalize)
+            self._watchdog.daemon = True
+            self._watchdog.start()
+
+    def _rec_stopped(self) -> None:
+        """Recording ended (naturally or forced) — disarm the watchdog and notify."""
+        self._cancel_watchdog()
+        if self._on_recording_stop is not None:
+            self._post(self._on_recording_stop)
+
+    def _cancel_watchdog(self) -> None:
+        if self._watchdog is not None:
+            try:
+                self._watchdog.cancel()
+            except Exception:
+                pass
+            self._watchdog = None
+
+    def _force_finalize(self) -> None:
+        """The current recording ran past the cap without a natural pause — stop it so it gets
+        transcribed now (the buried-wake matcher recovers a real command from the blob; pure
+        ambient just fails the wake match and is ignored). Keeps back-to-back asks working."""
+        import logging
+        logging.getLogger("otto").info(
+            "recording exceeded %.0fs — force-finalizing", self._max_record_s)
+        if self._recorder is not None:
+            try:
+                self._recorder.stop()
+            except Exception:
+                pass
 
     def start(self) -> None:
         _pretrust_silero_vad()
@@ -139,7 +184,7 @@ class Ears:
             # interactive trust prompt, so it fails outright in a bundled app. Unset means
             # silero_backend="auto", which uses the .onnx weights shipped inside the
             # silero_vad package via onnxruntime: offline, no download, no prompt.
-            on_recording_start=lambda: self._post(self._on_speech_start),
+            on_recording_start=self._rec_started,
         )
         # Prime Whisper with the wake word so it actually transcribes the name (small
         # models otherwise drop "Otto" -> hear "auto"/"your"). Big reliability win for the
@@ -147,8 +192,7 @@ class Ears:
         if cfg.wakeword_backend == "phrase" and cfg.wake_words:
             name = cfg.wake_words.strip().title()          # "Hey Otto"
             params["initial_prompt"] = f"{name}. {name.split()[-1]}, "
-        if self._on_recording_stop is not None:
-            params["on_recording_stop"] = lambda: self._post(self._on_recording_stop)
+        params["on_recording_stop"] = self._rec_stopped
 
         # Live captions: stream partial words as you speak, so the dashboard visibly reacts to
         # your voice (transcribed by a small fast model). Optional; off saves CPU on always-on.
@@ -230,6 +274,7 @@ class Ears:
 
     def stop(self) -> None:
         self._running = False
+        self._cancel_watchdog()
         if self._recorder is not None:
             try:
                 self._recorder.shutdown()
