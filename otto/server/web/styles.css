@@ -539,3 +539,49 @@ label.chk { display: flex; align-items: center; gap: 8px; font-size: 12px; color
 /* a single crisp ring frames the sphere — enterprise, not glowy */
 .companion .comp-canvas { border-radius: 50%; }
 .comp-name { margin-top: 14px; letter-spacing: .34em; color: color-mix(in srgb, var(--ink) 90%, var(--blue)); }
+
+/* ===== Workspace home: greeting + command bar + live panels (enterprise) ===== */
+.ws { position: relative; height: 100%; overflow: auto; padding: 4px 4px 10px; display: flex; flex-direction: column; gap: 18px; }
+.ws-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.ws > *:not(.ws-bg) { position: relative; z-index: 1; }
+.ws-hero { display: flex; align-items: center; gap: 16px; }
+.ws-orb { width: 64px; height: 64px; flex: none; filter: drop-shadow(0 0 16px color-mix(in srgb, var(--blue) 40%, transparent)); }
+.ws-greet h2 { font-family: var(--font-disp); font-weight: 700; font-size: 26px; margin: 0; letter-spacing: -.01em; }
+.ws-greet p { margin: 3px 0 0; color: var(--muted); font-size: 14px; }
+.cmdbar { display: flex; align-items: center; gap: 12px; background: linear-gradient(180deg, var(--card), var(--card-2));
+  border: 1px solid var(--border); border-radius: 16px; padding: 13px 15px; box-shadow: var(--shadow); }
+.cmdbar:focus-within { border-color: var(--focus); }
+.cmd-ic { font-family: var(--font-mono); color: var(--muted); font-size: 12px; border: 1px solid var(--border); border-radius: 7px; padding: 3px 7px; }
+.cmdbar input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text); font-size: 16px; font-family: var(--font-body); }
+.cmdbar input::placeholder { color: var(--dim); }
+.cmd-send { flex: none; width: 40px; height: 40px; border: 0; border-radius: 11px; cursor: pointer; color: #fff; font-size: 15px;
+  background: linear-gradient(135deg, var(--blue), var(--purple)); }
+.cmd-send:hover { filter: brightness(1.08); }
+.ws-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.ws-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.wpanel { background: linear-gradient(180deg, var(--card), var(--card-2)); border: 1px solid var(--border); border-radius: 18px;
+  padding: 16px 18px; box-shadow: var(--shadow); display: flex; flex-direction: column; min-height: 156px; }
+.wp-h { display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+.wp-badge { text-transform: none; letter-spacing: .02em; color: var(--cyan); font-size: 11px; }
+.wp-sub { text-transform: none; letter-spacing: .02em; color: var(--dim); }
+.wp-body { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+#wpProjects { flex-direction: row; flex-wrap: wrap; align-content: flex-start; gap: 0; }
+.wp-empty { color: var(--dim); font-size: 13px; font-style: italic; }
+.wp-foot { margin-top: auto; font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); padding-top: 10px; }
+.wrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: transparent; border: 0;
+  border-bottom: 1px solid var(--hairline); padding: 8px 2px; cursor: pointer; text-align: left; color: var(--text); }
+.wrow:last-child { border-bottom: 0; } .wrow:hover .wrow-t { color: var(--cyan); }
+.wrow-t { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wrow-m { font-family: var(--font-mono); font-size: 10px; color: var(--dim); white-space: nowrap; }
+.wfacts { display: flex; flex-direction: column; gap: 7px; }
+.wfact { position: relative; padding-left: 14px; font-size: 13px; color: var(--muted); line-height: 1.4; }
+.wfact::before { content: ""; position: absolute; left: 2px; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); }
+.wchip-p { border: 1px solid var(--border); background: var(--fill); color: var(--muted); border-radius: 999px; padding: 6px 11px;
+  margin: 0 6px 6px 0; cursor: pointer; font-size: 12px; font-family: var(--font-mono); }
+.wchip-p:hover { color: var(--text); }
+.wchip-p.cur { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--blue), var(--purple)); }
+.wchip-p.act { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.wbars { display: flex; align-items: flex-end; gap: 8px; height: 84px; margin-top: auto; }
+.wbars i { flex: 1; background: linear-gradient(180deg, var(--purple), color-mix(in srgb, var(--blue) 55%, transparent)); border-radius: 4px 4px 0 0; min-height: 6px; }
+@media (max-width: 900px) { .ws-grid { grid-template-columns: 1fr; } }
