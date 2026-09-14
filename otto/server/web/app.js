@@ -38,7 +38,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((s) => (s.hidden = s.dataset.view !== name));
   updateNavActive();
   const nav = document.querySelector(`.navbtn[data-nav="${name}"]`); if (nav) nav.classList.remove("unread");
-  if (name === "home") renderAtlas();
+  if (name === "home") renderWorkspace();
   if (name === "settings") { loadConfig(); loadProjects(); loadVoices(); }
   if (window.innerWidth <= 820) appEl.classList.remove("nav-open");
 }
@@ -136,12 +136,12 @@ function handle(ev) {
     case "history_start": { replaying = true; const w = win(curKey()); w.msgs = []; w.cur = null; transcriptEl.innerHTML = ""; partialUser = assistantBubble = null; return; }
     case "history_end": { replaying = false; const d = document.createElement("div"); d.className = "divider"; d.textContent = "— now —"; transcriptEl.appendChild(d); scroll(); return; }
     case "ask_user": openChat(); $("input").focus(); setMood("warn", 12000); return;
-    case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderAtlas(); return;
-    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderAtlas(); return;
+    case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderWorkspace(); return;
+    case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderWorkspace(); return;
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
     case "mood": setMood(ev.level, 25000); return;
-    case "session": { chatName = ev.title || "New chat"; renderStats(); if (view === "home") renderAtlas();
+    case "session": { chatName = ev.title || "New chat"; renderStats(); if (view === "home") renderWorkspace();
       if (appEl.classList.contains("chat-open") && !$("chatMgr").hidden) (chatScope === "all") ? loadAllSessions($("chatSearch").value) : loadSessions(); return; }
     case "canvas_render": { const k = keyOf(ev), w = win(k); w.canvas = { content: ev.content, format: ev.format };
       if (k === curKey()) { showCanvas(ev.content, ev.format); markNavUnread("visuals"); } else { w.unread = true; } return; }
@@ -202,19 +202,79 @@ async function renderWeather() {
      </div>`;
 }
 
-// ---- Companion + Atlas: Orrin as a living presence inside a pannable map of your projects ----
+// ---- Workspace home: greeting + command bar + live panels; the graph orb is an accent ----
 let deckData = null;
-let atlasWorld = [];                 // project nodes in world coordinates (spatial memory)
-let atlasPan = { x: 0, y: 0, s: 1 }; // pan offset (px) + zoom scale
 
-async function renderAtlas() {       // fetch live projects, lay them out, draw + refresh companion
-  try { deckData = await (await fetch("/api/deck")).json(); } catch (_) {}
-  layoutAtlas(); drawAtlas(); buildChips(); initHomeFX();
-  const say = $("compSay"), d = deckData || {}, pj = d.project || {};
-  if (say && !say.dataset.live) say.textContent = pj.claude
-    ? `Everything's connected — working in ${pj.name || "your project"}.`
-    : "Ready when you are.";
+async function renderWorkspace() {
+  const g = $("wsGreet"); if (g) g.textContent = greeting();
+  initGraphSphere("wsOrb"); initWsBg(); buildWsChips();
+  let d = {}; try { d = await (await fetch("/api/deck")).json(); } catch (_) {}
+  deckData = d; const pj = d.project || {}, s = d.stats || {};
+  const say = $("wsSay"); if (say && !say.dataset.live) say.textContent = pj.claude
+    ? `Working in ${pj.name || "your project"} — everything's green.` : "Ready when you are.";
+  renderRecentChats(); renderActiveProject(d); renderProjectsPanel(d); renderActivityPanel(s);
 }
+
+async function renderRecentChats() {
+  const el = $("wpRecent"); if (!el) return;
+  let rows = []; try { rows = (await (await fetch("/api/sessions")).json()).sessions || []; } catch (_) {}
+  if (!rows.length) { el.innerHTML = `<div class="wp-empty">No chats yet — start one below.</div>`; return; }
+  el.innerHTML = rows.slice(0, 5).map((r) =>
+    `<button class="wrow" data-sid="${escapeHtml(r.session_id || "")}">` +
+    `<span class="wrow-t">${escapeHtml(r.title || r.first_prompt || "Chat")}</span>` +
+    `<span class="wrow-m">${r.current ? "current" : escapeHtml(timeAgo(r.updated_at) || "")}</span></button>`).join("");
+  el.querySelectorAll(".wrow").forEach((b) => b.onclick = () => {
+    const sid = b.dataset.sid; if (sid && ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "switch_session", session_id: sid })); openChat(); } });
+}
+
+async function renderActiveProject(d) {
+  const el = $("wpProject"); if (!el) return;
+  const pj = (d && d.project) || {}; const nm = $("wpProjName"); if (nm) nm.textContent = "📁 " + (pj.name || "—");
+  let mem = {}; try { mem = await (await fetch("/api/memory")).json(); } catch (_) {}
+  const facts = (mem.facts || []).slice(-4).reverse();
+  el.innerHTML = (facts.length ? `<div class="wfacts">${facts.map((f) => `<div class="wfact">${escapeHtml(f)}</div>`).join("")}</div>`
+    : `<div class="wp-empty">Nothing remembered yet.</div>`) +
+    (mem.doc_count ? `<div class="wp-foot">📄 ${mem.doc_count} saved note${mem.doc_count === 1 ? "" : "s"}</div>` : "");
+}
+
+function renderProjectsPanel(d) {
+  const el = $("wpProjects"); if (!el) return;
+  const projs = (d && d.projects) || []; const c = $("wpProjCount"); if (c) c.textContent = projs.length || "";
+  el.innerHTML = projs.map((p) =>
+    `<button class="wchip-p${p.current ? " cur" : p.active ? " act" : ""}" data-path="${escapeHtml(p.path || "")}">${escapeHtml(p.name)}</button>`).join("")
+    || `<div class="wp-empty">No projects found.</div>`;
+  el.querySelectorAll(".wchip-p").forEach((b) => b.onclick = () => {
+    const path = b.dataset.path; if (path && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "switch_project", path })); });
+}
+
+function renderActivityPanel(s) {
+  const el = $("wpActivity"); if (!el) return;
+  const act = (s && s.activity && s.activity.length) ? s.activity : [0, 0, 0, 0, 0, 0, 0];
+  const maxA = Math.max(1, ...act), turns = act.reduce((a, b) => a + b, 0);
+  const sub = $("wpActSub"); if (sub) sub.textContent = `${turns} turns · 7d`;
+  el.innerHTML = `<div class="wbars">${act.map((v) => `<i style="height:${Math.max(6, Math.round(v / maxA * 100))}%"></i>`).join("")}</div>`;
+}
+
+function buildWsChips() {
+  const c = $("wsChips"); if (!c) return;
+  const send = (t) => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: t })); openChat(); } };
+  const chips = [
+    ["📋 Brief me", () => send("Brief me — where are we?")],
+    ["🕓 What changed today?", () => send("What changed in this project today?")],
+    ["🎙 Talk", () => { const m = $("mic"); if (m) m.click(); }],
+    ["＋ New chat", () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "new_chat" })); }],
+  ];
+  c.innerHTML = ""; chips.forEach(([t, f]) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = t; b.onclick = f; c.appendChild(b); });
+}
+
+(function initCmdBar() {
+  const wire = () => {
+    const f = $("cmdbar"); if (!f || f._wired) return; f._wired = true;
+    f.addEventListener("submit", (e) => { e.preventDefault(); const inp = $("cmdInput"), t = (inp.value || "").trim();
+      if (t && ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: t })); inp.value = ""; openChat(); } });
+  };
+  if (document.readyState !== "loading") wire(); else document.addEventListener("DOMContentLoaded", wire);
+})();
 
 function layoutAtlas() {
   const projs = (deckData && deckData.projects) || [];
@@ -268,17 +328,15 @@ function buildChips() {
   chips.forEach((ch) => { const b = document.createElement("button"); b.className = "chip"; b.textContent = ch.t; b.onclick = ch.f; c.appendChild(b); });
 }
 
-// Orrin "speaks" on the companion — its latest reply, shown by the presence.
+// Orrin's latest reply appears in the greeting line.
 function setCompSay(text) {
-  const el = $("compSay"); if (!el || !text) return;
-  el.dataset.live = "1"; el.textContent = text.length > 160 ? text.slice(0, 158) + "…" : text;
+  const el = $("wsSay"); if (!el || !text) return;
+  el.dataset.live = "1"; el.textContent = text.length > 140 ? text.slice(0, 138) + "…" : text;
 }
 
-// Jarvis-style dotted particle sphere for the companion + a subtle vector backdrop.
-function initHomeFX() { initCompanionCanvas(); initAtlasBg(); }
-
-function initCompanionCanvas() {
-  const cv = $("compCanvas"); if (!cv || cv._on) return; cv._on = true;
+// Rotating network "vision graph" sphere (reusable on any canvas) + a subtle vector backdrop.
+function initGraphSphere(id) {
+  const cv = $(id); if (!cv || cv._on) return; cv._on = true;
   const ctx = cv.getContext("2d"); const DPR = Math.min(2, window.devicePixelRatio || 1);
   // Points on a fibonacci sphere, joined into a network (each to its nearest neighbours) —
   // a rotating "vision graph" globe rather than loose dots.
@@ -323,8 +381,8 @@ function initCompanionCanvas() {
   frame();
 }
 
-function initAtlasBg() {
-  const cv = $("atlasBg"); if (!cv || cv._on) return; cv._on = true;
+function initWsBg() {
+  const cv = $("wsBg"); if (!cv || cv._on) return; cv._on = true;
   const ctx = cv.getContext("2d"); const DPR = Math.min(2, window.devicePixelRatio || 1);
   const parts = [];
   for (let i = 0; i < 42; i++) parts.push({ x: Math.random(), y: Math.random(), s: 0.4 + Math.random() * 1.3, vx: (Math.random() - 0.5) * 0.0006, vy: (Math.random() - 0.5) * 0.0006 });
@@ -567,8 +625,8 @@ showView("home");
 setInterval(renderWeather, 600000);   // refresh weather every 10 min
 setInterval(renderSystem, 120000);
 if (window.innerWidth <= 1080) closeChat();     // don't overlay chat on smaller screens by default
-let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") drawAtlas(); }, 150); });
-setInterval(() => { if (view === "home") renderAtlas(); }, 15000);   // refresh live state
+let _conTimer; addEventListener("resize", () => { clearTimeout(_conTimer); _conTimer = setTimeout(() => { if (view === "home") renderWorkspace(); }, 150); });
+setInterval(() => { if (view === "home") renderWorkspace(); }, 15000);   // refresh live state
 { const ht = $("homeTalk"); if (ht) ht.onclick = () => { const m = $("mic"); if (m) m.click(); }; }   // Talk pill → mic
 
 // Foldable sidebar (persisted). Collapsing changes the stage width, so redraw the constellation.
@@ -576,7 +634,7 @@ try { if (localStorage.getItem("otto-side") === "1") appEl.classList.add("side-c
 { const sf = $("sideFold"); if (sf) sf.onclick = () => {
     const on = appEl.classList.toggle("side-collapsed");
     try { localStorage.setItem("otto-side", on ? "1" : "0"); } catch (e) {}
-    if (view === "home") setTimeout(drawAtlas, 230);
+    /* workspace reflows via CSS */
   }; }
 window.addEventListener("hashchange", () => { if (location.hash === "#settings") showView("settings"); });
 if (location.hash === "#settings") showView("settings");
