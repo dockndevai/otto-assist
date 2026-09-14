@@ -421,10 +421,27 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
              "level": "ok" if mcp else "idle",
              "desc": "MCP connectors — the external tools Claude can use in this session."},
         ]
+        # All the user's Claude Code projects — the nodes of the hub-and-spoke graph.
+        open_paths = {ws.project for ws in orch.workspaces.values()}
+        projects = []
+        try:
+            for p in list_projects(current=orch.current_project,
+                                   pinned=orch.settings.brain.projects, limit=12):
+                if p.path in ("/", ""):
+                    continue
+                projects.append({
+                    "name": p.name, "path": p.path, "current": p.current,
+                    "active": p.current or p.path in open_paths,
+                    "desc": ("The project Orrin is working in now." if p.current
+                             else "Open workspace — a live Claude session." if p.path in open_paths
+                             else f"Claude project · {p.path}")})
+        except Exception:
+            pass
         return JSONResponse({
             "project": {"name": Path(orch.current_project).name,
                         "path": orch.current_project,
                         "claude": checks.get("claude_test") == "ok"},
+            "projects": projects[:10],
             "workspaces": workspaces, "subsystems": subs})
 
     # -- dictation-anywhere toggle ----------------------------------------
