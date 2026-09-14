@@ -105,8 +105,8 @@ class STTConfig(BaseModel):
     language: str = "en"
     # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
-    # ~1.3s is a good balance: responsive without clipping normal pauses.
-    silence_seconds: float = 1.3
+    # 1.0s keeps it responsive; the instant spoken ack covers the rest of the wait.
+    silence_seconds: float = 1.0
     # Live captions: stream partial words to the dashboard as you speak, using a small fast
     # model. OFF by default: RealtimeSTT's realtime worker can fall into an EOFError spam loop
     # (esp. under some Python/multiprocessing setups) that destabilizes the recorder. The
