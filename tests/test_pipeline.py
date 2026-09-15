@@ -478,6 +478,20 @@ def test_is_dangerous_classifier():
         assert _is_dangerous(t, a) is False, t
 
 
+def test_self_echo_guard():
+    """The mic re-hearing Otto's own recent reply is dropped, not run as a command."""
+    import time as _time
+    orch = Orchestrator(load_settings(), EventBus())
+    now = _time.monotonic()
+    orch._recent_spoken = [("I'll let you know as soon as it lands.", now)]
+    assert orch._is_self_echo("I'll let you know as soon as it lands.") is True
+    assert orch._is_self_echo("let you know as soon as it lands") is True   # chunk of it
+    assert orch._is_self_echo("check the mcp server project") is False      # a real command
+    # stale spoken lines (>30s) don't match
+    orch._recent_spoken = [("open the settings", now - 60)]
+    assert orch._is_self_echo("open the settings") is False
+
+
 def test_recorder_health_predicate():
     """The watchdog must catch the real wedge: a recording finished but no transcript came back
     (worker alive but pipe broken), plus a dead worker process."""
