@@ -1667,8 +1667,8 @@ def test_speakable_strips_markdown_and_urls():
 
 
 def test_spoken_reply_is_capped():
-    """A long, markdown-y reply is not narrated in full: Orrin speaks the start, then says the
-    rest is on screen."""
+    """A runaway verbose reply stops cleanly at the backstop cap — WITHOUT the old jarring
+    'the rest is on screen' filler (which left replies feeling unfinished)."""
     orch = Orchestrator(load_settings(), EventBus())
     orch.settings.voice.tts.max_spoken_chars = 60
     spoken = []
@@ -1683,7 +1683,7 @@ def test_spoken_reply_is_capped():
     orch._speak_capped("And a third that must never be spoken.")
     joined = " ".join(spoken)
     assert "concise answer" in joined
-    assert "The rest is on screen." in joined
+    assert "on screen" not in joined.lower()          # no more filler closer
     assert "third that must never" not in joined
     assert orch._speak_done is True
 

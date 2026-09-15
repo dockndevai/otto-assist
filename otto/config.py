@@ -181,12 +181,13 @@ class TTSConfig(BaseModel):
     # Kokoro (engine "kokoro"): a voice id (see otto.voice.tts.KOKORO_VOICES), speaking speed,
     # and where the model files live (blank = OTTO_HOME/models/kokoro).
     kokoro_voice: str = "af_heart"
-    kokoro_speed: float = 1.0
+    kokoro_speed: float = 0.92          # slightly slower than 1.0 → more natural, less rushed
     kokoro_model_dir: str = ""
-    # Cap how much of a reply is spoken aloud. Orrin should answer in a sentence or two; the
-    # full text is always on screen. This is enforced regardless of how verbose the model is,
-    # and markdown/URLs/code are stripped from speech. 0 disables the cap.
-    max_spoken_chars: int = 240
+    # Cap how much of a reply is spoken aloud, as a backstop against a runaway verbose reply.
+    # The model is already told to answer in 1-2 sentences WITH closure, so this should rarely
+    # bite; keep it generous so a normal concise reply is spoken in full (not truncated). 0
+    # disables the cap. Markdown/URLs/code are stripped from speech regardless.
+    max_spoken_chars: int = 600
     # When a phone (authenticated remote client) is connected, don't also speak the reply
     # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
     # driving it remotely. The dashboard on the Mac itself does NOT count as remote.

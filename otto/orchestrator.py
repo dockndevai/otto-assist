@@ -1941,8 +1941,10 @@ class Orchestrator:
         self._speech_buf = ""
 
     def _speak_capped(self, raw: str) -> None:
-        """Speak a cleaned sentence, up to the spoken-length cap. Past the cap, say the rest is
-        on screen (once) and stop — so a long/verbose reply doesn't get narrated in full."""
+        """Speak a cleaned sentence, up to the spoken-length cap. The model already answers in a
+        sentence or two WITH closure, so the cap is just a backstop for a runaway verbose reply —
+        past it we stop cleanly at this sentence (no jarring 'the rest is on screen' tacked on,
+        which left replies feeling unfinished)."""
         if self._speak_done:
             return
         s = _speakable(raw)
@@ -1953,12 +1955,10 @@ class Orchestrator:
             return
         cap = self.settings.voice.tts.max_spoken_chars or 0
         if cap and self._spoken_chars + len(s) > cap:
-            remaining = cap - self._spoken_chars
-            if remaining > 40:                       # squeeze in the start of this sentence
-                head = s[:remaining].rsplit(" ", 1)[0].strip()
-                if head:
-                    self._voice_out(head + "…")
-            self._voice_out("The rest is on screen.")
+            # Over the backstop: speak this sentence if we haven't spoken much yet (so a single
+            # long sentence still gets said), then stop — silently, no "on screen" filler.
+            if self._spoken_chars == 0:
+                self._voice_out(s)
             self._speak_done = True
             return
         self._voice_out(s)
