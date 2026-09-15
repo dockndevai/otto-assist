@@ -1548,6 +1548,18 @@ class Orchestrator:
                 print(f"[otto] turn error ({ws.name}): {e!r}", file=sys.stderr, flush=True)
                 _log.exception("Turn failed in workspace %s", ws.name)
                 self.bus.notify("Error", str(e))
+                # A stream/decode error (e.g. a tool result that overflowed the SDK's JSON
+                # buffer) corrupts the client — without a rebuild EVERY later turn returns
+                # empty. Reconnect (resumes the same chat) so the brain recovers. Best-effort.
+                try:
+                    rc = getattr(ws.brain, "reconnect", None)
+                    if rc is not None:
+                        await rc()
+                        print(f"[otto] brain reconnected after error ({ws.name})",
+                              file=sys.stderr, flush=True)
+                except Exception as re:
+                    print(f"[otto] brain reconnect failed ({ws.name}): {re!r}",
+                          file=sys.stderr, flush=True)
             finally:
                 reply = assistant_text.strip()
                 print(f"[otto] turn done ({ws.name}), reply len={len(reply)}",
