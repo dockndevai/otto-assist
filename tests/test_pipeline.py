@@ -478,6 +478,29 @@ def test_is_dangerous_classifier():
         assert _is_dangerous(t, a) is False, t
 
 
+def test_recorder_health_predicate():
+    """The watchdog must catch the real wedge: a recording finished but no transcript came back
+    (worker alive but pipe broken), plus a dead worker process."""
+    from otto.voice.stt import Ears
+    class Alive:
+        def is_alive(self): return True
+    class Dead:
+        def is_alive(self): return False
+    class Rec:
+        transcript_process = Alive(); reader_process = Alive()
+    e = Ears.__new__(Ears)
+    e._last_record_stop = 0.0; e._last_text = 0.0; e._pipe_errors = 0
+    rec = Rec(); now = 1000.0
+    assert e._unhealthy_reason(rec, now) == ""                    # idle, healthy
+    e._last_record_stop = now - 13; e._last_text = now - 20
+    assert e._unhealthy_reason(rec, now) == "transcription stalled"
+    e._last_text = now - 12                                       # transcript came after record
+    assert e._unhealthy_reason(rec, now) == ""
+    e._last_record_stop = 0.0
+    rec.transcript_process = Dead()
+    assert e._unhealthy_reason(rec, now) == "worker died"
+
+
 def test_pretrust_silero_vad_skips_prompt():
     """The ears must not hang on torch.hub's 'trust this repo? (y/N)' prompt in a
     non-interactive process (launchd/service) — that EOFErrors and leaves Otto deaf."""
