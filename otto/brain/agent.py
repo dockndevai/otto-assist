@@ -206,6 +206,11 @@ class ClaudeBrain:
             return PermissionResultAllow()
         if mode == "deny":
             return PermissionResultDeny(message="Denied by Otto's permission setting.")
+        if mode == "guarded":
+            # Do everything asked; only stop for genuinely DANGEROUS actions (destructive
+            # shell, delete/erase, outbound send, payments) and confirm those by voice.
+            if not _is_dangerous(tool_name, input_data):
+                return PermissionResultAllow()
         ok = await self.ctx.confirm(_describe(tool_name, input_data))
         return PermissionResultAllow() if ok else PermissionResultDeny(
             message="The user declined this action."
@@ -326,6 +331,35 @@ def _is_read_only(tool_name: str) -> bool:
         if _READ_VERBS.search(leaf):
             return True
     return False
+
+
+# Genuinely dangerous / irreversible / outbound actions — confirmed even in "guarded" mode
+# (which otherwise runs everything asked without asking). Normal work (editing files, opening
+# apps, clicking, searching, reading) is NOT here and runs freely.
+_DANGEROUS_BASH = re.compile(
+    r"\brm\s+-\w*[rf]|\brmdir\b|\bdd\b|\bmkfs\w*|\bdiskutil\s+(erase|reformat|partition)|"
+    r"\bshutdown\b|\breboot\b|\bhalt\b|\bkillall\b|\bpkill\b|\bkill\s+-9\b|\bsudo\b|"
+    r"\bchmod\s+-R\b|\bchown\s+-R\b|>\s*/dev/|\bnvram\b|\btmutil\s+delete\b|"
+    r"\bdefaults\s+delete\b|\blaunchctl\s+(unload|remove|bootout)\b|"
+    r"\bgit\s+push\b.*(--force|-f)\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-\w*f|"
+    r"\bnpm\s+publish\b|\bbrew\s+uninstall\b", re.I)
+_DANGEROUS_VERBS = re.compile(
+    r"(delete|destroy|erase|purge|\bdrop\b|trash|wipe|"             # destructive
+    r"send|publish|\bpost\b|forward|reply|tweet|broadcast|"         # outbound comms
+    r"\bpay\b|\bbuy\b|purchase|checkout|transfer|refund|charge|"    # money
+    r"revoke|uninstall)", re.I)
+
+
+def _is_dangerous(tool_name: str, args: dict[str, Any]) -> bool:
+    """True only for genuinely destructive/irreversible/outbound actions that warrant a spoken
+    confirmation even when Otto is set to do everything else without asking (guarded mode)."""
+    if tool_name == "Bash":
+        return bool(_DANGEROUS_BASH.search(str(args.get("command", ""))))
+    # Built-in file editors (Write/Edit/etc.) are normal asked work — not gated here.
+    if tool_name in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return False
+    leaf = tool_name.split("__")[-1].lower()
+    return bool(_DANGEROUS_VERBS.search(leaf))
 
 
 def _describe(tool_name: str, args: dict[str, Any]) -> str:

@@ -82,7 +82,10 @@ class BrainConfig(BaseModel):
     # voice/phone session isn't blocked mid-task waiting for a spoken yes.
     #   bypass -> full access, never asks (SDK bypassPermissions); auto -> approve via callback;
     #   voice  -> Otto asks you aloud/on-screen; deny -> reject writes (read-only).
-    permission: Literal["bypass", "auto", "voice", "deny"] = "bypass"
+    # bypass/auto = never ask (SDK auto-approves). guarded = do everything asked, but confirm
+    # genuinely DANGEROUS actions (destructive shell, delete/erase, outbound send, payments).
+    # voice = confirm every consequential action. deny = block all writes.
+    permission: Literal["bypass", "auto", "guarded", "voice", "deny"] = "guarded"
     project_dir: str = "~"                       # current project (the brain's cwd)
     projects: list[str] = Field(default_factory=list)   # pinned projects for the switcher
     # Last-used chat (Claude session id) per project path — so switching back to a project
@@ -95,7 +98,8 @@ class BrainConfig(BaseModel):
     # calls still confirm; the model is told to ask before genuinely consequential steps.) These
     # are tool-name prefixes; clear the list to force confirmation on everything.
     auto_allow_tools: list[str] = Field(
-        default_factory=lambda: ["mcp__playwright__", "mcp__computer-use__"])
+        default_factory=lambda: ["mcp__playwright__", "mcp__computer-use__",
+                                 "mcp__claude-in-chrome__", "mcp__macos__"])
     continue_conversation: bool = False          # resume the project's latest Claude session
     register_mcp: bool = True                   # expose /mcp for `claude mcp add otto`
 
@@ -142,6 +146,10 @@ class STTConfig(BaseModel):
     # video/podcast playing into the mic), so force-finalize after this many seconds. Keeps
     # Otto answering back-to-back asks instead of getting stuck on one endless utterance.
     max_recording_seconds: float = 15.0
+    # On the wake word, pause whatever media is playing (YouTube/Spotify/Music) so the mic
+    # hears only you — then resume it when the listen window ends with no command. Uses the
+    # system play/pause media key, so it doesn't mute Orrin's own voice.
+    duck_media_on_wake: bool = True
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

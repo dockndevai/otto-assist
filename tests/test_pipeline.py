@@ -436,6 +436,21 @@ def test_efficientword_falls_back_to_phrase_when_listener_absent():
     asyncio.run(run())
 
 
+def test_is_dangerous_classifier():
+    """Guarded mode confirms only genuinely destructive/outbound actions; normal work runs."""
+    from otto.brain.agent import _is_dangerous
+    for t, a in [("Bash", {"command": "rm -rf build"}), ("Bash", {"command": "sudo reboot"}),
+                 ("Bash", {"command": "git push --force origin main"}),
+                 ("mcp__gmail__send_message", {}), ("mcp__drive__trash_file", {}),
+                 ("mcp__x__delete_label", {})]:
+        assert _is_dangerous(t, a) is True, t
+    for t, a in [("Bash", {"command": "ls -la"}), ("Bash", {"command": "git status"}),
+                 ("Bash", {"command": "open -a Safari"}), ("Write", {"file_path": "/x"}),
+                 ("Edit", {}), ("mcp__computer-use__app_click", {}),
+                 ("mcp__gmail__search_threads", {})]:
+        assert _is_dangerous(t, a) is False, t
+
+
 def test_pretrust_silero_vad_skips_prompt():
     """The ears must not hang on torch.hub's 'trust this repo? (y/N)' prompt in a
     non-interactive process (launchd/service) — that EOFErrors and leaves Otto deaf."""
