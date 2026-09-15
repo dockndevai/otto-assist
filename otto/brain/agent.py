@@ -90,10 +90,13 @@ unchanged."""
 class ClaudeBrain:
     def __init__(self, ctx: AssistantContext, settings: Settings, *,
                  resume: str | None = None, new_chat: bool = False,
-                 cwd: str | None = None) -> None:
+                 cwd: str | None = None, read_only: bool = False) -> None:
         self.ctx = ctx
         self.settings = settings
         self.client: ClaudeSDKClient | None = None
+        # Read-only mode (idle background research): hard-block edits/writes regardless of the
+        # user's permission setting — see connect() and _permission.
+        self._read_only = read_only
         # Per-workspace working directory (overrides the global settings.project_path so
         # several workspaces can run in different project dirs concurrently).
         self._cwd = cwd
@@ -131,8 +134,23 @@ class ClaudeBrain:
                 memdir = OTTO_HOME / "memory" / "projects" / project_slug(cwd)
                 if memdir.exists():
                     extra_dirs.append(str(memdir))
+                # Cross-project: optionally let the brain read every project's memory notes.
+                if self.settings.memory.cross_project and self.settings.memory.expose_overview_dirs:
+                    projroot = OTTO_HOME / "memory" / "projects"
+                    if projroot.exists():
+                        extra_dirs.append(str(projroot))
             except Exception:
                 pass
+        # Read-only research: force the SDK's own gating ON (so _permission runs) and hard-block
+        # the built-in editors at the SDK level — belt and suspenders, since the user's normal
+        # setting is bypass (which would otherwise auto-approve everything).
+        if self._read_only:
+            perm_mode = "default"
+            disallowed = ["Write", "Edit", "MultiEdit", "NotebookEdit"]
+        else:
+            perm_mode = ("bypassPermissions"
+                         if b.permission in ("bypass", "auto") else "default")
+            disallowed = []
         options = ClaudeAgentOptions(
             system_prompt={
                 "type": "preset",
@@ -150,8 +168,8 @@ class ClaudeBrain:
             include_partial_messages=True,
             # Full-access sessions skip the SDK's own gating too; other levels go through the
             # default flow where can_use_tool (_permission) asks/allows/denies per the setting.
-            permission_mode=("bypassPermissions"
-                             if b.permission in ("bypass", "auto") else "default"),
+            permission_mode=perm_mode,
+            disallowed_tools=disallowed,
             # The SDK reads the CLI's stream-json output line by line with a default 1 MB cap
             # per message. A single big tool result (a browser screenshot/DOM, a large file
             # read) can exceed that, raising CLIJSONDecodeError and corrupting the stream — the
@@ -195,7 +213,16 @@ class ClaudeBrain:
         Otto's own voice/screen tools are always allowed.
         """
         if tool_name.startswith("mcp__voice__"):
-            return PermissionResultAllow()
+            return PermissionResultAllow()          # Orrin's own tools (remember/say/notify)
+        # Read-only research mode: allow only reads + Orrin's tools; deny every write/action
+        # (editors are also SDK-disallowed, so this covers Bash-writes, sends, browser/computer
+        # loops, and anything unknown). This runs unattended, so it defaults to DENY.
+        if self._read_only:
+            if _is_read_only(tool_name):
+                return PermissionResultAllow()
+            if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
+                return PermissionResultAllow()
+            return PermissionResultDeny(message="Read-only research mode: writes are blocked.")
         # Agentic action tools (browser / computer-use) run through their loop without a
         # per-step confirmation — otherwise every click would need a spoken yes, which makes
         # computer use unusable. Configurable via brain.auto_allow_tools.
