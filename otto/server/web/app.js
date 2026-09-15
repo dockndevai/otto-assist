@@ -54,6 +54,7 @@ function closeChat() { appEl.classList.remove("chat-open"); updateNavActive(); }
 $("chatToggle").onclick = () => appEl.classList.contains("chat-open") ? closeChat() : openChat();
 $("chatClose").onclick = closeChat;
 { const sb = $("settingsBtn"); if (sb) sb.onclick = () => showView(view === "settings" ? "home" : "settings"); }
+{ const st = $("stopBtn"); if (st) st.onclick = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" })); }; }
 { const hb = $("hamburger"); if (hb) hb.onclick = () => appEl.classList.toggle("nav-open"); }
 { const sc = $("scrim"); if (sc) sc.onclick = () => appEl.classList.remove("nav-open"); }
 

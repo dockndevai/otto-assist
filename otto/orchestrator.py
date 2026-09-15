@@ -1287,6 +1287,9 @@ class Orchestrator:
             return
         self._cancel_briefing()   # you gave a command — skip the proactive startup briefing
         self._cancel_idle_research()   # ...and pause any background research immediately
+        if self._is_stop_command(text):   # typed/said "stop" — halt now
+            self.interrupt_now("text")
+            return
         # If the agent is waiting on an ask_user answer, this input is that answer.
         if self._pending_answer and not self._pending_answer.done():
             self.bus.transcript("user", text, final=True)
@@ -1351,6 +1354,47 @@ class Orchestrator:
             self._ptt_armed = False
             self._status("idle", "Ready")
 
+    # -- interruption / barge-in ------------------------------------------
+    # Whole-utterance "stop" phrases that halt Orrin immediately. "stop listening" is NOT here —
+    # that's the sleep command, handled separately.
+    _STOP_WORDS = {
+        "stop", "stop it", "stop stop", "stop stop stop", "stop talking", "stop please",
+        "okay stop", "ok stop", "wait", "wait wait", "hold on", "hold on hold on", "cancel",
+        "never mind", "nevermind", "quiet", "be quiet", "shush", "shut up", "enough", "pause",
+        "halt", "abort", "stop now", "that's enough", "thats enough",
+    }
+
+    def _is_stop_command(self, text: str) -> bool:
+        return " ".join(_norm_words(text)) in self._STOP_WORDS
+
+    def interrupt_now(self, reason: str = "stop") -> None:
+        """Halt whatever Orrin is doing right now — cut the current speech AND interrupt the
+        running turn. Wired to the 'stop' word (heard in a gap), the dashboard Stop button, and
+        the push-to-talk hotkey. Reliable regardless of the mic (button/hotkey don't need it)."""
+        print(f"[otto] interrupt ({reason})", file=sys.stderr, flush=True)
+        self._speak_done = True
+        self._speech_buf = ""
+        if self.mouth is not None:
+            try:
+                self.mouth.stop()          # cut the audio that's playing
+            except Exception:
+                pass
+        self._mute_input_until = 0.0       # re-open the mic right away
+        if self.ears is not None:
+            try:
+                self.ears.set_mic(True)
+            except Exception:
+                pass
+        self._cancel_await()
+        self._expecting_answer = False
+        self._unduck_media()
+        if self._loop is not None:         # interrupt the focused brain turn (best-effort)
+            try:
+                self._loop.create_task(self.focused_ws.brain.interrupt())
+            except Exception:
+                pass
+        self._status("idle", "Stopped")
+
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
             return
@@ -1360,6 +1404,12 @@ class Orchestrator:
             self.memory.record_capture(self.focused, text, source="voice")
         except Exception:
             pass
+        # "stop" / "wait" / "cancel" — halt immediately, in any mode. (Heard whenever the mic is
+        # on, i.e. in the gap after Orrin's speech or while it's working — during actual playback
+        # the mic is muted, so use the Stop button or the hotkey for a hard mid-sentence cut.)
+        if self._is_stop_command(text):
+            self.interrupt_now("voice")
+            return
         # Hands-free dictation toggle ("start/stop dictation") — whole-utterance match.
         if self._is_dictation_command(text):
             self.set_dictation(not self._dictation)
@@ -1785,7 +1835,9 @@ class Orchestrator:
         self._loop.call_later(2.5, _reset)
 
     def _on_ptt_press(self) -> None:
-        # Global hotkey (⌘⇧J) arms capture of the next utterance — same as the Talk button.
+        # Global hotkey (⌘⇧J): first HALT whatever Orrin's doing (barge-in — reliable, no mic
+        # needed), then arm capture of your next utterance — same as the Talk button.
+        self.interrupt_now("hotkey")
         self.arm_ptt()
 
     def _on_ptt_release(self) -> None:

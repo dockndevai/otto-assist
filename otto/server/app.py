@@ -585,6 +585,8 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                 data = await websocket.receive_json()
                 if data.get("type") == "user_text":
                     orch.submit_user_input(data.get("text", ""))
+                elif data.get("type") == "stop":
+                    orch.interrupt_now("button")
                 elif data.get("type") == "ptt":
                     orch.arm_ptt()
                 elif data.get("type") == "switch_project":
