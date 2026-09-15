@@ -1331,11 +1331,12 @@ class Orchestrator:
         if not norm or not phrase:
             return False, ""
         trigger = phrase[-1]                          # e.g. "otto"
-        start = 1 if norm[0] in _GREETINGS else 0
-        if start < len(norm) and _wordish(norm[start], trigger):
-            return True, " ".join(norm[start + 1:])
-        if _wordish(norm[0], trigger):                # trigger first, no greeting
-            return True, " ".join(norm[1:])
+        # Trigger as the 1st or 2nd word. STT very often prepends or garbles the greeting
+        # ("Hey Otto" -> "Here Otto" / "Hi Otto" / "A Otto", or just "Otto"), so accept the
+        # trigger in either of the first two slots and take the rest as the command.
+        for i in (0, 1):
+            if i < len(norm) and _wordish(norm[i], trigger):
+                return True, " ".join(norm[i + 1:])
         # fused whole phrase, e.g. "Hey Otto" -> "hiyoto" vs "heyotto"
         concat = "".join(phrase)
         if len(concat) >= 6 and _levenshtein(norm[0], concat) <= 2:

@@ -339,6 +339,10 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("Auto, what is the time?") == (True, "what is the time")  # misheard
     assert orch._match_wake("what's the weather") == (False, "")              # no wake word
     assert orch._match_wake("someone said hey otto later") == (False, "")     # must be a prefix
+    # Common STT mishears of "Hey Otto" — the trigger lands in the 1st/2nd slot.
+    assert orch._match_wake("Here Otto, what's the time?") == (True, "whats the time")
+    assert orch._match_wake("Here Otto") == (True, "")
+    assert orch._match_wake("Hi Otto, open my email") == (True, "open my email")
 
 
 def test_wake_word_buried_in_long_media_blob():
