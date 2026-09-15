@@ -1374,6 +1374,8 @@ class Orchestrator:
         print(f"[otto] interrupt ({reason})", file=sys.stderr, flush=True)
         self._speak_done = True
         self._speech_buf = ""
+        self._cancel_briefing()            # a Stop during the startup greeting halts it too
+        self._cancel_idle_research()
         if self.mouth is not None:
             try:
                 self.mouth.stop()          # cut the audio that's playing
@@ -1436,8 +1438,13 @@ class Orchestrator:
         # Awaiting the command after a bare wake word (any backend). Ignore Otto's own
         # greeting echo and a repeated wake word; the next real utterance is the command.
         if self._awaiting_command:
-            if self._is_ack_echo(text):
-                print(f"[otto] ignoring greeting echo: {text!r}", file=sys.stderr, flush=True)
+            # Never let Orrin's OWN voice become the "command"/"answer": drop a greeting-ack echo,
+            # anything still overlapping its speech, or a line matching what it just said. This is
+            # what stopped the startup greeting from answering its own question in a loop.
+            if (self._is_ack_echo(text) or self._output_suppressing()
+                    or self._is_self_echo(text)):
+                print(f"[otto] awaiting: ignoring self-echo: {text!r}",
+                      file=sys.stderr, flush=True)
                 return
             matched, remainder = self._match_wake(text)
             if matched and not remainder.strip():
