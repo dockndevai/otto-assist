@@ -16,10 +16,32 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
+import time
 from typing import Callable
 
 from ..config import Settings
+
+
+class _PipeErrorWatch(logging.Handler):
+    """Watches the root logger for RealtimeSTT's dead-pipe errors ("Error receiving data from
+    connection" / EOFError). When the recorder's worker dies the parent floods these; counting
+    them lets the Ears watchdog notice and rebuild even when no exception reaches our own loop."""
+    def __init__(self, on_error: Callable[[], None]) -> None:
+        super().__init__(level=logging.ERROR)
+        self._on_error = on_error
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return
+        if "receiving data from connection" in msg or "EOFError" in msg:
+            try:
+                self._on_error()
+            except Exception:
+                pass
 
 
 def _install_porcupine_custom_keyword_shim() -> None:
@@ -234,13 +256,22 @@ class Ears:
         self._params = params            # kept so the watchdog can rebuild after a crash
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
+        self._last_rebuild = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         # Watchdog: RealtimeSTT runs the recorder in child processes; if a worker dies the
-        # parent silently spins on a dead pipe (EOFError flood) and Otto goes deaf. Detect a
-        # dead worker and rebuild the recorder so speech keeps working without a manual restart.
+        # parent silently spins on a dead pipe (EOFError flood) and Otto goes deaf. Detect that
+        # (dead worker OR the EOF flood) and rebuild so speech keeps working without a restart.
+        self._pipe_errors = 0
+        try:
+            logging.getLogger().addHandler(_PipeErrorWatch(self._note_pipe_error))
+        except Exception:
+            pass
         self._health = threading.Thread(target=self._health_loop, daemon=True)
         self._health.start()
+
+    def _note_pipe_error(self) -> None:
+        self._pipe_errors += 1
 
     def _run(self) -> None:
         while self._running:
@@ -257,30 +288,34 @@ class Ears:
                 self._post(self._on_final, text.strip())
 
     def _health_loop(self) -> None:
-        """Restart the recorder if one of its worker processes dies (the EOFError-flood /
-        'transcription stopped working' failure). Checks every few seconds."""
-        import logging
+        """Rebuild the recorder if it breaks — either a worker process dies, or the parent
+        starts spinning on a dead pipe (the EOFError flood). Both make Otto silently go deaf;
+        this recovers without a manual restart. Checks every few seconds, with a cooldown."""
         while self._running:
-            time.sleep(5)
+            time.sleep(4)
             if not self._running:
                 break
             rec = self._recorder
             if rec is None:
                 continue
+            if time.monotonic() - self._last_rebuild < 15:
+                continue                              # don't rebuild-storm
             tp = getattr(rec, "transcript_process", None)
             rp = getattr(rec, "reader_process", None)
             dead = ((tp is not None and not tp.is_alive())
                     or (rp is not None and not rp.is_alive()))
-            if dead:
-                logging.getLogger("otto").warning(
-                    "recorder worker died — rebuilding the recorder")
+            reason = "worker died" if dead else ("pipe errors" if self._pipe_errors >= 5 else "")
+            if reason:
+                print(f"[otto] recorder unhealthy ({reason}) — rebuilding",
+                      file=sys.stderr, flush=True)
                 self._rebuild_recorder()
 
     def _rebuild_recorder(self) -> None:
-        """Tear down the (dead) recorder and build a fresh one from the saved params. Shutting
+        """Tear down the (broken) recorder and build a fresh one from the saved params. Shutting
         the old one down unblocks _run's `.text()`, which then picks up the new recorder."""
-        import logging
         from RealtimeSTT import AudioToTextRecorder
+        self._last_rebuild = time.monotonic()
+        self._pipe_errors = 0
         old = self._recorder
         try:
             if old is not None:
@@ -289,9 +324,9 @@ class Ears:
             pass
         try:
             self._recorder = AudioToTextRecorder(**self._params)
-            logging.getLogger("otto").info("recorder rebuilt")
+            print("[otto] recorder rebuilt", file=sys.stderr, flush=True)
         except Exception as e:
-            logging.getLogger("otto").error("recorder rebuild failed: %r", e)
+            print(f"[otto] recorder rebuild failed: {e!r}", file=sys.stderr, flush=True)
 
     def set_mic(self, on: bool) -> None:
         """Enable/disable microphone capture at the recorder. Used for strict half-duplex:
