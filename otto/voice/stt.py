@@ -231,10 +231,16 @@ class Ears:
                 params["openwakeword_inference_framework"] = cfg.oww_inference_framework
                 params["wake_words"] = Path(path).stem
 
+        self._params = params            # kept so the watchdog can rebuild after a crash
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Watchdog: RealtimeSTT runs the recorder in child processes; if a worker dies the
+        # parent silently spins on a dead pipe (EOFError flood) and Otto goes deaf. Detect a
+        # dead worker and rebuild the recorder so speech keeps working without a manual restart.
+        self._health = threading.Thread(target=self._health_loop, daemon=True)
+        self._health.start()
 
     def _run(self) -> None:
         while self._running:
@@ -249,6 +255,43 @@ class Ears:
                 continue
             if text and self._running:
                 self._post(self._on_final, text.strip())
+
+    def _health_loop(self) -> None:
+        """Restart the recorder if one of its worker processes dies (the EOFError-flood /
+        'transcription stopped working' failure). Checks every few seconds."""
+        import logging
+        while self._running:
+            time.sleep(5)
+            if not self._running:
+                break
+            rec = self._recorder
+            if rec is None:
+                continue
+            tp = getattr(rec, "transcript_process", None)
+            rp = getattr(rec, "reader_process", None)
+            dead = ((tp is not None and not tp.is_alive())
+                    or (rp is not None and not rp.is_alive()))
+            if dead:
+                logging.getLogger("otto").warning(
+                    "recorder worker died — rebuilding the recorder")
+                self._rebuild_recorder()
+
+    def _rebuild_recorder(self) -> None:
+        """Tear down the (dead) recorder and build a fresh one from the saved params. Shutting
+        the old one down unblocks _run's `.text()`, which then picks up the new recorder."""
+        import logging
+        from RealtimeSTT import AudioToTextRecorder
+        old = self._recorder
+        try:
+            if old is not None:
+                old.shutdown()
+        except Exception:
+            pass
+        try:
+            self._recorder = AudioToTextRecorder(**self._params)
+            logging.getLogger("otto").info("recorder rebuilt")
+        except Exception as e:
+            logging.getLogger("otto").error("recorder rebuild failed: %r", e)
 
     def set_mic(self, on: bool) -> None:
         """Enable/disable microphone capture at the recorder. Used for strict half-duplex:
