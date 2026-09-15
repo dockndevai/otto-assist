@@ -9,7 +9,6 @@ Otto injects is a short voice-manners note and its voice/screen tools.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, AsyncIterator
 

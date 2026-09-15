@@ -1300,6 +1300,10 @@ def test_memory_preamble_injected_once_then_on_change(tmp_path, monkeypatch):
     """The bounded preamble is injected on a chat's first turn and again only when the
     remembered content changes — not redundantly every turn (a token optimization)."""
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    # Hermetic: point the memory store at a temp dir, not the real ~/Library store — otherwise
+    # facts persist across runs (and the packaged app's own store) and the re-injection assertion
+    # flakes.
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
     from otto.workspace import Workspace
 
     class RecBrain(_FakeBrain):

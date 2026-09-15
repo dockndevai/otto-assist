@@ -4,6 +4,7 @@ API, and (optionally) the Otto MCP server mounted at /mcp for Claude to connect 
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import yaml

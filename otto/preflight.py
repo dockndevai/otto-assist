@@ -24,7 +24,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import OTTO_HOME, Settings
