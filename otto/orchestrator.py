@@ -174,6 +174,9 @@ class Orchestrator:
         self._briefing_done = False
         self._last_wake = 0.0     # debounce timestamp for wake-word detections
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
+        # Recently-spoken lines (text, monotonic ts) — so we can drop the mic re-hearing Otto's
+        # own voice through the speaker in always-listen (timing-independent echo guard).
+        self._recent_spoken: list[tuple[str, float]] = []
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
         self._ptt_armed = False
         self._ptt_handle = None
@@ -232,6 +235,12 @@ class Orchestrator:
         if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
             return
         self.mouth.speak(t)
+        # Remember what we just said so the mic re-hearing it (speaker echo) can be dropped even
+        # after the timed mute window closes. Keep the last few, ~30s.
+        now = time.monotonic()
+        self._recent_spoken.append((t, now))
+        self._recent_spoken = [(x, ts) for (x, ts) in self._recent_spoken
+                               if now - ts < 30][-8:]
         # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.
         secs = max(1.0, len(t) / 14.0) + 2.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
@@ -1219,6 +1228,13 @@ class Orchestrator:
         if self._output_suppressing():
             print(f"[otto] ignoring self-echo (speaking): {text!r}", file=sys.stderr, flush=True)
             return
+        # Timing-independent echo guard: even after the mute window closes, the mic can catch
+        # the tail of what Otto just said (esp. in always-listen on speakers). Drop anything
+        # that closely matches a line Otto spoke in the last ~30s, so it never answers itself.
+        if self._is_self_echo(text):
+            print(f"[otto] ignoring self-echo (recent reply): {text!r}",
+                  file=sys.stderr, flush=True)
+            return
         # Asleep (paused by "stop listening"): ignore everything EXCEPT the wake word, which
         # wakes Otto back into fully hands-free listening. If a command trails the wake word
         # ("otto, what's the weather"), run it immediately.
@@ -1510,6 +1526,28 @@ class Orchestrator:
         for a in _WAKE_ACKS:
             ack_words |= set(_norm_words(a))
         return len(tw & ack_words) / len(tw) > 0.6
+
+    def _is_self_echo(self, text: str) -> bool:
+        """Is `text` the mic re-hearing something Otto just SAID (speaker echo)? Compares the
+        heard words against Otto's recently-spoken lines: a contained phrase or >70% word
+        overlap counts as an echo. Timing-independent, so it catches the tail that slips past
+        the mute window."""
+        tw = _norm_words(text)
+        if not tw:
+            return False
+        tset, tjoined = set(tw), " ".join(tw)
+        now = time.monotonic()
+        for spoken, ts in self._recent_spoken:
+            if now - ts > 30:
+                continue
+            sw = _norm_words(spoken)
+            if not sw:
+                continue
+            if tjoined and tjoined in " ".join(sw):        # heard is a chunk of what we said
+                return True
+            if len(tset & set(sw)) / len(tset) > 0.7:      # strong overlap with a spoken line
+                return True
+        return False
 
     def _await_timeout(self) -> None:
         if self._awaiting_command:
