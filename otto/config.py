@@ -150,6 +150,12 @@ class STTConfig(BaseModel):
     # hears only you — then resume it when the listen window ends with no command. Uses the
     # system play/pause media key, so it doesn't mute Orrin's own voice.
     duck_media_on_wake: bool = True
+    # Voice barge-in: keep the mic LISTENING while Orrin is speaking so you can say "stop" to
+    # cut it off mid-sentence. Only stop-words act during playback; everything else (incl. its
+    # own echo) is dropped. Reliable on headphones; on laptop speakers the mic hears Orrin's own
+    # voice so it's best-effort (use the Stop button/hotkey there). Off = mic muted during
+    # speech (voice "stop" only works in gaps).
+    barge_in: bool = True
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"

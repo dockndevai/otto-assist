@@ -258,9 +258,11 @@ class Orchestrator:
         # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.
         secs = max(1.0, len(t) / 14.0) + 2.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
-        # Primary echo cure: physically stop the mic from capturing while we speak, then
-        # re-enable it once the mute window elapses (extended by any later line).
-        if self.ears is not None:
+        # Echo handling. With barge-in ON we keep the mic LISTENING during speech so you can say
+        # "stop" to cut in — the stop-word check runs before the echo filter, and everything else
+        # (including Orrin's own echo) is dropped by _output_suppressing. With barge-in OFF we
+        # physically mute the mic during speech (no voice "stop" mid-sentence; use the button).
+        if self.ears is not None and not self.settings.voice.stt.barge_in:
             try:
                 self.ears.set_mic(False)
             except Exception:
