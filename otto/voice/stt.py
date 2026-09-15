@@ -174,6 +174,10 @@ class Ears:
             # Wait after you stop before ending the turn (lower = snappier, higher = won't
             # clip a mid-thought pause).
             post_speech_silence_duration=cfg.silence_seconds,
+            # Latency: kick off the final transcription DURING the end-of-speech silence gap
+            # rather than after it, so the text is ready ~the moment the turn ends instead of
+            # adding transcription time on top of the silence wait.
+            early_transcription_on_silence=int(max(0.0, cfg.silence_seconds - 0.3) * 1000),
             # VAD gating: trigger on clearer speech and ignore short noise blips, so the
             # recorder hands Whisper real speech instead of ambient sound it hallucinates over.
             silero_sensitivity=cfg.silero_sensitivity,
