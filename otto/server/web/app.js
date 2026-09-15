@@ -139,6 +139,14 @@ function handle(ev) {
     case "ask_user": openChat(); $("input").focus(); setMood("warn", 12000); return;
     case "project": setFocused(ev.path, ev.name || ev.path); if (view === "home") renderWorkspace(); return;
     case "workspaces": setFocused(ev.focused); lastWorkspaces = ev.items || lastWorkspaces; renderStats(); if (view === "home") renderWorkspace(); return;
+    case "research": {
+      const say = $("wsSay");
+      if (say) {
+        if (ev.active) { say.dataset.research = "1"; say.textContent = `🔎 Studying ${ev.name || "your projects"} in the background…`; }
+        else if (say.dataset.research) { delete say.dataset.research; if (view === "home") renderWorkspace(); }
+      }
+      return;
+    }
     case "log": ingestLog(ev); return;
     case "preflight": renderPreflight(ev); return;
     case "mood": setMood(ev.level, 25000); return;
@@ -211,8 +219,11 @@ async function renderWorkspace() {
   initGraphSphere("wsOrb"); initWsBg(); buildWsChips();
   let d = {}; try { d = await (await fetch("/api/deck")).json(); } catch (_) {}
   deckData = d; const pj = d.project || {}, s = d.stats || {};
-  const say = $("wsSay"); if (say && !say.dataset.live) say.textContent = pj.claude
-    ? `Working in ${pj.name || "your project"} — everything's green.` : "Ready when you are.";
+  const say = $("wsSay"); if (say && !say.dataset.live) {
+    const n = (d.projects || []).length;
+    say.textContent = n ? `Managing ${n} project${n === 1 ? "" : "s"} across your system — say the word.`
+                        : "Ready when you are.";
+  }
   renderRecentChats(); renderActiveProject(d); renderProjectsPanel(d); renderActivityPanel(s);
 }
 
@@ -260,8 +271,9 @@ function buildWsChips() {
   const c = $("wsChips"); if (!c) return;
   const send = (t) => { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "user_text", text: t })); openChat(); } };
   const chips = [
-    ["📋 Brief me", () => send("Brief me — where are we?")],
-    ["🕓 What changed today?", () => send("What changed in this project today?")],
+    ["📋 Brief me", () => send("Brief me — across all my projects, where do things stand?")],
+    ["💡 What should we do?", () => send("Looking across all my projects, what should we do next?")],
+    ["🕓 What changed today?", () => send("What changed across my projects today?")],
     ["🎙 Talk", () => { const m = $("mic"); if (m) m.click(); }],
     ["＋ New chat", () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "new_chat" })); }],
   ];
