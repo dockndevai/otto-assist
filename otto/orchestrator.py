@@ -179,6 +179,9 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        # True while we've paused the user's media (music/video) during a wake->listen window,
+        # so we know to resume it afterwards.
+        self._ducked = False
         # Dictation-anywhere: when on, a heard command is typed into the focused app instead
         # of being sent to Claude (runtime-toggleable; starts from config).
         self._dictation = settings.voice.stt.dictation_mode
@@ -250,6 +253,33 @@ class Orchestrator:
         import random
         pool = self._ACKS_ASK if intent == "question" else self._ACKS_DO
         self._voice_out(random.choice(pool))
+
+    # -- media ducking: pause the user's music/video while listening after the wake word ------
+    def _media_playpause(self) -> None:
+        """Send the system play/pause media key — toggles whatever is playing (YouTube in a
+        browser, Spotify, Music). Doesn't touch Orrin's own TTS (that's afplay, not a media
+        session). Best-effort; a failure must never break the voice flow."""
+        try:
+            from pynput.keyboard import Controller, Key
+            Controller().tap(Key.media_play_pause)
+        except Exception as e:
+            print(f"[otto] media key failed: {e!r}", file=sys.stderr, flush=True)
+
+    def _duck_media(self) -> None:
+        """Pause playing media so the mic hears only you during the wake->command window."""
+        if self._ducked or not self.settings.voice.stt.duck_media_on_wake:
+            return
+        self._ducked = True
+        print("[otto] ducking media (pause)", file=sys.stderr, flush=True)
+        self._media_playpause()
+
+    def _unduck_media(self) -> None:
+        """Resume the media we paused on wake (only if we actually paused it)."""
+        if not self._ducked:
+            return
+        self._ducked = False
+        print("[otto] unducking media (resume)", file=sys.stderr, flush=True)
+        self._media_playpause()
 
     # -- intent identification -------------------------------------------------
     # Before doing any work, decide what KIND of thing you just said, so Otto reacts like a
@@ -1210,6 +1240,7 @@ class Orchestrator:
         """Pause hands-free listening until the wake word. The mic stays on for the wake word."""
         self._sleeping = True
         self._cancel_await()
+        self._unduck_media()   # resume any media we paused before going quiet
         ack = "Okay, going quiet. Say the wake word when you need me."
         self.bus.transcript("assistant", ack, final=True)
         self._status("idle", "Sleeping — say the wake word")
@@ -1388,6 +1419,11 @@ class Orchestrator:
         follow-up even when it's silent — the two are independent."""
         self._awaiting_command = True
         self._follow_up_active = follow_up
+        # On an explicit wake (not a post-reply follow-up), pause any playing media so the mic
+        # hears only the command; it resumes when the window ends (timeout/sleep) or the turn
+        # finishes with nothing more to listen for.
+        if not follow_up:
+            self._duck_media()
         self._status("listening", "Listening…")
         if greet:
             ack = random.choice(_WAKE_ACKS)
@@ -1417,6 +1453,7 @@ class Orchestrator:
         if self._awaiting_command:
             self._awaiting_command = False
             self._follow_up_active = False
+            self._unduck_media()   # no command came — resume whatever we paused on wake
             self._status("idle", "Ready")
 
     def _cancel_await(self) -> None:
@@ -1583,6 +1620,7 @@ class Orchestrator:
                             and not (self._pending_answer and not self._pending_answer.done())):
                         self._enter_awaiting_command(greet=False, follow_up=True, timeout=fu)
                     else:
+                        self._unduck_media()   # nothing more to listen for — resume media
                         self._status("idle", "Ready")
                 else:
                     # Background window finished — nudge the user; its chat is there to switch to.
