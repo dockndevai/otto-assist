@@ -343,6 +343,27 @@ def test_phrase_wake_matcher():
     assert orch._match_wake("Here Otto, what's the time?") == (True, "whats the time")
     assert orch._match_wake("Here Otto") == (True, "")
     assert orch._match_wake("Hi Otto, open my email") == (True, "open my email")
+    # But short filler words near "otto" must NOT false-trigger it.
+    assert orch._match_wake("how to check the agent") == (False, "")   # "to" != "otto"
+    assert orch._match_wake("i want to go") == (False, "")
+
+
+def test_switch_project_by_voice_is_a_command():
+    """'switch to the X project' / 'switch project to X' route to project switching, not a turn."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        called = {}
+        async def fake_switch(name):
+            called["name"] = name
+        orch._switch_project_by_name = fake_switch
+        for phrase in ("switch to the auth project", "go to billing workspace",
+                       "switch project to auth"):
+            assert orch._maybe_chat_command(phrase) is True, phrase
+        await asyncio.sleep(0)   # let the scheduled coroutine run
+        # A normal sentence is NOT a project switch.
+        assert orch._maybe_chat_command("check the auth project status") is False
+    asyncio.run(run())
 
 
 def test_wake_word_buried_in_long_media_blob():

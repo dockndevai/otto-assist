@@ -99,8 +99,12 @@ def _wordish(word: str, target: str) -> bool:
         return True
     if word in _WAKE_ALIASES.get(target, set()):
         return True
-    # small edit distance for words long enough to be distinctive
-    if len(target) >= 4 and _levenshtein(word, target) <= 2:
+    # Small edit distance, but only when both words are long enough to be distinctive —
+    # otherwise short fillers slip through (e.g. "to" is edit-distance 2 from "otto" and would
+    # falsely trigger the wake word in "how TO check ...").
+    if len(target) >= 4 and len(word) >= 4 and _levenshtein(word, target) <= 2:
+        return True
+    if len(target) >= 4 and _levenshtein(word, target) <= 1:
         return True
     return False
 
@@ -870,6 +874,13 @@ class Orchestrator:
         r"^switch\s+(?:to\s+)?(?:the\s+)?(?P<name>.+?)\s+chat\.?$", re.I)
     _RE_RENAME_CHAT = re.compile(
         r"^rename\s+(?:this\s+|the\s+|current\s+)?chat\s+to\s+(?P<title>.+?)\.?$", re.I)
+    # Project switching by voice: "switch to the auth project", "go to billing workspace",
+    # "switch project to auth", "open the auth project".
+    _RE_SWITCH_PROJECT = re.compile(
+        r"^(?:switch|change|go|move|open)\s+(?:to\s+)?(?:the\s+)?(?P<name>.+?)"
+        r"\s+(?:project|workspace|repo)\.?$", re.I)
+    _RE_SWITCH_PROJECT2 = re.compile(
+        r"^(?:switch|change)\s+(?:the\s+)?(?:project|workspace)\s+to\s+(?P<name>.+?)\.?$", re.I)
     # "in <name>, <command>" / "in the <name> workspace: <command>" — target another workspace.
     _RE_TARGET = re.compile(
         r"^in\s+(?:the\s+)?(?P<name>.+?)(?:\s+workspace)?\s*[,:]\s*(?P<cmd>.+)$", re.I)
@@ -902,12 +913,27 @@ class Orchestrator:
             self.bus.transcript("user", text, final=True)
             self._loop.create_task(self.rename_chat(m.group("title").strip()))
             return True
+        m = self._RE_SWITCH_PROJECT.match(text) or self._RE_SWITCH_PROJECT2.match(text)
+        if m:
+            self.bus.transcript("user", text, final=True)
+            self._loop.create_task(self._switch_project_by_name(m.group("name").strip()))
+            return True
         m = self._RE_SWITCH_CHAT.match(text)
         if m:
             self.bus.transcript("user", text, final=True)
             self._loop.create_task(self._switch_chat_by_name(m.group("name").strip()))
             return True
         return False
+
+    async def _switch_project_by_name(self, name: str) -> None:
+        """Resolve a spoken project/workspace name to a path and switch focus to it."""
+        path = self._resolve_workspace_name(name)
+        if not path:
+            await self.say(f"I couldn't find a project called “{name}”.")
+            return
+        from pathlib import Path
+        await self.say(f"Switching to {Path(path).name}.")
+        await self.switch_project(path)
 
     async def _switch_chat_by_name(self, name: str) -> None:
         """Resolve a spoken chat name to a session and switch, or ask to disambiguate.
