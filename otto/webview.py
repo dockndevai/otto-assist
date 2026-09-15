@@ -34,8 +34,15 @@ class DashboardWindow:
     def show(self, suffix: str = "") -> None:
         if self.window is None:
             self._build(suffix)
-        elif suffix:
-            self._go(suffix)
+        else:
+            # Reopening: reload so a window left blank by a load that raced the server (or any
+            # transient failure) comes back with fresh content, then honor a hash target.
+            try:
+                self.webview.reload()
+            except Exception:
+                pass
+            if suffix:
+                self._go(suffix)
         self._front()
 
     def open_settings(self) -> None:
@@ -67,6 +74,14 @@ class DashboardWindow:
         win.setContentView_(wv)
         self.window = win
         self.webview = wv
+        # The first load can race the server (recorder/model init delays the port binding a
+        # moment) and land on a blank connection-refused page with no auto-retry. Reload a
+        # couple of times shortly after so the dashboard fills in without the user reopening.
+        try:
+            wv.performSelector_withObject_afterDelay_("reload", None, 2.5)
+            wv.performSelector_withObject_afterDelay_("reload", None, 6.0)
+        except Exception:
+            pass
 
     def _go(self, suffix: str) -> None:
         # Navigate an already-open window (e.g. to the settings hash) without a full reload.
