@@ -27,7 +27,12 @@ from .workspace import Workspace
 
 _log = logging.getLogger("otto")
 
-_SENTENCE_END = re.compile(r"[^.!?\n]*[.!?\n]+")
+# A spoken-sentence boundary while STREAMING: text up to a terminator (. ! ?) that is FOLLOWED
+# by whitespace, or a newline. Requiring whitespace after the terminator means a period inside a
+# decimal (3.0) or a filename (security.md) is NOT a boundary, so the reply isn't chopped into
+# gibberish ("30." / "0." / "md security."). A terminator at the buffer's end is left buffered
+# (more may be coming, e.g. the "0" of "3.0") and spoken at _flush_speech when the turn ends.
+_SENTENCE_END = re.compile(r"(.*?(?:[.!?]+(?=\s)|\n))", re.S)
 
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
@@ -172,6 +177,9 @@ class Orchestrator:
         # One-shot startup briefing: greet + recap on app open, cancelled the moment you speak.
         self._briefing_handle = None
         self._briefing_done = False
+        # True while Orrin has just asked the user a question and is awaiting the spoken answer —
+        # so the next utterance is treated as the answer (not gated as a random command).
+        self._expecting_answer = False
         # Idle background research: a re-arming timer that quietly researches one project at a
         # time when you're idle. Paused the instant you speak/type.
         self._idle_research_handle = None
@@ -1387,6 +1395,11 @@ class Orchestrator:
                 return   # just the wake word again — keep waiting for the command
             command = remainder if (matched and remainder.strip()) else text
             hands_free = self._follow_up_active     # a follow-up window is hands-free; after a
+            # If Orrin just asked a question, THIS utterance is the answer — don't run it through
+            # the anti-hallucination gate (which was dropping real answers like "pass first").
+            if self._expecting_answer:
+                hands_free = False
+                self._expecting_answer = False
             self._cancel_await()                    # bare wake word it's deliberate
             print(f"[otto] command after wake: {command!r} (hands_free={hands_free})",
                   file=sys.stderr, flush=True)
@@ -1723,6 +1736,7 @@ class Orchestrator:
         if self._awaiting_command:
             self._awaiting_command = False
             self._follow_up_active = False
+            self._expecting_answer = False
             self._unduck_media()   # no command came — resume whatever we paused on wake
             self._status("idle", "Ready")
 
@@ -1905,12 +1919,18 @@ class Orchestrator:
                 elif focused:
                     self._flush_speech()
                     # Open a silent follow-up window so the next command needs no wake word —
-                    # unless we're asleep, dictating, or awaiting an explicit answer.
+                    # unless we're asleep, dictating, or awaiting an explicit answer. If Orrin
+                    # ENDED WITH A QUESTION, always open a window (even if follow-ups are off) and
+                    # mark that the next utterance is the answer — so "publish now or pass first?"
+                    # actually gets your reply instead of dropping it.
                     fu = self.settings.voice.stt.follow_up_seconds
-                    if (fu and fu > 0 and reply and not self._sleeping
+                    is_question = bool(reply) and reply.rstrip().endswith("?")
+                    window = float(fu) if (fu and fu > 0) else (20.0 if is_question else 0.0)
+                    if (window > 0 and reply and not self._sleeping
                             and not self._dictation
                             and not (self._pending_answer and not self._pending_answer.done())):
-                        self._enter_awaiting_command(greet=False, follow_up=True, timeout=fu)
+                        self._expecting_answer = is_question
+                        self._enter_awaiting_command(greet=False, follow_up=True, timeout=window)
                     else:
                         self._unduck_media()   # nothing more to listen for — resume media
                         self._status("idle", "Ready")
