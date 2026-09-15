@@ -15,7 +15,6 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any
 
 
 from . import sessions
@@ -755,7 +754,6 @@ class Orchestrator:
     async def clone_workspace(self, url: str, branch: str | None = None) -> Workspace | None:
         """Clone a git repo into a fresh directory and open it as a focused workspace —
         Otto making its own code space to work in. Reuses an existing clone of the same URL."""
-        from pathlib import Path
         url = (url or "").strip().rstrip("/")
         if not re.match(r"^(https?://|git@)", url):
             await self.say("I can only clone http(s) or git URLs.")

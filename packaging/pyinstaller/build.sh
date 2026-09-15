@@ -16,9 +16,26 @@ cd "$(cd "$(dirname "$0")/../.." && pwd)"
 APP="dist/Orrin.app"
 DMG="dist/Orrin.dmg"
 
-echo "==> Ensuring build tooling (pyinstaller) in the venv"
+echo "==> Ensuring build tooling (pyinstaller, ruff) in the venv"
 [ -x .venv/bin/python ] || { echo "Run scripts/setup.sh first (.venv missing)"; exit 1; }
-.venv/bin/pip install -q --upgrade pyinstaller
+.venv/bin/pip install -q --upgrade pyinstaller ruff
+
+# Static gate: catch the class of bug that syntax checks and imports miss — an undefined name
+# used on a rarely-run path (e.g. `time.sleep` with no `import time`, which crashed the recorder
+# watchdog silently at runtime). F821=undefined name, F822=undefined __all__ export,
+# F811=redefinition, F401=unused import. A hit here FAILS the build before we ship it.
+echo "==> Lint gate (undefined names / bad imports)"
+if ! .venv/bin/ruff check otto/ run.py --select F821,F822,F811,F401,F406 --output-format concise; then
+    echo "Build aborted: fix the lint errors above (they would crash at runtime)."
+    exit 1
+fi
+
+# Fast test suite — a second safety net before packaging (~7s).
+echo "==> Running tests"
+if ! .venv/bin/python -m pytest tests/test_pipeline.py -q; then
+    echo "Build aborted: tests failing."
+    exit 1
+fi
 
 echo "==> Metadata fixups (so PyInstaller's stdhooks don't crash)"
 # RealtimeSTT ships 'webrtcvad-wheels' (module: webrtcvad), but PyInstaller's webrtcvad hook

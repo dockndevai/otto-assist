@@ -8,7 +8,6 @@ its data isn't available (no empty boxes). No API keys required.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import time
 import urllib.request
