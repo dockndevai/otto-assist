@@ -172,6 +172,12 @@ class Orchestrator:
         # One-shot startup briefing: greet + recap on app open, cancelled the moment you speak.
         self._briefing_handle = None
         self._briefing_done = False
+        # Idle background research: a re-arming timer that quietly researches one project at a
+        # time when you're idle. Paused the instant you speak/type.
+        self._idle_research_handle = None
+        self._research_ws: Workspace | None = None   # dedicated, kept OUT of self.workspaces
+        self._research_running = False
+        self._research_cancelled = False
         self._last_wake = 0.0     # debounce timestamp for wake-word detections
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
         # Recently-spoken lines (text, monotonic ts) — so we can drop the mic re-hearing Otto's
@@ -463,6 +469,24 @@ class Orchestrator:
         self._loop.create_task(self.run_preflight(request=False))
         # Proactive startup briefing: after a short grace period with no input, greet + recap.
         self._schedule_startup_briefing()
+        # Seed the cross-project registry (so the overview spans every project) + arm idle research.
+        self._loop.create_task(self._seed_registry())
+        self._arm_idle_research()
+
+    async def _seed_registry(self) -> None:
+        """Register every discoverable project in memory so the cross-project overview covers
+        them all, not only ones Orrin has already talked in. Cheap, one-shot, off the voice path."""
+        try:
+            from .projects import list_projects
+            for p in list_projects(current=self.focused, pinned=self.settings.brain.projects):
+                try:
+                    from pathlib import Path
+                    mt = Path(p.path).expanduser().stat().st_mtime
+                except Exception:
+                    mt = None
+                self.memory.register_project(p.path, last_active=mt)
+        except Exception as e:
+            print(f"[otto] registry seed failed: {e!r}", file=sys.stderr, flush=True)
 
     def _schedule_startup_briefing(self) -> None:
         v = self.settings.voice
@@ -497,9 +521,142 @@ class Orchestrator:
         if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
             return
         try:
-            await self._run_turn(self.focused_ws, self._BRIEFING_PROMPT, echo_user=False)
+            pre = self.memory.overview() if self.settings.memory.cross_project else ""
+            prompt = (self._BRIEFING_PROMPT + "\n\n" + pre) if pre else self._BRIEFING_PROMPT
+            await self._run_turn(self.focused_ws, prompt, echo_user=False)
         except Exception as e:
             print(f"[otto] startup briefing failed: {e!r}", file=sys.stderr, flush=True)
+
+    # -- idle background research -----------------------------------------
+    _RESEARCH_PROMPT = (
+        "SYSTEM: Background research pass on THIS project — the user is idle and NOT watching. "
+        "Work SILENTLY and strictly READ-ONLY: you may read files, run read-only git/shell "
+        "(status, log, diff), and search — but you must NOT edit files, run write/destructive "
+        "commands, or commit (those are blocked anyway). Investigate ONE concrete thing that "
+        "advances understanding of this project (recent changes, an open thread, a likely next "
+        "step, or a risk), reach a single clear conclusion, then call the remember tool to save "
+        "1-3 durable findings and one actionable suggestion for this project. Do not speak. Stop "
+        "after saving.")
+
+    def _arm_idle_research(self) -> None:
+        v = self.settings.voice
+        if not getattr(v, "idle_research", False) or self._loop is None:
+            return
+        if self._idle_research_handle is not None:
+            self._idle_research_handle.cancel()
+        delay = max(30.0, float(v.idle_research_delay))
+        self._idle_research_handle = self._loop.call_later(
+            delay, lambda: self._loop.create_task(self._idle_research_tick()))
+
+    def _cancel_idle_research(self) -> None:
+        """You spoke/typed — stop any pending or running background research immediately."""
+        if self._idle_research_handle is not None:
+            self._idle_research_handle.cancel()
+            self._idle_research_handle = None
+        if self._research_running:
+            self._research_cancelled = True
+            ws = self._research_ws
+            if ws is not None and self._loop is not None:
+                self._loop.create_task(ws.brain.interrupt())
+
+    def _idle_quiescent(self) -> bool:
+        return (self.state == "idle"
+                and not self._sleeping
+                and not self._awaiting_command
+                and not self._follow_up_active
+                and not (self._pending_answer is not None and not self._pending_answer.done())
+                and self.focused_ws.state == "idle"
+                and not self._research_running)
+
+    def _next_research_project(self) -> str | None:
+        """Least-recently-researched eligible project (skip the focused one and anything touched
+        within idle_research_min_gap) — gives 'one at a time, rotating' for free."""
+        from pathlib import Path
+        from .memory import project_slug
+        from .projects import list_projects, discover_recent
+        try:
+            cands = [p.path for p in list_projects(current=self.focused,
+                                                   pinned=self.settings.brain.projects)]
+        except Exception:
+            cands = []
+        if not cands:
+            try:
+                cands = list(discover_recent())
+            except Exception:
+                cands = []
+        reg = self.memory.registry()
+        now = time.time()
+        gap = float(self.settings.voice.idle_research_min_gap)
+        eligible: list[tuple[float, str]] = []
+        for path in cands:
+            full = str(Path(path).expanduser())
+            if full == str(Path(self.focused).expanduser()):
+                continue                                   # never research the focused project
+            slug = project_slug(path)
+            last = (reg.get(slug, {}) or {}).get("last_research") \
+                or self.memory.project_updated_at(path)
+            if last and (now - last) < gap:
+                continue                                   # freshly researched — skip for now
+            eligible.append((last or 0.0, path))
+        if not eligible:
+            return None
+        eligible.sort(key=lambda x: x[0])                  # least-recent first
+        mx = int(self.settings.voice.idle_research_max_projects or 0)
+        pool = eligible[:mx] if mx else eligible
+        return pool[0][1]
+
+    async def _idle_research_tick(self) -> None:
+        self._idle_research_handle = None
+        if not self.settings.voice.idle_research or not self._idle_quiescent():
+            self._arm_idle_research()
+            return
+        path = self._next_research_project()
+        if path is None:
+            self._arm_idle_research()
+            return
+        await self._run_idle_research(path)
+
+    async def _run_idle_research(self, path: str) -> None:
+        self._research_running = True
+        self._research_cancelled = False
+        try:
+            self.memory.register_project(path)
+            ws = await self._open_research_ws(path)
+            if ws is None or self._research_cancelled or not self._idle_quiescent():
+                return
+            print(f"[otto] idle research -> {ws.name} (read-only)", file=sys.stderr, flush=True)
+            await self._run_turn(ws, self._RESEARCH_PROMPT, echo_user=False, research=True)
+            if not self._research_cancelled:
+                self.memory.mark_researched(path)
+        except Exception as e:
+            print(f"[otto] idle research failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            await self._close_research_ws()
+            self._research_running = False
+            self._arm_idle_research()                      # cycle to the next project
+
+    async def _open_research_ws(self, path: str) -> Workspace | None:
+        from pathlib import Path
+        p = str(Path(path).expanduser())
+        if self._research_ws is not None and self._research_ws.project == p:
+            return self._research_ws
+        await self._close_research_ws()
+        try:
+            ws = Workspace(self, self.settings, p, new_chat=True, read_only=True)
+            await ws.brain.connect()
+            self._research_ws = ws
+            return ws
+        except Exception as e:
+            print(f"[otto] research ws open failed: {e!r}", file=sys.stderr, flush=True)
+            return None
+
+    async def _close_research_ws(self) -> None:
+        ws, self._research_ws = self._research_ws, None
+        if ws is not None:
+            try:
+                await ws.brain.disconnect()
+            except Exception:
+                pass
 
     def on_mic_decision(self, granted: bool) -> None:
         """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
@@ -713,6 +870,8 @@ class Orchestrator:
             self._ptt.stop()
         if self._eff:
             self._eff.stop()
+        self._cancel_idle_research()
+        await self._close_research_ws()
         for ws in list(self.workspaces.values()):
             await ws.brain.disconnect()
 
@@ -1109,6 +1268,7 @@ class Orchestrator:
         if not text:
             return
         self._cancel_briefing()   # you gave a command — skip the proactive startup briefing
+        self._cancel_idle_research()   # ...and pause any background research immediately
         # If the agent is waiting on an ask_user answer, this input is that answer.
         if self._pending_answer and not self._pending_answer.done():
             self.bus.transcript("user", text, final=True)
@@ -1586,6 +1746,7 @@ class Orchestrator:
         if self._output_suppressing():
             return
         self._cancel_briefing()   # you started talking — skip the proactive startup briefing
+        self._cancel_idle_research()   # ...and pause any background research immediately
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")
 
@@ -1611,7 +1772,8 @@ class Orchestrator:
         """Run a turn in the focused workspace (compat entry point)."""
         await self._run_turn(self.focused_ws, text, echo_user=echo_user)
 
-    async def _run_turn(self, ws: Workspace, text: str, *, echo_user: bool = True) -> None:
+    async def _run_turn(self, ws: Workspace, text: str, *, echo_user: bool = True,
+                        research: bool = False) -> None:
         """Run one turn for a workspace. Different workspaces run concurrently (per-workspace
         lock). EVERY workspace streams its real work — the user's turn, tool calls, and reply —
         to its OWN chat window in the dashboard (events tagged with the workspace). Only the
@@ -1641,6 +1803,13 @@ class Orchestrator:
             # turn. Doc-retrieval excerpts vary by turn, so those still refresh naturally.
             try:
                 pre = self.memory.preamble(p, query=text)
+                # Cross-project: on "what should we do / across my projects" questions, also
+                # inject a bounded digest spanning every project (not just this one).
+                if (self.settings.memory.cross_project and not research
+                        and Memory.is_cross_project_query(text)):
+                    ov = self.memory.overview()
+                    if ov:
+                        pre = (ov + "\n\n" + pre) if pre else ov
                 if pre and pre != getattr(ws, "_last_preamble", None):
                     send_text = pre + text
                     ws._last_preamble = pre
@@ -1709,10 +1878,18 @@ class Orchestrator:
                     self.bus.transcript("assistant", reply, final=True, ws=p)
                     # Learn from the exchange in the background (records the turn + folds any
                     # durable facts/summary into the store). Off the voice path, never blocks.
-                    if self._loop is not None:
+                    # Research turns save their own findings via the remember tool, so skip the
+                    # extra capture pass (avoids a second model call + double-writing).
+                    if self._loop is not None and not research:
                         self._loop.create_task(
                             self.memory.capture(p, text, reply, session_id=ws.session_id))
-                if focused:
+                if research:
+                    # Idle research runs unattended — a quiet, throttled note, not the loud
+                    # "finished" nudge, and only when it actually concluded something.
+                    if reply and not self._research_cancelled:
+                        self.notify(f"Researched {ws.name}",
+                                    reply.split(chr(10), 1)[0][:140])
+                elif focused:
                     self._flush_speech()
                     # Open a silent follow-up window so the next command needs no wake word —
                     # unless we're asleep, dictating, or awaiting an explicit answer.
@@ -1724,6 +1901,7 @@ class Orchestrator:
                     else:
                         self._unduck_media()   # nothing more to listen for — resume media
                         self._status("idle", "Ready")
+                    self._arm_idle_research()   # back to idle → let background research resume
                 else:
                     # Background window finished — nudge the user; its chat is there to switch to.
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."

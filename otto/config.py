@@ -218,6 +218,14 @@ class VoiceConfig(BaseModel):
     # the moment you speak or type. Fires once per launch, only for the focused project.
     startup_briefing: bool = True
     startup_briefing_delay: float = 6.0
+    # Idle background research: after this many seconds with no input, Orrin quietly researches
+    # ONE project at a time (read-only — investigate + save findings to memory, never edit),
+    # reaches a conclusion, then cycles to the next. Pauses the instant you speak or type.
+    idle_research: bool = True
+    idle_research_delay: float = 300.0        # ~5 min of quiet before it kicks in
+    idle_research_readonly: bool = True       # hard read-only (recommended; do not disable)
+    idle_research_min_gap: float = 1800.0     # don't re-research a project within 30 min
+    idle_research_max_projects: int = 0       # 0 = all discovered projects, in rotation
 
 
 class MemoryConfig(BaseModel):
@@ -245,6 +253,13 @@ class MemoryConfig(BaseModel):
     # Add the project's memory dir to Claude's readable dirs, so it can open a saved document
     # in full (beyond the short excerpt injected into the preamble) when it needs the detail.
     expose_to_claude: bool = True
+    # Cross-project awareness: keep a registry of every project and, on "what should we do /
+    # across my projects" questions, inject a bounded digest spanning all of them.
+    cross_project: bool = True
+    max_overview_chars: int = 4000
+    # Also add the whole memory/projects dir to Claude's readable dirs so it can read a sibling
+    # project's notes verbatim. Off by default — the injected digest covers the common case.
+    expose_overview_dirs: bool = False
 
 
 class Settings(BaseSettings):

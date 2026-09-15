@@ -60,12 +60,14 @@ class Workspace:
     """One project running its own Claude chat, in parallel with others."""
 
     def __init__(self, orch: Any, settings: Settings, project: str, *,
-                 resume: str | None = None, new_chat: bool = False) -> None:
+                 resume: str | None = None, new_chat: bool = False,
+                 read_only: bool = False) -> None:
         self.project = project
         self.name = Path(project).name or project
+        self.read_only = read_only
         self.ctx = WorkspaceContext(orch, project)
         self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
-                                 new_chat=new_chat, cwd=project)
+                                 new_chat=new_chat, cwd=project, read_only=read_only)
         self.state = "idle"                 # idle | thinking | speaking | working
         self.lock = asyncio.Lock()          # serialize this workspace's own turns
         self.last_canvas: str | None = None  # last visual it rendered (shown when focused)
@@ -84,6 +86,6 @@ class Workspace:
         except Exception:
             pass
         self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
-                                 new_chat=new_chat, cwd=self.project)
+                                 new_chat=new_chat, cwd=self.project, read_only=self.read_only)
         self._last_preamble = None       # fresh chat → re-inject memory on its first turn
         await self.brain.connect()

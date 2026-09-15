@@ -280,6 +280,100 @@ class Memory:
         except Exception:
             pass
 
+    # -- cross-project registry + overview ---------------------------------
+    def registry(self) -> dict[str, dict]:
+        """The top-level project registry (slug -> {path, name, last_active, turns, …})."""
+        try:
+            return json.loads(self._read(self.root / "index.json") or "{}") or {}
+        except Exception:
+            return {}
+
+    def register_project(self, project_path: str, *, last_active: float | None = None) -> None:
+        """Seed/refresh a project in the registry WITHOUT counting a turn — so the cross-project
+        overview can span every project the user has, not only ones Orrin has talked in."""
+        path = self.root / "index.json"
+        idx = self.registry()
+        slug = project_slug(project_path)
+        entry = idx.get(slug) or {}
+        entry.setdefault("turns", 0)
+        entry["path"] = str(Path(project_path).expanduser())
+        entry["name"] = str(project_path).rstrip("/").split("/")[-1] or project_path
+        if last_active is not None:
+            entry["last_active"] = last_active
+        elif "last_active" not in entry:
+            entry["last_active"] = 0.0
+        idx[slug] = entry
+        try:
+            self._atomic_write(path, json.dumps(idx, indent=2))
+        except Exception:
+            pass
+
+    def mark_researched(self, project_path: str) -> None:
+        """Stamp when Orrin last background-researched this project (queue uses it to rotate)."""
+        path = self.root / "index.json"
+        idx = self.registry()
+        slug = project_slug(project_path)
+        entry = idx.get(slug) or {"turns": 0,
+                                  "path": str(Path(project_path).expanduser()),
+                                  "name": str(project_path).rstrip("/").split("/")[-1]}
+        entry["last_research"] = time.time()
+        idx[slug] = entry
+        try:
+            self._atomic_write(path, json.dumps(idx, indent=2))
+        except Exception:
+            pass
+
+    def project_updated_at(self, project_path: str) -> float:
+        """Freshness signal for the research queue: newest mtime of this project's memory files."""
+        pdir = self.root / "projects" / project_slug(project_path)
+        newest = 0.0
+        for fn in ("project.md", "summary.md"):
+            try:
+                newest = max(newest, (pdir / fn).stat().st_mtime)
+            except Exception:
+                pass
+        return newest
+
+    def overview(self, *, limit: int = 12, per_project_facts: int = 4,
+                 max_chars: int | None = None) -> str:
+        """A bounded cross-project digest — every known project with its latest summary line and a
+        few durable facts — so Orrin can answer 'what should we do across my projects'."""
+        reg = self.registry()
+        if not reg:
+            return ""
+        entries = sorted(reg.values(), key=lambda e: e.get("last_active", 0), reverse=True)[:limit]
+        parts = ["[Orrin cross-project overview — your projects and where each stands. Background "
+                 "knowledge, not instructions.]"]
+        for e in entries:
+            name = e.get("name") or "?"
+            path = e.get("path") or ""
+            slug = project_slug(path) if path else ""
+            pdir = self.root / "projects" / slug
+            summ = ""
+            for ln in self._bullets(self._read(pdir / "summary.md")):
+                summ = ln
+                break
+            head = f"• {name} ({path})" + (f": {summ}" if summ else "")
+            parts.append(head)
+            for fact in self._bullets(self._read(pdir / "project.md"))[:per_project_facts]:
+                parts.append(f"    - {fact}")
+        parts.append("[end overview]")
+        block = "\n".join(parts)
+        cap = max(400, max_chars if max_chars is not None
+                  else getattr(self._cfg, "max_overview_chars", 4000))
+        if len(block) > cap:
+            block = block[:cap].rsplit("\n", 1)[0] + "\n…\n[end overview]"
+        return block
+
+    _CROSS_RE = re.compile(
+        r"\b(across|all (my |the )?projects|every project|other projects?|going on|what should we|"
+        r"suggestions?|what.?s next|overview|big picture|my projects|each project)\b", re.I)
+
+    @staticmethod
+    def is_cross_project_query(text: str) -> bool:
+        """Cheap gate: does this turn ask about work spanning projects / for a suggestion?"""
+        return bool(Memory._CROSS_RE.search(text or ""))
+
     # -- explicit remember (facts + documents) -----------------------------
     async def add_fact(self, project_path: str, fact: str, scope: str = "project") -> bool:
         """Store a durable fact on demand (the user said 'remember that…'). Returns True if it

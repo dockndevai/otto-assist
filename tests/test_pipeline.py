@@ -478,6 +478,87 @@ def test_is_dangerous_classifier():
         assert _is_dangerous(t, a) is False, t
 
 
+def test_memory_overview_and_registry(tmp_path):
+    """Cross-project overview spans all registered projects; register_project doesn't clobber turns."""
+    from otto.memory import Memory, project_slug
+    m = Memory(str(tmp_path), load_settings())
+    m.register_project("/x/alpha", last_active=100.0)
+    m.register_project("/x/beta", last_active=200.0)
+    pa = tmp_path / "projects" / project_slug("/x/alpha")
+    pa.mkdir(parents=True, exist_ok=True)
+    (pa / "project.md").write_text("# Project: alpha\n- uses FastAPI\n- flaky test\n")
+    (pa / "summary.md").write_text("# Recent\n- [2026] wired the dashboard\n")
+    ov = m.overview()
+    assert "alpha" in ov and "beta" in ov and "FastAPI" in ov and "dashboard" in ov
+    assert m.overview() == "" or "[end overview]" in ov     # well-formed digest
+    assert Memory(str(tmp_path / "empty"), load_settings()).overview() == ""  # empty registry
+    # register_project must not reset the turn counter that _touch_index maintains
+    m._touch_index("/x/alpha")
+    n = m.registry()[project_slug("/x/alpha")]["turns"]
+    m.register_project("/x/alpha")
+    assert m.registry()[project_slug("/x/alpha")]["turns"] == n
+
+
+def test_cross_project_query_detection():
+    from otto.memory import Memory
+    for t in ("what should we do across my projects", "give me suggestions",
+              "what's next", "overview of all projects", "what's going on"):
+        assert Memory.is_cross_project_query(t) is True, t
+    for t in ("fix this bug in auth.py", "open the settings", "what time is it"):
+        assert Memory.is_cross_project_query(t) is False, t
+
+
+def test_readonly_permission_gate():
+    """A read-only research brain denies all writes/actions and allows only reads + Orrin tools."""
+    import asyncio as _a
+    from otto.brain.agent import ClaudeBrain
+    from claude_agent_sdk import PermissionResultAllow
+    class Ctx: pass
+    b = ClaudeBrain(Ctx(), load_settings(), read_only=True)
+    async def verdict(name, inp=None):
+        return isinstance(await b._permission(name, inp or {}, None), PermissionResultAllow)
+    async def run():
+        for n, i in [("Write", {}), ("Edit", {}), ("Bash", {"command": "git commit -m x"}),
+                     ("Bash", {"command": "rm -rf x"}), ("mcp__gmail__send_message", {}),
+                     ("mcp__computer-use__app_click", {})]:
+            assert await verdict(n, i) is False, n
+        for n, i in [("Read", {}), ("Grep", {}), ("Bash", {"command": "git status"}),
+                     ("mcp__voice__remember", {}), ("WebSearch", {})]:
+            assert await verdict(n, i) is True, n
+    _a.run(run())
+
+
+def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
+    """The research queue skips the focused project + freshly-researched ones, least-recent first;
+    quiescence gate reflects state."""
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+
+    class P:
+        def __init__(self, path): self.path = path; self.name = path.rsplit("/", 1)[-1]
+
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        focused = orch.focused                              # the real default workspace path
+        monkeypatch.setattr("otto.projects.list_projects",
+                            lambda **k: [P(focused), P("/x/alpha"), P("/x/beta")])
+        monkeypatch.setattr("otto.projects.discover_recent", lambda *a, **k: [])
+        # beta researched just now → skipped; alpha never → eligible
+        orch.memory.mark_researched("/x/beta")
+        pick = orch._next_research_project()
+        assert pick == "/x/alpha", pick                    # focused skipped, beta too fresh
+        # quiescence: idle + focused ws idle → True; busy → False
+        orch.focused_ws.state = "idle"; orch.state = "idle"
+        assert orch._idle_quiescent() is True
+        orch._research_running = True
+        assert orch._idle_quiescent() is False
+        orch._research_running = False
+        orch.state = "thinking"
+        assert orch._idle_quiescent() is False
+    asyncio.run(run())
+
+
 def test_self_echo_guard():
     """The mic re-hearing Otto's own recent reply is dropped, not run as a command."""
     import time as _time
