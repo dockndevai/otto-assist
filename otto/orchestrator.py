@@ -169,6 +169,9 @@ class Orchestrator:
         # Software ("phrase") wake word: await the command after "hey otto".
         self._awaiting_command = False
         self._await_handle = None
+        # One-shot startup briefing: greet + recap on app open, cancelled the moment you speak.
+        self._briefing_handle = None
+        self._briefing_done = False
         self._last_wake = 0.0     # debounce timestamp for wake-word detections
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
         # Push-to-talk: capture the next utterance as a command, no wake word needed.
@@ -449,6 +452,45 @@ class Orchestrator:
         # runs on every start(), so it re-validates on each restart too.
         self._status("idle", "Ready")
         self._loop.create_task(self.run_preflight(request=False))
+        # Proactive startup briefing: after a short grace period with no input, greet + recap.
+        self._schedule_startup_briefing()
+
+    def _schedule_startup_briefing(self) -> None:
+        v = self.settings.voice
+        if not v.startup_briefing or self._briefing_done or self._loop is None:
+            return
+        delay = max(2.0, float(v.startup_briefing_delay))
+        self._briefing_handle = self._loop.call_later(
+            delay, lambda: self._loop.create_task(self._startup_briefing()))
+
+    def _cancel_briefing(self) -> None:
+        """You spoke/typed within the grace window — skip the proactive briefing."""
+        self._briefing_done = True
+        if self._briefing_handle is not None:
+            self._briefing_handle.cancel()
+            self._briefing_handle = None
+
+    _BRIEFING_PROMPT = (
+        "SYSTEM: The app just opened and the user hasn't said anything yet. Greet them by name "
+        "if you know it and give a SHORT spoken briefing in 2-3 natural sentences: what we did "
+        "in the last session, anything still pending, and one concrete suggestion for what to do "
+        "next. Base it on this project's memory and recent chat. If there's nothing notable yet, "
+        "just a brief friendly greeting and offer to help. Speak it — no lists, no markdown.")
+
+    async def _startup_briefing(self) -> None:
+        self._briefing_handle = None
+        if self._briefing_done:
+            return
+        self._briefing_done = True
+        # Don't talk over a phone driving remotely, or if voice output is muted.
+        if self.voice_muted:
+            return
+        if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
+            return
+        try:
+            await self._run_turn(self.focused_ws, self._BRIEFING_PROMPT, echo_user=False)
+        except Exception as e:
+            print(f"[otto] startup briefing failed: {e!r}", file=sys.stderr, flush=True)
 
     def on_mic_decision(self, granted: bool) -> None:
         """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
@@ -1057,6 +1099,7 @@ class Orchestrator:
         text = (text or "").strip()
         if not text:
             return
+        self._cancel_briefing()   # you gave a command — skip the proactive startup briefing
         # If the agent is waiting on an ask_user answer, this input is that answer.
         if self._pending_answer and not self._pending_answer.done():
             self.bus.transcript("user", text, final=True)
@@ -1504,6 +1547,7 @@ class Orchestrator:
         # Otto hearing its own voice through the speaker — don't treat it as user speech.
         if self._output_suppressing():
             return
+        self._cancel_briefing()   # you started talking — skip the proactive startup briefing
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")
 
@@ -1525,11 +1569,11 @@ class Orchestrator:
         pass  # VAD detects end-of-speech; nothing to do on release
 
     # -- the turn ----------------------------------------------------------
-    async def _handle_turn(self, text: str) -> None:
+    async def _handle_turn(self, text: str, *, echo_user: bool = True) -> None:
         """Run a turn in the focused workspace (compat entry point)."""
-        await self._run_turn(self.focused_ws, text)
+        await self._run_turn(self.focused_ws, text, echo_user=echo_user)
 
-    async def _run_turn(self, ws: Workspace, text: str) -> None:
+    async def _run_turn(self, ws: Workspace, text: str, *, echo_user: bool = True) -> None:
         """Run one turn for a workspace. Different workspaces run concurrently (per-workspace
         lock). EVERY workspace streams its real work — the user's turn, tool calls, and reply —
         to its OWN chat window in the dashboard (events tagged with the workspace). Only the
@@ -1540,7 +1584,8 @@ class Orchestrator:
             focused = p == self.focused
             print(f"[otto] turn -> {ws.name} (focused={focused}): {text!r}",
                   file=sys.stderr, flush=True)
-            self.bus.transcript("user", text, final=True, ws=p)   # show it in this window
+            if echo_user:
+                self.bus.transcript("user", text, final=True, ws=p)   # show it in this window
             if focused:
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""

@@ -436,6 +436,33 @@ def test_efficientword_falls_back_to_phrase_when_listener_absent():
     asyncio.run(run())
 
 
+def test_startup_briefing_schedules_and_cancels():
+    """The proactive startup briefing arms a timer, is cancelled by any user input, and runs
+    the briefing as a NON-echoed turn (so the internal prompt isn't shown as the user's)."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.startup_briefing = True
+        # arms a timer
+        orch._schedule_startup_briefing()
+        assert orch._briefing_handle is not None and orch._briefing_done is False
+        # any input cancels it
+        orch.submit_user_input = Orchestrator.submit_user_input.__get__(orch, Orchestrator)
+        orch._cancel_briefing()
+        assert orch._briefing_done is True and orch._briefing_handle is None
+        # the briefing turn does not echo the internal prompt as a user message
+        seen = {}
+        async def fake_turn(ws, text, *, echo_user=True):
+            seen["echo_user"] = echo_user; seen["text"] = text
+        orch._run_turn = fake_turn
+        orch._briefing_done = False
+        orch.voice_muted = False
+        orch.remote_clients = 0
+        await orch._startup_briefing()
+        assert seen.get("echo_user") is False and "SYSTEM" in seen.get("text", "")
+    asyncio.run(run())
+
+
 def test_is_dangerous_classifier():
     """Guarded mode confirms only genuinely destructive/outbound actions; normal work runs."""
     from otto.brain.agent import _is_dangerous

@@ -213,6 +213,11 @@ class VoiceConfig(BaseModel):
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
+    # On app open, if you don't say anything within a few seconds, Orrin greets you and gives a
+    # short spoken briefing (last session recap + anything pending + one suggestion). Cancelled
+    # the moment you speak or type. Fires once per launch, only for the focused project.
+    startup_briefing: bool = True
+    startup_briefing_delay: float = 6.0
 
 
 class MemoryConfig(BaseModel):
