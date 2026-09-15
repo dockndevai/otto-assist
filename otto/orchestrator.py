@@ -504,11 +504,14 @@ class Orchestrator:
             self._briefing_handle = None
 
     _BRIEFING_PROMPT = (
-        "SYSTEM: The app just opened and the user hasn't said anything yet. Greet them by name "
-        "if you know it and give a SHORT spoken briefing in 2-3 natural sentences: what we did "
-        "in the last session, anything still pending, and one concrete suggestion for what to do "
-        "next. Base it on this project's memory and recent chat. If there's nothing notable yet, "
-        "just a brief friendly greeting and offer to help. Speak it — no lists, no markdown.")
+        "SYSTEM: The app just opened and the user hasn't said anything yet. You are their "
+        "SYSTEM-LEVEL assistant for the whole Mac — do NOT fixate on one project. Greet them by "
+        "name if you know it, then give a SHORT spoken briefing (2-3 natural sentences) at the "
+        "SYSTEM level: how things stand ACROSS their projects (use the cross-project overview "
+        "below), anything notable or pending anywhere, and one concrete suggestion for what to do "
+        "next. Do not single out one project unless it's clearly the most important thing right "
+        "now. If there's little to report, a brief friendly greeting + offer to help is fine. "
+        "Speak it — no lists, no markdown.")
 
     async def _startup_briefing(self) -> None:
         self._briefing_handle = None
@@ -588,10 +591,13 @@ class Orchestrator:
         now = time.time()
         gap = float(self.settings.voice.idle_research_min_gap)
         eligible: list[tuple[float, str]] = []
+        home = str(Path.home())
         for path in cands:
             full = str(Path(path).expanduser())
             if full == str(Path(self.focused).expanduser()):
                 continue                                   # never research the focused project
+            if full in ("/", home) or len(full) < 4:       # skip junk "projects" (root, home)
+                continue
             slug = project_slug(path)
             last = (reg.get(slug, {}) or {}).get("last_research") \
                 or self.memory.project_updated_at(path)
@@ -622,7 +628,9 @@ class Orchestrator:
         try:
             self.memory.register_project(path)
             ws = await self._open_research_ws(path)
-            if ws is None or self._research_cancelled or not self._idle_quiescent():
+            # NB: don't re-check _idle_quiescent() here — we've already set _research_running,
+            # which would make it False. Only bail if the user spoke/typed during connect.
+            if ws is None or self._research_cancelled:
                 return
             print(f"[otto] idle research -> {ws.name} (read-only)", file=sys.stderr, flush=True)
             await self._run_turn(ws, self._RESEARCH_PROMPT, echo_user=False, research=True)
@@ -1803,10 +1811,13 @@ class Orchestrator:
             # turn. Doc-retrieval excerpts vary by turn, so those still refresh naturally.
             try:
                 pre = self.memory.preamble(p, query=text)
-                # Cross-project: on "what should we do / across my projects" questions, also
-                # inject a bounded digest spanning every project (not just this one).
+                # System-level stance: give Orrin the whole-system picture by default — inject the
+                # cross-project digest at the START of a session (first turn) and on any
+                # "across my projects / what should we do" question. The _last_preamble dedup
+                # keeps it from repeating every turn, so this stays bounded.
                 if (self.settings.memory.cross_project and not research
-                        and Memory.is_cross_project_query(text)):
+                        and (Memory.is_cross_project_query(text)
+                             or getattr(ws, "_last_preamble", None) is None)):
                     ov = self.memory.overview()
                     if ov:
                         pre = (ov + "\n\n" + pre) if pre else ov
