@@ -154,8 +154,9 @@ class STTConfig(BaseModel):
     # cut it off mid-sentence. Only stop-words act during playback; everything else (incl. its
     # own echo) is dropped. Reliable on headphones; on laptop speakers the mic hears Orrin's own
     # voice so it's best-effort (use the Stop button/hotkey there). Off = mic muted during
-    # speech (voice "stop" only works in gaps).
-    barge_in: bool = True
+    # speech (voice "stop" only works in gaps). Default OFF: on laptop speakers a live mic hears
+    # Orrin's own voice and loops; enable it only with headphones for clean mid-speech "stop".
+    barge_in: bool = False
     # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
     # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
     wakeword_backend: str = "phrase"
