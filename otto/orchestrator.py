@@ -633,12 +633,14 @@ class Orchestrator:
             if ws is None or self._research_cancelled:
                 return
             print(f"[otto] idle research -> {ws.name} (read-only)", file=sys.stderr, flush=True)
+            self.bus.publish({"type": "research", "active": True, "name": ws.name})
             await self._run_turn(ws, self._RESEARCH_PROMPT, echo_user=False, research=True)
             if not self._research_cancelled:
                 self.memory.mark_researched(path)
         except Exception as e:
             print(f"[otto] idle research failed: {e!r}", file=sys.stderr, flush=True)
         finally:
+            self.bus.publish({"type": "research", "active": False})
             await self._close_research_ws()
             self._research_running = False
             self._arm_idle_research()                      # cycle to the next project
