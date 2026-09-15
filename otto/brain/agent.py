@@ -146,6 +146,11 @@ class ClaudeBrain:
             # default flow where can_use_tool (_permission) asks/allows/denies per the setting.
             permission_mode=("bypassPermissions"
                              if b.permission in ("bypass", "auto") else "default"),
+            # The SDK reads the CLI's stream-json output line by line with a default 1 MB cap
+            # per message. A single big tool result (a browser screenshot/DOM, a large file
+            # read) can exceed that, raising CLIJSONDecodeError and corrupting the stream — the
+            # brain then returns empty for every later turn. Give it generous headroom.
+            max_buffer_size=64 * 1024 * 1024,
             **session_opts,
             **({"model": b.model} if b.model else {}),
         )
@@ -159,6 +164,16 @@ class ClaudeBrain:
             except Exception:
                 pass
             self.client = None
+
+    async def reconnect(self) -> None:
+        """Rebuild the SDK client after a fatal stream error (e.g. a tool result that overflowed
+        the JSON buffer corrupts the stream, so every later turn returns empty). Resume the same
+        chat where possible so the conversation continues instead of starting over."""
+        if self.session_id:
+            self._resume = self.session_id
+            self._new_chat = False
+        await self.disconnect()
+        await self.connect()
 
     async def interrupt(self) -> None:
         if self.client:
