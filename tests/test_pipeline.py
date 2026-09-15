@@ -1666,6 +1666,32 @@ def test_speakable_strips_markdown_and_urls():
     assert _speakable("visit https://example.com/x now").count("http") == 0
 
 
+def test_sentence_splitter_keeps_decimals_and_filenames():
+    """Streaming speech must not split inside a decimal (3.0) or filename (x.md) — that produced
+    gibberish chunks like '30.' / '0.' / 'md security.'."""
+    from otto.orchestrator import _SENTENCE_END
+    buf, out = "", []
+    def feed(chunk):
+        nonlocal buf
+        buf += chunk
+        while True:
+            m = _SENTENCE_END.match(buf)
+            if not m:
+                break
+            s = m.group(1).strip(); buf = buf[m.end():]
+            if s:
+                out.append(s)
+    for c in ["Scores hit 3.0 ", "so it's solid. ",
+              "Saved as blog-draft-security.md ", "and policy.ts is ready. ", "Publish now?"]:
+        feed(c)
+    if buf.strip():
+        out.append(buf.strip())
+    assert out[0] == "Scores hit 3.0 so it's solid."
+    assert "blog-draft-security.md" in out[1] and "policy.ts" in out[1]
+    assert out[-1] == "Publish now?"
+    assert not any(s.strip() in (".", "0.", "30.", "md", "ts") for s in out)
+
+
 def test_spoken_reply_is_capped():
     """A runaway verbose reply stops cleanly at the backstop cap — WITHOUT the old jarring
     'the rest is on screen' filler (which left replies feeling unfinished)."""
