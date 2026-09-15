@@ -1666,6 +1666,29 @@ def test_speakable_strips_markdown_and_urls():
     assert _speakable("visit https://example.com/x now").count("http") == 0
 
 
+def test_stop_command_interrupts():
+    """'stop'/'wait'/'cancel' halt Orrin: cut speech + interrupt the turn; a normal command doesn't."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        stopped = {"mouth": 0, "brain": 0}
+        class M:
+            def stop(self): stopped["mouth"] += 1
+            def is_playing(self): return False
+        orch.mouth = M()
+        class B:
+            async def interrupt(self): stopped["brain"] += 1
+        orch.focused_ws.brain = B()
+        assert orch._is_stop_command("stop") and orch._is_stop_command("hold on")
+        assert orch._is_stop_command("wait") and not orch._is_stop_command("what's the status")
+        assert not orch._is_stop_command("stop listening")   # that's the sleep command
+        orch.interrupt_now("test")
+        await asyncio.sleep(0)                                # let the interrupt task run
+        assert stopped["mouth"] == 1 and stopped["brain"] == 1
+        assert orch.state == "idle"
+    asyncio.run(run())
+
+
 def test_sentence_splitter_keeps_decimals_and_filenames():
     """Streaming speech must not split inside a decimal (3.0) or filename (x.md) — that produced
     gibberish chunks like '30.' / '0.' / 'md security.'."""
