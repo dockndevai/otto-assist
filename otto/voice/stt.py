@@ -152,6 +152,7 @@ class Ears:
     def _rec_stopped(self) -> None:
         """Recording ended (naturally or forced) — disarm the watchdog and notify."""
         self._cancel_watchdog()
+        self._last_record_stop = time.monotonic()   # transcript should follow shortly
         if self._on_recording_stop is not None:
             self._post(self._on_recording_stop)
 
@@ -257,6 +258,11 @@ class Ears:
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
         self._last_rebuild = 0.0
+        # Stall detection: if a recording finishes but no transcript comes back, the
+        # transcription pipe is wedged (worker alive but its parent pipe broke — the EOFError
+        # flood). Track the last recording-stop and the last text so the watchdog can catch it.
+        self._last_record_stop = 0.0
+        self._last_text = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         # Watchdog: RealtimeSTT runs the recorder in child processes; if a worker dies the
@@ -284,6 +290,7 @@ class Ears:
                 logging.getLogger("otto").warning("recorder error: %r", e)
                 time.sleep(0.5)
                 continue
+            self._last_text = time.monotonic()   # .text() returned -> transcription path alive
             if text and self._running:
                 self._post(self._on_final, text.strip())
 
@@ -300,15 +307,32 @@ class Ears:
                 continue
             if time.monotonic() - self._last_rebuild < 15:
                 continue                              # don't rebuild-storm
-            tp = getattr(rec, "transcript_process", None)
-            rp = getattr(rec, "reader_process", None)
-            dead = ((tp is not None and not tp.is_alive())
-                    or (rp is not None and not rp.is_alive()))
-            reason = "worker died" if dead else ("pipe errors" if self._pipe_errors >= 5 else "")
+            reason = self._unhealthy_reason(rec, time.monotonic())
             if reason:
                 print(f"[otto] recorder unhealthy ({reason}) — rebuilding",
                       file=sys.stderr, flush=True)
                 self._rebuild_recorder()
+
+    def _unhealthy_reason(self, rec, now: float) -> str:
+        """Why the recorder needs rebuilding, or '' if it's fine. Pure/testable.
+
+        - 'worker died': a transcription/reader child process exited.
+        - 'transcription stalled': a recording finished but no transcript came back within the
+          timeout — the pipe is wedged even though the worker is still 'alive' (the real EOF
+          flood). Caught by symptom, since the child's own EOF logging isn't visible to us.
+        - 'pipe errors': our own read loop saw a burst of pipe errors.
+        """
+        tp = getattr(rec, "transcript_process", None)
+        rp = getattr(rec, "reader_process", None)
+        if (tp is not None and not tp.is_alive()) or (rp is not None and not rp.is_alive()):
+            return "worker died"
+        if (self._last_record_stop > 0
+                and now - self._last_record_stop > 12
+                and self._last_text < self._last_record_stop):
+            return "transcription stalled"
+        if self._pipe_errors >= 5:
+            return "pipe errors"
+        return ""
 
     def _rebuild_recorder(self) -> None:
         """Tear down the (broken) recorder and build a fresh one from the saved params. Shutting
@@ -316,6 +340,8 @@ class Ears:
         from RealtimeSTT import AudioToTextRecorder
         self._last_rebuild = time.monotonic()
         self._pipe_errors = 0
+        self._last_record_stop = 0.0     # reset stall tracking for the fresh recorder
+        self._last_text = time.monotonic()
         old = self._recorder
         try:
             if old is not None:
