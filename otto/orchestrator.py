@@ -432,6 +432,17 @@ class Orchestrator:
                     "then click Recheck.")
             # notDetermined/unknown: wait for the menu-bar's main-thread prompt (on_mic_decision).
 
+        # On first run (incl. after a reinstall), proactively request Screen Recording so
+        # computer-use can see the screen to click/type without a mid-task block. No-op if
+        # already granted; only nags on a genuinely fresh setup, not every launch.
+        try:
+            from . import preflight
+            if (preflight.is_first_run()
+                    and preflight.screen_recording_status() != "authorized"):
+                preflight.request_screen_recording()
+        except Exception:
+            pass
+
         self._publish_project()
         self._publish_session()
         # Usable immediately; the full health check (incl. a real Claude test turn) runs in the
@@ -537,8 +548,17 @@ class Orchestrator:
             preflight.Check("accessibility", "Input Monitoring (global hotkey)",
                             required=self.settings.voice.hotkey.enabled,
                             pane="input_monitoring"),
+            preflight.Check("screen_recording", "Screen Recording (computer control)",
+                            required=False, pane="screen_recording"),
         ]
         self._publish_preflight(done=False)
+        # On an explicit recheck, (re-)fire the Screen Recording prompt so the user can grant
+        # the computer-use permission in the same pass as the others.
+        if request:
+            try:
+                preflight.request_screen_recording()
+            except Exception:
+                pass
         # NB: we deliberately do NOT call AVFoundation requestAccess (see start()); the recorder
         # opening the mic is what triggers the real prompt. `request` is kept for API compat.
 
@@ -553,6 +573,7 @@ class Orchestrator:
         _set(preflight.check_claude_cli(self.settings))
         _set(preflight.check_voice_output(self.settings))
         _set(preflight.check_accessibility(self.settings))
+        _set(preflight.check_screen_recording(self.settings))
         _set(await preflight.check_claude_test(self.settings))   # the slow one, last
 
         # If the ears never came up and the mic isn't explicitly blocked, (re)start them now —

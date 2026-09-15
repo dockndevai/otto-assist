@@ -199,11 +199,43 @@ def prompt_accessibility() -> None:
         open_privacy_pane("accessibility")
 
 
+def screen_recording_status() -> str:
+    """"authorized" / "denied" / "unknown" for Screen Recording (computer-use screenshots)."""
+    if not _IS_MAC:
+        return "unknown"
+    try:
+        from Quartz import CGPreflightScreenCaptureAccess  # type: ignore
+        return "authorized" if CGPreflightScreenCaptureAccess() else "denied"
+    except Exception:
+        return "unknown"
+
+
+def request_screen_recording() -> bool:
+    """Ask macOS for Screen Recording — registers this app in the list and prompts on first ask.
+    Returns True if already/now granted (the prompt itself is async; a fresh denial opens the
+    pane so the user can toggle it)."""
+    if not _IS_MAC:
+        return False
+    try:
+        from Quartz import (CGPreflightScreenCaptureAccess,  # type: ignore
+                            CGRequestScreenCaptureAccess)
+        if CGPreflightScreenCaptureAccess():
+            return True
+        ok = bool(CGRequestScreenCaptureAccess())
+        if not ok:
+            open_privacy_pane("screen_recording")
+        return ok
+    except Exception:
+        open_privacy_pane("screen_recording")
+        return False
+
+
 _PANES = {
     "microphone": "Privacy_Microphone",
     "accessibility": "Privacy_Accessibility",
     "automation": "Privacy_Automation",
     "input_monitoring": "Privacy_ListenEvent",   # global key monitor (push-to-talk hotkey)
+    "screen_recording": "Privacy_ScreenCapture", # computer-use screenshots / screen reading
 }
 
 
@@ -243,6 +275,24 @@ def check_microphone(settings: Settings) -> Check:
         c.status = "fail"
         c.detail = "macOS is blocking the microphone."
         c.fix = "Enable Orrin under System Settings → Privacy & Security → Microphone."
+    return c
+
+
+def check_screen_recording(settings: Settings) -> Check:
+    # Needed for computer-use (screenshots / reading the screen to click & type). Not required
+    # for voice itself, so informational — but surfaced so the user can grant it up front.
+    c = Check("screen_recording", "Screen Recording (computer control)", required=False,
+              pane="screen_recording")
+    st = screen_recording_status()
+    if st == "authorized":
+        c.status, c.detail = "ok", "Granted."
+    elif st == "unknown":
+        c.status, c.detail = "warn", "Couldn't read Screen Recording permission."
+    else:  # denied / notDetermined
+        c.status = "warn"
+        c.detail = "Needed so Orrin can see the screen to click and type."
+        c.fix = ("Enable Orrin under System Settings → Privacy & Security → Screen Recording, "
+                 "then Recheck.")
     return c
 
 
