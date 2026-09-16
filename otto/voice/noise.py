@@ -52,10 +52,15 @@ def is_noise(text: str) -> bool:
 
 
 _VERIFY_SYS = (
-    "You are a filter for speech-to-text output that may be hallucinated from background noise. "
-    "Decide whether the transcript is a coherent, intentional request or statement a person "
-    "would actually say to a voice assistant. Random fragments, word salad, or grammatical-but-"
-    "nonsensical phrases are NOT real. Reply with EXACTLY one word: YES or NO."
+    "You are a filter for speech-to-text output that may be hallucinated from background noise, "
+    "or picked up from MEDIA playing near the mic (music, a video, a podcast, a TV show). "
+    "Decide whether the transcript is a coherent, intentional request or statement a person would "
+    "actually say TO a voice assistant right now. NOT real: random fragments, word salad, "
+    "grammatical-but-nonsensical phrases, AND song lyrics / dialogue / narration overheard from "
+    "media (e.g. 'I'm gonna be the one who will be', 'I'm gonna get a little bit of a break', "
+    "'baby don't hurt me') — these are not addressed to the assistant even though they're "
+    "grammatical. A real command asks for something, asks a question, or gives the assistant an "
+    "instruction. Reply with EXACTLY one word: YES (real) or NO (noise/media)."
 )
 
 

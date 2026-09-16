@@ -39,6 +39,14 @@ if ! .venv/bin/python -m pytest tests/test_pipeline.py -q; then
     exit 1
 fi
 
+# Neural voice (Kokoro) must be importable in the build venv or the packaged app ships with only
+# the robotic system voice (this silently regressed the v0.2.14 CI build). Warn loudly — don't
+# fail, since a deliberate voice-less build is allowed.
+if ! .venv/bin/python -c "import kokoro_onnx" 2>/dev/null; then
+    echo "⚠️  WARNING: kokoro-onnx not importable — the app will fall back to the robotic system"
+    echo "    voice. Install it:  .venv/bin/pip install -e \".[neural-voice]\""
+fi
+
 echo "==> Metadata fixups (so PyInstaller's stdhooks don't crash)"
 # RealtimeSTT ships 'webrtcvad-wheels' (module: webrtcvad), but PyInstaller's webrtcvad hook
 # looks for dist metadata named 'webrtcvad'. Alias it so copy_metadata('webrtcvad') succeeds.
