@@ -85,6 +85,23 @@ def _norm_words(s: str) -> list[str]:
     return s.split()
 
 
+# Number word ↔ digit map for self-echo matching: TTS says "four", the mic often transcribes the
+# echo as "4" (or the reverse), so the two must reconcile or the echo slips the guard (#56).
+_NUM_WORDS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11",
+    "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15", "sixteen": "16",
+    "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+    "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
+    "ninety": "90", "hundred": "100", "thousand": "1000", "million": "1000000",
+}
+
+
+def _canon_nums(words: list[str]) -> list[str]:
+    """Map number words to their digit form so 'four' and '4' compare equal (echo matching only)."""
+    return [_NUM_WORDS.get(w, w) for w in words]
+
+
 def _levenshtein(a: str, b: str) -> int:
     if a == b:
         return 0
@@ -1813,7 +1830,7 @@ class Orchestrator:
         heard words against Otto's recently-spoken lines: a contained phrase or >70% word
         overlap counts as an echo. Timing-independent, so it catches the tail that slips past
         the mute window."""
-        tw = _norm_words(text)
+        tw = _canon_nums(_norm_words(text))
         if not tw:
             return False
         tset, tjoined = set(tw), " ".join(tw)
@@ -1821,7 +1838,7 @@ class Orchestrator:
         for spoken, ts in self._recent_spoken:
             if now - ts > 30:
                 continue
-            sw = _norm_words(spoken)
+            sw = _canon_nums(_norm_words(spoken))
             if not sw:
                 continue
             if tjoined and tjoined in " ".join(sw):        # heard is a chunk of what we said

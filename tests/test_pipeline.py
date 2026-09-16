@@ -667,6 +667,13 @@ def test_self_echo_guard():
     # stale spoken lines (>30s) don't match
     orch._recent_spoken = [("open the settings", now - 60)]
     assert orch._is_self_echo("open the settings") is False
+    # #56: TTS says number-words, the mic transcribes the echo as digits (or vice versa) — these
+    # must still be recognised as the same line so the echo isn't run as a command.
+    orch._recent_spoken = [("Two plus two is four.", now)]
+    assert orch._is_self_echo("2 plus 2 is 4") is True               # canon → exact chunk match
+    assert orch._is_self_echo("open project seven") is False         # unrelated, no overlap
+    orch._recent_spoken = [("It's five twenty four PM.", now)]
+    assert orch._is_self_echo("its 5 24 pm") is True                 # digit-canon word overlap
 
 
 def test_recorder_health_predicate():
