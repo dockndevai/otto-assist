@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- #54: block remote scripts/styles/beacons; inline style/script/handlers need 'unsafe-inline'. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
   <title>Otto — Settings</title>
   <style>
     :root { --bg:#0a0e14; --panel:#111721; --line:#1e2836; --text:#dfe7f2; --muted:#7d8aa0; --accent:#37c0ff; }
