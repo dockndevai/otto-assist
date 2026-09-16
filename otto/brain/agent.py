@@ -167,12 +167,33 @@ class ClaudeBrain:
         # Unique name "desktop" (not "computer-use") so it can't collide with — or inherit the
         # approval gating of — the user's own ~/.claude "computer-use" entry.
         if getattr(b, "computer_use", False) and b.computer_use_command:
+            self._ensure_desktop_helper_executable(b.computer_use_args or [])
             servers["desktop"] = {
                 "type": "stdio",
                 "command": b.computer_use_command,
                 "args": list(b.computer_use_args or []),
             }
         return servers
+
+    @staticmethod
+    def _ensure_desktop_helper_executable(args: list[str]) -> None:
+        """mac-use-mcp ships its Swift `input-helper` binary without the exec bit surviving an
+        npm install, so every screen-read/click tool fails its X_OK pre-check with a misleading
+        'helper binary not found'. Self-heal: mark it executable before we spawn the server.
+        Derives the module dir from the dist/index.js path we invoke it with."""
+        import os
+        import stat
+
+        for a in args:
+            if a.endswith("index.js") and os.path.sep in a:
+                helper = os.path.join(os.path.dirname(os.path.dirname(a)), "bin", "input-helper")
+                try:
+                    if os.path.isfile(helper) and not os.access(helper, os.X_OK):
+                        st = os.stat(helper).st_mode
+                        os.chmod(helper, st | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                except OSError:
+                    pass  # best-effort; the server itself will surface a real error if it matters
+                break
 
     async def connect(self) -> None:
         b = self.settings.brain
