@@ -48,7 +48,9 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           # build.sh expects the app to run from .venv (voice + menu-bar extras).
-          .venv/bin/pip install -e ".[voice,app]"
+          # neural-voice (kokoro-onnx) MUST be included, or the packaged app can't import Kokoro
+          # and falls back to the robotic system `say` voice (regressed v0.2.14).
+          .venv/bin/pip install -e ".[voice,app,neural-voice]"
 
       - name: Import Developer ID certificate (only if signing secrets are set)
         if: env.SIGN_ID != ''
