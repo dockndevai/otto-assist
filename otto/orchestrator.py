@@ -1829,7 +1829,10 @@ class Orchestrator:
         if self._output_suppressing():
             return
         self._cancel_briefing()   # you started talking — skip the proactive startup briefing
-        self._cancel_idle_research()   # ...and pause any background research immediately
+        # NB: do NOT cancel idle research here on mere voice-activity — ambient/room noise trips
+        # this constantly and would keep research from ever running. A REAL command cancels it
+        # (submit_user_input), and it's a silent background workspace anyway; the quiescence gate
+        # keeps new research from starting while a focused turn is active.
         # Show that Otto is actively hearing you (menu-bar 👂 + dashboard orb).
         self._status("listening", "Listening…")
 
@@ -2003,29 +2006,24 @@ class Orchestrator:
                 self._publish_workspaces()
 
     def _feed_speech(self, chunk: str) -> None:
-        """Buffer deltas and speak whole sentences for natural prosody — cleaned + length-capped
-        so Orrin answers in a sentence or two, not by narrating the whole (markdown) reply."""
+        """Accumulate the reply's deltas. We DON'T speak sentence-by-sentence anymore — a separate
+        Kokoro synth + afplay per sentence made speech choppy/robotic (gaps between sentences).
+        Instead the whole (short) reply is synthesized as ONE clip at _flush_speech, which Kokoro
+        renders with smooth cross-sentence prosody. The instant ack covers the small extra delay."""
         if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
-        while True:
-            m = _SENTENCE_END.match(self._speech_buf)
-            if not m:
-                break
-            sentence = m.group(0)
-            self._speech_buf = self._speech_buf[m.end():]
-            self._speak_capped(sentence)
 
     def _flush_speech(self) -> None:
-        if self._speech_buf.strip():
-            self._speak_capped(self._speech_buf)
+        buf = self._speech_buf
         self._speech_buf = ""
+        if buf.strip():
+            self._speak_capped(buf)
 
     def _speak_capped(self, raw: str) -> None:
-        """Speak a cleaned sentence, up to the spoken-length cap. The model already answers in a
-        sentence or two WITH closure, so the cap is just a backstop for a runaway verbose reply —
-        past it we stop cleanly at this sentence (no jarring 'the rest is on screen' tacked on,
-        which left replies feeling unfinished)."""
+        """Speak the whole cleaned reply as one utterance (smooth), capped as a backstop against a
+        runaway verbose reply. The model already answers in a sentence or two WITH closure; if it
+        ever overruns the cap we trim at a word boundary and stop — no 'the rest is on screen'."""
         if self._speak_done:
             return
         s = _speakable(raw)
@@ -2035,15 +2033,11 @@ class Orchestrator:
             print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
         cap = self.settings.voice.tts.max_spoken_chars or 0
-        if cap and self._spoken_chars + len(s) > cap:
-            # Over the backstop: speak this sentence if we haven't spoken much yet (so a single
-            # long sentence still gets said), then stop — silently, no "on screen" filler.
-            if self._spoken_chars == 0:
-                self._voice_out(s)
-            self._speak_done = True
-            return
+        if cap and len(s) > cap:                       # runaway reply — trim at a word boundary
+            s = s[:cap].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
         self._voice_out(s)
         self._spoken_chars += len(s) + 1
+        self._speak_done = True                        # one clip per turn
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":
