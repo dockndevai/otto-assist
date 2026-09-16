@@ -164,8 +164,10 @@ class ClaudeBrain:
         'computer-use' desktop-automation server so the brain can click/type/focus/open ANY app."""
         servers: dict[str, Any] = {"voice": build_server(self.ctx)}
         b = self.settings.brain
+        # Unique name "desktop" (not "computer-use") so it can't collide with — or inherit the
+        # approval gating of — the user's own ~/.claude "computer-use" entry.
         if getattr(b, "computer_use", False) and b.computer_use_command:
-            servers["computer-use"] = {
+            servers["desktop"] = {
                 "type": "stdio",
                 "command": b.computer_use_command,
                 "args": list(b.computer_use_args or []),

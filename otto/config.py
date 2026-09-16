@@ -99,7 +99,7 @@ class BrainConfig(BaseModel):
     # are tool-name prefixes; clear the list to force confirmation on everything.
     auto_allow_tools: list[str] = Field(
         default_factory=lambda: ["mcp__playwright__", "mcp__computer-use__",
-                                 "mcp__claude-in-chrome__", "mcp__macos__"])
+                                 "mcp__claude-in-chrome__", "mcp__macos__", "mcp__desktop__"])
     continue_conversation: bool = False          # resume the project's latest Claude session
     register_mcp: bool = True                   # expose /mcp for `claude mcp add otto`
     # Give the brain FULL desktop control (click/type/focus/open any app — Finder, VS Code,
