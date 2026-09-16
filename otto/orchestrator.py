@@ -852,12 +852,25 @@ class Orchestrator:
                     break
             self._publish_preflight(done=False)
 
-        _set(preflight.check_microphone(self.settings))
-        _set(preflight.check_claude_cli(self.settings))
-        _set(preflight.check_voice_output(self.settings))
-        _set(preflight.check_accessibility(self.settings))
-        _set(preflight.check_screen_recording(self.settings))
-        _set(await preflight.check_claude_test(self.settings))   # the slow one, last
+        # Run each check defensively: a diagnostic that itself throws (e.g. a headless/CI box
+        # missing a subsystem) must NOT abort the whole preflight — the check keeps its
+        # placeholder key/status and the rest still run.
+        def _safe_set(fn) -> None:
+            try:
+                _set(fn(self.settings))
+            except Exception as e:
+                _log.warning("preflight check %s failed: %s", getattr(fn, "__name__", fn), e)
+                self._publish_preflight(done=False)
+        _safe_set(preflight.check_microphone)
+        _safe_set(preflight.check_claude_cli)
+        _safe_set(preflight.check_voice_output)
+        _safe_set(preflight.check_accessibility)
+        _safe_set(preflight.check_screen_recording)
+        try:
+            _set(await preflight.check_claude_test(self.settings))   # the slow one, last
+        except Exception as e:
+            _log.warning("preflight check_claude_test failed: %s", e)
+            self._publish_preflight(done=False)
 
         # If the ears never came up and the mic isn't explicitly blocked, (re)start them now —
         # e.g. permission granted after launch, then Recheck. No restart needed.

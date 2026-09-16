@@ -1187,6 +1187,10 @@ def test_run_preflight_publishes_and_starts_ears(monkeypatch):
     monkeypatch.setattr(preflight, "mic_authorization_status", lambda: "authorized")
     monkeypatch.setattr(preflight, "accessibility_trusted", lambda: True)
     monkeypatch.setattr(preflight, "mark_setup_complete", lambda: None)
+    # Hermetic: don't depend on the `claude` binary being on PATH (it isn't on a CI runner, which
+    # made readiness False there). check_claude_cli is a required check.
+    monkeypatch.setattr(preflight, "check_claude_cli",
+                        lambda s: preflight.Check("claude_cli", "Claude CLI found", status="ok"))
 
     async def _ok_test(settings, timeout=60.0):
         return preflight.Check("claude_test", "Claude connection (test run)", status="ok")
