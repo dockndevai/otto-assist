@@ -167,6 +167,18 @@ def test_mcp_read_classifier_is_token_anchored():
     assert not _is_read_only("mcp__gmail__send_message")
 
 
+def test_stt_vad_filter_config_and_recorder_kwargs():
+    """#57: the ambient-audio VAD knobs exist with safe defaults and map to real RealtimeSTT
+    kwargs (so wiring them can't silently pass an unknown arg)."""
+    import inspect
+    s = load_settings()
+    assert s.voice.stt.vad_filter is True                       # on by default (media-bleed fix)
+    assert s.voice.stt.silero_deactivity_detection is False     # opt-in (extra CPU)
+    from RealtimeSTT import AudioToTextRecorder
+    accepted = set(inspect.signature(AudioToTextRecorder.__init__).parameters)
+    assert {"faster_whisper_vad_filter", "silero_deactivity_detection"} <= accepted
+
+
 def test_confirm_parser_strict():
     """#47: refusals and unclear answers are never read as approval."""
     from otto.orchestrator import _parse_confirmation
