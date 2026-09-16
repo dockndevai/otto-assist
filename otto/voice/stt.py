@@ -205,6 +205,10 @@ class Ears:
             # recorder hands Whisper real speech instead of ambient sound it hallucinates over.
             silero_sensitivity=cfg.silero_sensitivity,
             min_length_of_recording=cfg.min_length_of_recording,
+            # #57: drop non-speech (media bleed) before Whisper transcribes it, and optionally
+            # use silero for end-of-speech so a continuous stream still ends the turn cleanly.
+            faster_whisper_vad_filter=cfg.vad_filter,
+            silero_deactivity_detection=cfg.silero_deactivity_detection,
             # Leave silero_use_onnx UNSET. It is RealtimeSTT's legacy switch and both True
             # and False resolve to SILERO_BACKEND_LEGACY, which loads the VAD over
             # torch.hub — a GitHub download on first run that needs a CA store and an

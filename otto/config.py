@@ -149,6 +149,14 @@ class STTConfig(BaseModel):
     # the recorder trigger on clearer speech and ignore short noise blips.
     silero_sensitivity: float = 0.4
     min_length_of_recording: float = 0.5
+    # #57 continuous-audio robustness: run faster-whisper's own VAD filter so non-speech spans
+    # (music/podcast bleeding into the mic) are dropped BEFORE transcription — far fewer
+    # hallucinated "commands" from ambient audio. On by default; the biggest reported STT pain.
+    vad_filter: bool = True
+    # Use silero (not just webrtc) to detect END of speech too — steadier turn-ends when there's
+    # background noise, so the recorder doesn't run one endless capture over continuous audio.
+    # Costs a little CPU; off by default (the max_recording_seconds cap already backstops wedges).
+    silero_deactivity_detection: bool = False
     # Cap a single capture: without a natural pause the VAD never ends a recording (e.g. a
     # video/podcast playing into the mic), so force-finalize after this many seconds. Keeps
     # Otto answering back-to-back asks instead of getting stuck on one endless utterance.
