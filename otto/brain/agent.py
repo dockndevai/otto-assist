@@ -314,6 +314,12 @@ class ClaudeBrain:
             if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Read-only research mode: writes are blocked.")
+        mode = self.settings.brain.permission
+        # Deny mode denies everything (except Orrin's own voice tools, handled above) — defence
+        # in depth: it must NOT depend on the read-only heuristic classifying correctly, or a
+        # misclassified write (#48) would slip through. Checked before any auto-allow.
+        if mode == "deny":
+            return PermissionResultDeny(message="Denied by Otto's permission setting.")
         # Agentic action tools (browser / computer-use) run through their loop without a
         # per-step confirmation — otherwise every click would need a spoken yes, which makes
         # computer use unusable. Configurable via brain.auto_allow_tools.
@@ -325,11 +331,8 @@ class ClaudeBrain:
             return PermissionResultAllow()
         if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
             return PermissionResultAllow()
-        mode = self.settings.brain.permission
         if mode in ("bypass", "auto"):
             return PermissionResultAllow()
-        if mode == "deny":
-            return PermissionResultDeny(message="Denied by Otto's permission setting.")
         if mode == "guarded":
             # Do everything asked; only stop for genuinely DANGEROUS actions (destructive
             # shell, delete/erase, outbound send, payments) and confirm those by voice.
@@ -384,13 +387,12 @@ class ClaudeBrain:
 # calls that may not re-enter this confirmation, so spawning one is itself consequential.
 _READ_BUILTINS = {"Read", "Grep", "Glob", "LS", "WebSearch", "WebFetch", "TodoWrite",
                   "NotebookRead"}
+# Write verbs, matched as a whole leading leaf token in _is_read_only (e.g. send_message,
+# remove_label). A write head wins over any read classification.
 _WRITE_VERBS = re.compile(
     r"(send|create|delete|remove|update|write|edit|trash|move|archive|reply|forward|"
     r"draft|post|add|set|modify|label|insert|upload|share|rename|revoke|cancel|pay|buy)",
     re.I)
-_READ_VERBS = re.compile(
-    r"(search|list|get|read|fetch|view|find|query|status|count|show|describe|lookup|"
-    r"recent|history|threads|messages|events|summary|details)", re.I)
 
 
 # Shell commands that only read state — safe to run without a spoken confirmation.
@@ -400,12 +402,18 @@ _READ_VERBS = re.compile(
 # people pipe status through (awk/sed/cut/sort/…) so a spoken "how's my battery and disk?"
 # — which becomes a `pmset -g batt | grep … ; df -H / | awk …` pipeline — runs without a
 # confirmation. awk/sed can still WRITE, but only via redirection or -i, both blocked below.
+# Deliberately EXCLUDED (they read-classify as True too easily but can execute or write, #48):
+#   env / printenv — `env python3 -c …` runs any program; both print API keys into the transcript
+#   awk / sed      — Turing-complete: awk `system(...)` / pipe-to-shell, sed `w`/`e` commands,
+#                    both hard to vet with a regex, so they always ask (or run under bypass)
+#   rg             — `rg --pre <prog>` executes an arbitrary helper per file
+# Pure text filters below can't exec; their only write vector (`-o` / `>`) is vetoed in _BASH_DANGER.
 _BASH_READ_CMDS = {"date", "ls", "pwd", "cat", "head", "tail", "echo", "printf", "whoami",
-                   "df", "du", "uptime", "cal", "which", "type", "printenv", "env",
+                   "df", "du", "uptime", "cal", "which", "type",
                    "hostname", "uname", "arch", "sw_vers", "vm_stat", "sysctl", "ps",
                    "pmset",  # guarded to `-g` (get) by _BASH_DANGER; other forms mutate power
                    "id", "groups", "basename", "dirname", "realpath", "seq",
-                   "wc", "grep", "egrep", "fgrep", "rg", "awk", "sed", "cut", "tr",
+                   "wc", "grep", "egrep", "fgrep", "cut", "tr",
                    "sort", "uniq", "column", "rev", "stat", "file"}
 # Anything that mutates state, escalates, reaches the network, sleeps/powers the machine, or
 # runs an arbitrary command — checked across the WHOLE command string so it can't hide in a
@@ -417,14 +425,23 @@ _BASH_DANGER = re.compile(
     r"\bosascript\b|\blaunchctl\b|\bdiskutil\b|\btmutil\b|\bnvram\b|\bshutdown\b|\breboot\b|"
     r"\b\w+\s+-i\b|"                                  # in-place edit, e.g. sed -i / perl -i
     r"\bpmset\b(?!\s+-g)|\bsysctl\b(?=\s+-w)|"        # pmset only for -g (get); no sysctl -w
+    r"\bsystem\s*\(|\bENVIRON\b|"                     # awk/perl inline exec + env-secret access
+    r"\bsort\b[^|&;]*\s-o\b|--output(=|\s|\b)|"       # write-to-file flags (sort -o, --output)
+    r"\|\s*[\"']?\s*(sh|bash|zsh|/bin/|python|perl|ruby|node)\b|"   # pipe to a shell/interpreter
     r"\bgit\s+(push|commit|reset|clean|rebase|checkout|restore)|"
     r"\bgh\s+\w+\s+(create|delete|edit|merge|close))")
-_BASH_SPLIT = re.compile(r"\|\||&&|[|;&]")            # pipe / sequence / background operators
+# Split on shell operators AND newlines/carriage-returns: `ls\npython3 -c '…'` must be checked as
+# two segments, not slip through on the leading `ls` (#48).
+_BASH_SPLIT = re.compile(r"\|\||&&|[|;&\n\r]")
 
 
 def _bash_is_read_only(command: str) -> bool:
     cmd = command.strip()
     if not cmd or _BASH_DANGER.search(cmd):
+        return False
+    # Reject anything with control characters we don't handle (NUL, vertical tab, form-feed, …);
+    # they can hide a second command from a naive parser. \n and \r are split on below.
+    if any(ord(c) < 32 and c not in "\t\n\r" for c in cmd):
         return False
     # A compound command is read-only only if EVERY segment is. Splitting and checking each
     # segment's leading word is stricter than the old single-word check: `df | xargs rm` now
@@ -444,16 +461,38 @@ def _bash_is_read_only(command: str) -> bool:
     return True
 
 
+# Leading-token verbs for MCP leaf names. Matched as WHOLE tokens at the START of the name only,
+# never as substrings — `execute_query` must not read-classify because it contains "query", and
+# `approve_details` must not because it contains "details" (#48). query/execute/run/exec/call are
+# actions, not reads, even though a server might name a read tool `*_query`; ask on those.
+_READ_HEADS = {"list", "get", "read", "fetch", "view", "find", "search", "show", "describe",
+               "lookup", "count", "status", "summary", "summarize", "recent", "history",
+               "browse", "inspect", "check", "peek", "preview"}
+_NONREAD_HEADS = {"query", "execute", "exec", "run", "call", "invoke", "eval", "approve",
+                  "confirm", "send", "create", "delete", "update", "write", "set"}
+
+
+def _leaf_tokens(leaf: str) -> list[str]:
+    """Split an MCP leaf name into lowercase word tokens across snake_case AND camelCase, so
+    `getThread` and `get_thread` both tokenize to ['get', 'thread']."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", leaf).replace("-", "_")
+    return [p.lower() for p in spaced.split("_") if p]
+
+
 def _is_read_only(tool_name: str) -> bool:
-    """Best-effort: does this tool only read? Reads skip the confirmation prompt."""
+    """Best-effort: does this tool only read? Reads skip the confirmation prompt. Conservative —
+    anything unrecognised is treated as NOT read-only (ask), and this is a convenience heuristic,
+    not a security boundary (deny/read-only modes still deny unknowns)."""
     if tool_name in _READ_BUILTINS:
         return True
     if tool_name.startswith("mcp__"):
-        leaf = tool_name.split("__")[-1]
-        if _WRITE_VERBS.search(leaf):     # a write verb wins (e.g. send_message)
+        tokens = _leaf_tokens(tool_name.split("__")[-1])
+        if not tokens:
             return False
-        if _READ_VERBS.search(leaf):
-            return True
+        head = tokens[0]
+        if head in _NONREAD_HEADS or _WRITE_VERBS.fullmatch(head):
+            return False
+        return head in _READ_HEADS
     return False
 
 

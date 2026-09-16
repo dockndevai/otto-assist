@@ -126,8 +126,47 @@ box-shadow:0 0 16px rgba(34,211,238,.25)}
 <div class="row"><div class="lbl">VW Group</div><div class="bar" style="width:47%"></div><div class="val">10.4%</div></div>
 <div class="row"><div class="lbl">GM</div><div class="bar" style="width:34%"></div><div class="val">7.6%</div></div>
 <div class="row"><div class="lbl">Hyundai-Kia</div><div class="bar" style="width:32%"></div><div class="val">7.1%</div></div>"""
-_AFFIRMATIVE = {"yes", "yeah", "yep", "sure", "ok", "okay", "go", "go ahead",
-                "do it", "please do", "confirm", "affirmative", "yup"}
+# Strict confirmation parsing (#47). A spoken/typed yes/no gates consequential tool calls, so a
+# refusal must NEVER read as approval. Negations veto FIRST — "no, don't go ahead", "not ok",
+# "no go" all contain an affirmative token but are clearly refusals. Only a whole answer that is
+# an affirmative phrase (optionally led by a greeting/filler) approves; anything else is unclear.
+_NEGATIONS = {"no", "nope", "nah", "not", "don't", "dont", "do not", "stop", "cancel", "wait",
+              "never", "negative", "hold", "abort", "nevermind", "skip", "unsure"}
+_CONFIRM_FILLER = {"um", "uh", "well", "so", "please", "otto", "hey", "yeah", "ok", "okay"}
+_CONFIRM_YES = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "confirmed",
+                "affirmative", "go", "go ahead", "do it", "please do", "yes go ahead",
+                "yeah go ahead", "sure go ahead", "go for it", "sounds good", "do that",
+                "proceed", "yes please", "absolutely", "definitely"}
+
+
+def _notify_clean(s: str, limit: int = 200) -> str:
+    """Sanitise agent-controlled text before it reaches a native notification: drop control
+    characters (they can't be shown and confuse osascript) and cap the length."""
+    cleaned = "".join(c for c in (s or "") if c == " " or (ord(c) >= 32 and c not in "\x7f"))
+    cleaned = cleaned.strip()
+    return cleaned[:limit]
+
+
+def _parse_confirmation(answer: str) -> str:
+    """Classify a confirmation answer as 'yes' | 'no' | 'unclear'. Negation wins over any
+    affirmative token so refusals are never approved; only a whole affirmative phrase approves."""
+    low = (answer or "").strip().lower()
+    # normalise punctuation to spaces, keep apostrophes (don't/can't)
+    low = re.sub(r"[^a-z' ]+", " ", low)
+    low = re.sub(r"\s+", " ", low).strip()
+    if not low:
+        return "unclear"
+    tokens = low.split()
+    if any(t in _NEGATIONS for t in tokens) or low in _NEGATIONS:
+        return "no"
+    # strip leading filler ("um", "ok so", "please") before matching the affirmative phrase
+    core = list(tokens)
+    while len(core) > 1 and core[0] in _CONFIRM_FILLER:
+        core = core[1:]
+    phrase = " ".join(core)
+    if phrase in _CONFIRM_YES or low in _CONFIRM_YES:
+        return "yes"
+    return "unclear"
 
 
 class Orchestrator:
@@ -2067,10 +2106,22 @@ class Orchestrator:
             self._pending_answer = None
 
     async def confirm(self, action: str) -> bool:
+        """Gate a consequential action on a spoken/typed yes/no. Parses strictly (a refusal is
+        never read as approval), re-asks once when the answer is unclear, then denies. Every
+        decision is emitted as an `approval_decided` event so it's auditable in history."""
         answer = await self.ask_user(f"I'm about to {action}. Should I go ahead?")
-        low = answer.strip().lower()
-        return any(low == a or low.startswith(a + " ") or a in low.split()
-                   for a in _AFFIRMATIVE)
+        decision = _parse_confirmation(answer)
+        if decision == "unclear":
+            answer2 = await self.ask_user(
+                f"Sorry, I didn't catch a clear yes or no — should I {action}? Please say yes or no.")
+            decision = _parse_confirmation(answer2)
+            answer = f"{answer} | {answer2}"
+            if decision == "unclear":
+                decision = "no"   # unclear twice → deny (fail closed)
+        approved = decision == "yes"
+        self.bus.publish({"type": "approval_decided", "action": action,
+                          "answer": answer, "decision": decision, "approved": approved})
+        return approved
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:
         self.focused_ws.last_canvas = content
@@ -2149,12 +2200,18 @@ class Orchestrator:
     def notify(self, title: str, body: str = "") -> None:
         self.bus.notify(title, body)
         _log.warning("%s — %s", title, body) if body else _log.warning("%s", title)
-        # Best-effort native macOS notification.
+        # Best-effort native macOS notification. title/body are agent-controlled (the `notify`
+        # tool, the /mcp server, and _describe() output all flow here), so NEVER build the
+        # AppleScript source from them — a trailing backslash in the body breaks out of the
+        # string literal and turns the title into `do shell script …`. Pass them as argv items
+        # so osascript treats them purely as data, and sanitise first (control chars, length).
         try:
-            safe = (body or "").replace('"', "'")
-            st = title.replace('"', "'")
+            argv = [_notify_clean(body or ""), _notify_clean(title)]
             subprocess.Popen(
-                ["osascript", "-e", f'display notification "{safe}" with title "{st}"']
+                ["osascript",
+                 "-e", "on run argv",
+                 "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+                 "-e", "end run", "--", *argv]
             )
         except Exception:
             pass

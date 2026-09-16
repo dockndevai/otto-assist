@@ -111,7 +111,7 @@ def test_bash_read_only_classifier():
     # "how's my battery and disk?" becomes a piped pmset/df status report, and prompting
     # on every harmless read is the friction users complained about.
     assert _bash_is_read_only(
-        "pmset -g batt | grep -Eo '[0-9]+%'; df -H / | awk 'NR==2{print $4}'")
+        "pmset -g batt | grep -Eo '[0-9]+%'; df -H / | cut -d' ' -f4")
     assert _bash_is_read_only("ps aux | grep Orrin | wc -l")
     assert _bash_is_read_only("sw_vers | cat")
     assert _bash_is_read_only("vm_stat")
@@ -124,6 +124,69 @@ def test_bash_read_only_classifier():
     assert not _bash_is_read_only("sed -i 's/a/b/' file")   # in-place edit = write
     assert not _bash_is_read_only("pmset sleepnow")         # non-read pmset form
     assert not _bash_is_read_only("sysctl -w kern.maxfiles=1")
+
+
+def test_bash_classifier_closes_known_bypasses():
+    """#48: patterns that previously read-classified but can execute or write are now gated."""
+    from otto.brain.agent import _bash_is_read_only
+    # newline as a hidden second command — must be split and the second segment checked
+    assert not _bash_is_read_only("ls\npython3 -c 'import os; os.system(\"id\")'")
+    assert not _bash_is_read_only("ls\r\nrm -rf /tmp/x")
+    # env / printenv run arbitrary programs and print secrets
+    assert not _bash_is_read_only("env python3 -c 'print(1)'")
+    assert not _bash_is_read_only("env")
+    assert not _bash_is_read_only("printenv")
+    # awk / sed can exec or write and are no longer auto-allowed
+    assert not _bash_is_read_only("awk 'BEGIN{system(\"touch /tmp/x\")}'")
+    assert not _bash_is_read_only("sed -n 'w /tmp/out' file")
+    # writes that use neither > nor -i
+    assert not _bash_is_read_only("sort -o /tmp/out file")
+    assert not _bash_is_read_only("git diff --output=/tmp/o")
+    # rg --pre executes a helper per file
+    assert not _bash_is_read_only("rg --pre ./x foo")
+    # pipe to a shell
+    assert not _bash_is_read_only("cat x | sh")
+    # pure filters still pass
+    assert _bash_is_read_only("df -H / | grep disk1 | cut -d' ' -f1")
+
+
+def test_mcp_read_classifier_is_token_anchored():
+    """#48: read verbs match only as the LEADING whole token, not as substrings."""
+    from otto.brain.agent import _is_read_only
+    # substrings that used to false-positive
+    assert not _is_read_only("mcp__db__execute_query")       # contains 'query'
+    assert not _is_read_only("mcp__pg__run_sql_query")       # contains 'query'
+    assert not _is_read_only("mcp__x__approve_details")      # contains 'details'
+    assert not _is_read_only("mcp__x__delete_history")       # contains 'history'
+    # genuine reads still pass, incl. camelCase
+    assert _is_read_only("mcp__gmail__search_threads")
+    assert _is_read_only("mcp__gdrive__list_files")
+    assert _is_read_only("mcp__x__getThread")
+    # writes still gated
+    assert not _is_read_only("mcp__cal__create_event")
+    assert not _is_read_only("mcp__gmail__send_message")
+
+
+def test_confirm_parser_strict():
+    """#47: refusals and unclear answers are never read as approval."""
+    from otto.orchestrator import _parse_confirmation
+    for a in ("no, don't go ahead", "not ok", "no go", "I'm not sure", "no", "cancel",
+              "stop", "wait", "hold on", "nah"):
+        assert _parse_confirmation(a) == "no", a
+    for a in ("yes", "yeah go ahead", "do it", "sure", "yes please", "okay go ahead",
+              "confirm", "proceed"):
+        assert _parse_confirmation(a) == "yes", a
+    for a in ("maybe", "what do you mean", "the weather is nice", ""):
+        assert _parse_confirmation(a) == "unclear", a
+
+
+def test_notify_clean_sanitizes():
+    """#49: control chars stripped and length capped before text reaches osascript argv."""
+    from otto.orchestrator import _notify_clean
+    assert "\n" not in _notify_clean("a\nb\x00c")
+    assert _notify_clean("x" * 500, limit=200) == "x" * 200
+    # a backslash is harmless data now (passed via argv, not interpolated), but stays literal
+    assert _notify_clean("done\\") == "done\\"
 
 
 def test_read_only_permission_allows_without_confirm():
