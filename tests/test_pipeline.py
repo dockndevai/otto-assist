@@ -300,12 +300,13 @@ def test_pairing_endpoint_local_only():
     s.server.allow_remote = True
     s.server.auth_token = "tok-xyz"
     app = create_app(Orchestrator(s, EventBus()), EventBus())
-    # Loopback caller sees the token + addresses; a cross-origin caller is refused.
-    local = TestClient(app, base_url="http://127.0.0.1:8000")
+    # Loopback caller sees the token + addresses; a non-loopback caller is refused.
+    local = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1))
     r = local.get("/api/pairing")
     assert r.status_code == 200 and r.json()["token"] == "tok-xyz"
     assert r.json()["allow_remote"] is True
-    remote = TestClient(app, base_url="http://evil.example")
+    # A non-loopback peer is refused even if it forges the loopback Host header (#46).
+    remote = TestClient(app, base_url="http://127.0.0.1:8000", client=("10.0.0.9", 1))
     assert remote.get("/api/pairing").status_code == 403
 
 
@@ -1903,7 +1904,8 @@ def test_server_blocks_cross_origin_mutations():
     """Security: a cross-site page cannot drive the agent; same-origin/no-origin still works."""
     from fastapi.testclient import TestClient
     app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
-    c = TestClient(app, base_url="http://127.0.0.1:8000")   # Host = 127.0.0.1:8000
+    # A genuine loopback caller (socket peer 127.0.0.1) with the dashboard's Host.
+    c = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1))
     # cross-site Origin on a mutating route → blocked
     r = c.post("/api/dictation", json={"on": True}, headers={"origin": "https://evil.example"})
     assert r.status_code == 403
@@ -1913,11 +1915,64 @@ def test_server_blocks_cross_origin_mutations():
     assert r.status_code == 200
     # no Origin (local CLI / MCP) → allowed
     assert c.post("/api/dictation", json={"on": False}).status_code == 200
-    # GET is never guarded
+    # a local GET still works
     assert c.get("/api/voices").status_code == 200
-    # a spoofed Host (DNS-rebinding) is rejected even with no Origin
-    bad = TestClient(app, base_url="http://evil.example")
+    # a spoofed Host (DNS-rebinding: loopback peer, foreign Host) is rejected on POST and GET
+    bad = TestClient(app, base_url="http://evil.example", client=("127.0.0.1", 1))
     assert bad.post("/api/dictation", json={"on": True}).status_code == 403
+    assert bad.get("/api/history").status_code == 403          # data GETs are guarded now (#46)
+    # the public UI shell still loads (no secrets there) so the dashboard can bootstrap
+    assert bad.get("/").status_code == 200
+
+
+def test_forged_host_and_nonloopback_peer_blocked():
+    """#46: the Host header is not trusted — a non-loopback peer is rejected on every surface,
+    and data GETs can't be read via rebinding or by an unauthenticated remote peer."""
+    from fastapi.testclient import TestClient
+    s = load_settings()
+    s.server.allow_remote = True
+    s.server.auth_token = "secret-xyz"
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    # LAN/Tailnet peer forging the loopback Host, no token → blocked on POST, PUT and data GET
+    lan = TestClient(app, base_url="http://127.0.0.1:8000", client=("10.0.0.9", 1))
+    assert lan.post("/api/dictation", json={"on": True}).status_code == 403
+    assert lan.put("/api/config", json={"config": {}}).status_code == 403
+    assert lan.get("/api/history").status_code == 403
+    assert lan.get("/api/config").status_code == 403
+    # same peer WITH the bearer token → allowed
+    ok = lan.get("/api/history", headers={"Authorization": "Bearer secret-xyz"})
+    assert ok.status_code == 200
+
+
+def test_get_config_never_leaks_token(tmp_path, monkeypatch):
+    """#46: GET /api/config must never return server.auth_token (or stray api keys)."""
+    from fastapi.testclient import TestClient
+    cfgfile = tmp_path / "config.yaml"
+    cfgfile.write_text("server:\n  allow_remote: true\n  auth_token: super-secret\n"
+                       "brain:\n  permission: guarded\n  api_key: sk-leak\n")
+    monkeypatch.setattr("otto.server.app.config_path", lambda: cfgfile)
+    s = load_settings()
+    app = create_app(Orchestrator(s, EventBus()), EventBus())
+    c = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1))
+    cfg = c.get("/api/config").json()["config"]
+    assert cfg["server"]["auth_token"] == ""       # redacted, not the real value
+    assert cfg["brain"]["api_key"] == ""           # any secret-looking key is blanked
+    assert cfg["server"]["allow_remote"] is True   # non-secret values pass through
+
+
+def test_redact_and_restore_secrets_roundtrip():
+    """#46: redaction blanks secrets; the PUT-side restore copies a blanked secret back from the
+    on-disk value so a settings round-trip can't erase the pairing token."""
+    from otto.server.app import _redact_secrets, _restore_blank_secrets
+    on_disk = {"server": {"auth_token": "T", "port": 8000}, "brain": {"permission": "guarded"}}
+    redacted = _redact_secrets(on_disk)
+    assert redacted["server"]["auth_token"] == "" and redacted["server"]["port"] == 8000
+    # UI edits a non-secret and PUTs the redacted config back
+    incoming = {"server": {"auth_token": "", "port": 8001}, "brain": {"permission": "voice"}}
+    _restore_blank_secrets(incoming, on_disk)
+    assert incoming["server"]["auth_token"] == "T"    # restored
+    assert incoming["server"]["port"] == 8001         # user's real edit kept
+    assert incoming["brain"]["permission"] == "voice"
 
 
 def test_auto_allow_agentic_tools_but_confirm_writes():

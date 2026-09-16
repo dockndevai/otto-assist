@@ -11,9 +11,16 @@ server:
 brain:
   type: claude
   model: ""                    # blank = use Claude's default model
-  # Session access level (change it in Settings → Session access level):
-  #   bypass -> full access, never asks   |   voice -> Otto asks you
-  #   auto -> approve via callback        |   deny -> read-only (block writes)
+  # Session access level (change it in Settings → Session access level). Default for a fresh
+  # install is 'guarded'. This machine is set to 'bypass' — full access, chosen deliberately.
+  #   bypass  -> full access, never asks (SDK bypassPermissions)
+  #   auto    -> alias of bypass (auto-approves everything; NOT a per-action callback)
+  #   guarded -> do everything asked, but confirm genuinely DANGEROUS actions (destructive
+  #              shell, delete/erase, outbound send, payments) by voice/screen  [default]
+  #   voice   -> confirm every consequential action
+  #   deny    -> block all writes/actions (read-only)
+  # SECURITY: with server.allow_remote on, bypass/auto means a remote client with the token can
+  # run anything as you — prefer guarded or voice, and keep the token secret.
   permission: bypass
   project_dir: "~"             # current project = the brain's working directory
   projects: []                 # pinned projects for the menu-bar switcher

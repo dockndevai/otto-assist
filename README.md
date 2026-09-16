@@ -212,7 +212,7 @@ config** — not here. Orrin's `config.yaml` is wiring only:
 | Setting | Default | Notes |
 |---|---|---|
 | `brain.model` | `""` | blank = Claude's default (e.g. `opus`) |
-| `brain.permission` | `voice` | prompts for consequential tools: `voice`/`auto`/`deny` |
+| `brain.permission` | `guarded` | access level: `bypass` (full), `auto` (= bypass), `guarded` (confirm only dangerous), `voice` (confirm all consequential), `deny` (read-only). With `allow_remote` on, `bypass`/`auto` grants a token-holding remote full control. |
 | `brain.project_dir` | `~` | current project (the brain's cwd) |
 | `brain.continue_conversation` | `false` | resume the project's latest session |
 | `voice.stt.always_listen` | `false` | `true` = just talk, no wake word (say "stop listening" to sleep) |
