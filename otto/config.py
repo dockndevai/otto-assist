@@ -102,6 +102,13 @@ class BrainConfig(BaseModel):
                                  "mcp__claude-in-chrome__", "mcp__macos__"])
     continue_conversation: bool = False          # resume the project's latest Claude session
     register_mcp: bool = True                   # expose /mcp for `claude mcp add otto`
+    # Give the brain FULL desktop control (click/type/focus/open any app — Finder, VS Code,
+    # Chrome, …) by loading the mac-use-mcp "computer-use" server directly in the brain (so it's
+    # guaranteed available, not subject to Claude Code's per-config MCP approval). Needs macOS
+    # Accessibility + Screen Recording. Set the command/args if you use a different automation MCP.
+    computer_use: bool = True
+    computer_use_command: str = "npx"
+    computer_use_args: list[str] = Field(default_factory=lambda: ["-y", "mac-use-mcp"])
 
 
 class STTConfig(BaseModel):
