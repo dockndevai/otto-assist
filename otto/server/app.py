@@ -289,7 +289,12 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         Otto without relying on Otto's own microphone. Otto also speaks the reply aloud on the
         Mac as usual. Local (loopback) callers are allowed by the same guard as the dashboard;
         remote callers need the bearer token."""
-        text = (payload.get("text") or "").strip()
+        # Coerce defensively: a client sending text as a non-string (e.g. {"text": 123}) must get
+        # a clean 400, not a 500 from calling .strip() on a non-str.
+        raw = payload.get("text")
+        if raw is not None and not isinstance(raw, str):
+            return JSONResponse({"ok": False, "error": "text must be a string"}, status_code=400)
+        text = (raw or "").strip()
         if not text:
             return JSONResponse({"ok": False, "error": "text required"}, status_code=400)
         if not payload.get("wait", True):
