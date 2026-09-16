@@ -540,7 +540,13 @@ $("setupClose").onclick = hideSetup;
 $("recheckBtn").onclick = () => { $("setupNote").textContent = "Rechecking…"; ws && ws.readyState === 1 && ws.send(JSON.stringify({ type: "recheck" })); };
 
 // ---- Canvas (Visuals) ----
-function showCanvas(content, format) { canvasEl.srcdoc = format === "markdown" ? mdToHtml(content) : content; const st = document.querySelector(".stage"); if (st) st.classList.add("has-content"); }
+// #54: the canvas renders model-authored HTML. The sandbox (allow-scripts, NO allow-same-origin)
+// already blocks reading the dashboard/cookies/loopback APIs; this CSP additionally blocks the
+// remaining risk — network exfiltration (tracking pixels, beacons, fetch, form POSTs) of anything
+// the model saw. Prepended as the first bytes so it takes effect; a model can't loosen it (browsers
+// intersect multiple policies — the most restrictive wins).
+const CANVAS_CSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: blob:; media-src data: blob:; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; font-src data:; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">';
+function showCanvas(content, format) { const html = format === "markdown" ? mdToHtml(content) : content; canvasEl.srcdoc = CANVAS_CSP + html; const st = document.querySelector(".stage"); if (st) st.classList.add("has-content"); }
 function hideCanvas() { canvasEl.srcdoc = ""; const st = document.querySelector(".stage"); if (st) st.classList.remove("has-content"); }
 function mdToHtml(md) { const body = escapeHtml(md).replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
   return `<style>body{font-family:-apple-system,sans-serif;background:#0a0f1c;color:#e6ecf6;padding:24px;line-height:1.6}code{background:#131a2b;padding:2px 5px;border-radius:4px}</style>${body}`; }
