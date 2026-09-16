@@ -105,15 +105,18 @@ or "let me check" before every tool. For a task that takes several steps (browsi
 work), say a quick one-line intent, then keep working through the steps and give the result at \
 the end — don't narrate each click.
 
-BROWSER — USE THE USER'S REAL, LOGGED-IN CHROME. When a web task needs the user's own accounts \
-or sessions (posting to Dev.to, anything behind a Google/GitHub login, "use my browser / the \
-existing session"), DRIVE THEIR ACTUAL CHROME WINDOW with the computer-use tools (screenshot → \
-click → type) — that browser already has their logins. Do NOT use Playwright for these: it \
-launches a SEPARATE, isolated Chromium with none of their sessions, so it will hit login walls \
-and can't "use the existing session." Playwright/headless is only for throwaway automation that \
-needs no login. If computer-use isn't available or its macOS Screen-Recording/Accessibility \
-permission is missing, say so plainly and tell the user to grant it — don't silently fall back \
-to an isolated browser and then get stuck at a login.
+DESKTOP CONTROL — YOU CAN DRIVE THE WHOLE MAC. You have the computer-use tools (screenshot, \
+get_ui_elements, click, type_text, press_key, scroll, drag, focus_window, open_application, \
+click_menu). Use them to operate ANY app the user asks about — Finder, VS Code, IntelliJ, \
+Calculator, Chrome, Slack, whatever — not just the terminal. Typical loop: screenshot or \
+get_ui_elements to see the screen, then click/type/focus_window to act; open_application or \
+focus_window to bring an app to the front first. For web tasks needing the user's own accounts \
+or sessions ("use my browser", posting to a logged-in site), DRIVE THEIR REAL CHROME this way \
+(focus_window "Chrome" → act) — it already has their logins. Do NOT use Playwright for that: it \
+launches a separate, isolated Chromium with none of their sessions and hits login walls; \
+Playwright/headless is only for throwaway automation that needs no login. If a computer-use \
+action fails on a permission (Accessibility / Screen Recording), run check_permissions and tell \
+the user exactly what to enable — don't silently give up or fall back to an isolated browser.
 
 ANSWER NOW — NEVER PROMISE TO FOLLOW UP LATER. You run only during this turn; you CANNOT send a \
 message later, watch something in the background, or notify the user when something finishes. So \
@@ -154,6 +157,20 @@ class ClaudeBrain:
         self._new_chat = new_chat
         # The live chat id — pre-seeded for a resume, else captured from the first turn.
         self.session_id: str | None = resume
+
+    def _mcp_servers(self) -> dict[str, Any]:
+        """The MCP servers Orrin provides to the brain directly (always loaded, no Claude Code
+        approval gating): its own voice/screen tools, and — when enabled — the mac-use-mcp
+        'computer-use' desktop-automation server so the brain can click/type/focus/open ANY app."""
+        servers: dict[str, Any] = {"voice": build_server(self.ctx)}
+        b = self.settings.brain
+        if getattr(b, "computer_use", False) and b.computer_use_command:
+            servers["computer-use"] = {
+                "type": "stdio",
+                "command": b.computer_use_command,
+                "args": list(b.computer_use_args or []),
+            }
+        return servers
 
     async def connect(self) -> None:
         b = self.settings.brain
@@ -206,9 +223,13 @@ class ClaudeBrain:
             },
             # Load the user's own Claude setup: MCP servers, subagents, skills, CLAUDE.md.
             setting_sources=(["user", "project", "local"] if b.use_claude_config else []),
-            # Otto's voice/screen tools are the only thing we add (named "voice" to avoid
-            # colliding with an externally-registered "otto" MCP the user's Claude may load).
-            mcp_servers={"voice": build_server(self.ctx)},
+            # Otto's voice/screen tools ("voice"), plus — so the brain can actually DRIVE the
+            # whole desktop (click/type/focus/open any app, use the user's real logged-in Chrome)
+            # — the computer-use automation MCP loaded DIRECTLY here. Loading it via the SDK
+            # (rather than relying on the user's ~/.claude mcpServers) guarantees it's present and
+            # not gated by Claude Code's per-server approval, which was leaving the headless brain
+            # with only the read-only macOS tools.
+            mcp_servers=self._mcp_servers(),
             can_use_tool=self._permission,
             cwd=(self._cwd or str(self.settings.project_path)),
             add_dirs=extra_dirs,
