@@ -16,9 +16,11 @@ cd "$(cd "$(dirname "$0")/../.." && pwd)"
 APP="dist/Orrin.app"
 DMG="dist/Orrin.dmg"
 
-echo "==> Ensuring build tooling (pyinstaller, ruff) in the venv"
+echo "==> Ensuring build tooling (pyinstaller, ruff, pytest) in the venv"
 [ -x .venv/bin/python ] || { echo "Run scripts/setup.sh first (.venv missing)"; exit 1; }
-.venv/bin/pip install -q --upgrade pyinstaller ruff
+# pytest is needed by the test gate below; CI's venv only has the runtime extras, so install it
+# here rather than assume a dev environment (a missing pytest silently aborted the CI build).
+.venv/bin/pip install -q --upgrade pyinstaller ruff pytest
 
 # Static gate: catch the class of bug that syntax checks and imports miss — an undefined name
 # used on a rarely-run path (e.g. `time.sleep` with no `import time`, which crashed the recorder
