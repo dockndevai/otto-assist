@@ -478,6 +478,26 @@ def test_is_dangerous_classifier():
         assert _is_dangerous(t, a) is False, t
 
 
+def test_ensure_desktop_helper_executable(tmp_path):
+    """The mac-use-mcp input-helper loses its exec bit on npm install, which makes every
+    screen/click tool fail an X_OK pre-check with 'helper binary not found'. The brain must
+    self-heal that from the dist/index.js path it spawns the server with."""
+    import os
+    from otto.brain.agent import ClaudeBrain
+    mod = tmp_path / "mac-use-mcp"
+    (mod / "bin").mkdir(parents=True)
+    (mod / "dist").mkdir()
+    helper = mod / "bin" / "input-helper"
+    helper.write_bytes(b"#!/bin/sh\necho ok\n")
+    os.chmod(helper, 0o644)                       # not executable, as npm leaves it
+    index = mod / "dist" / "index.js"
+    index.write_text("// entry")
+    assert not os.access(helper, os.X_OK)
+    ClaudeBrain._ensure_desktop_helper_executable([str(index)])
+    assert os.access(helper, os.X_OK)             # now runnable
+    ClaudeBrain._ensure_desktop_helper_executable(["npx", "-y", "mac-use-mcp"])  # no path → no-op, no crash
+
+
 def test_memory_overview_and_registry(tmp_path):
     """Cross-project overview spans all registered projects; register_project doesn't clobber turns."""
     from otto.memory import Memory, project_slug
