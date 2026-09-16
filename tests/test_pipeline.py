@@ -1937,6 +1937,18 @@ def test_server_blocks_cross_origin_mutations():
     assert bad.get("/").status_code == 200
 
 
+def test_api_say_rejects_non_string_text():
+    """Edge: /api/say with a non-string 'text' returns a clean 400, not a 500 from .strip()."""
+    from fastapi.testclient import TestClient
+    app = create_app(Orchestrator(load_settings(), EventBus()), EventBus())
+    c = TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 1))
+    r = c.post("/api/say", json={"text": 123})
+    assert r.status_code == 400 and r.json()["ok"] is False
+    assert "string" in r.json()["error"]
+    # empty/whitespace is a clean 400 too (not a 500 crash)
+    assert c.post("/api/say", json={"text": "   "}).status_code == 400
+
+
 def test_forged_host_and_nonloopback_peer_blocked():
     """#46: the Host header is not trusted — a non-loopback peer is rejected on every surface,
     and data GETs can't be read via rebinding or by an unauthenticated remote peer."""
