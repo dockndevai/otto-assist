@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import yaml
@@ -19,6 +20,40 @@ from ..sessions import list_sessions
 from .events import EventBus
 
 WEB_DIR = Path(__file__).parent / "web"
+_log = logging.getLogger("otto.server")
+
+
+def _redact_secrets(obj):
+    """Deep-copy a config dict/list with any secret-looking values blanked, so the dashboard's
+    GET /api/config can never hand out server.auth_token or stray API keys (#46)."""
+    import re as _re
+    secret = _re.compile(r"(token|secret|password|passwd|api[_-]?key|apikey|bearer|credential)",
+                         _re.I)
+    def walk(o):
+        if isinstance(o, dict):
+            return {k: ("" if isinstance(v, str) and v and secret.search(str(k)) else walk(v))
+                    for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(v) for v in o]
+        return o
+    return walk(obj)
+
+
+def _restore_blank_secrets(new, old):
+    """In-place: wherever `new` has a blank secret-looking value but `old` had a real one, copy
+    the old value back. Lets GET redact secrets without a subsequent round-trip PUT erasing them."""
+    import re as _re
+    secret = _re.compile(r"(token|secret|password|passwd|api[_-]?key|apikey|bearer|credential)",
+                         _re.I)
+    if not isinstance(new, dict) or not isinstance(old, dict):
+        return
+    for k, v in list(new.items()):
+        if isinstance(v, dict):
+            _restore_blank_secrets(v, old.get(k) if isinstance(old.get(k), dict) else {})
+        elif secret.search(str(k)) and (v == "" or v is None):
+            ov = old.get(k)
+            if isinstance(ov, str) and ov:
+                new[k] = ov
 
 
 def _local_addresses() -> list[str]:
@@ -87,9 +122,17 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
 
     _port = orch.settings.server.port
     _ok_origins = {f"http://127.0.0.1:{_port}", f"http://localhost:{_port}"}
-    _ok_hosts = {f"127.0.0.1:{_port}", f"localhost:{_port}"}
+    _ok_hosts = {f"127.0.0.1:{_port}", f"localhost:{_port}", "127.0.0.1", "localhost"}
+    _LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
     _srv = orch.settings.server
+    # #52: full access + remote is remote code execution for anyone who has (or forges their way
+    # past) the token. Make the combination loud rather than silent.
+    if _srv.allow_remote and orch.settings.brain.permission in ("bypass", "auto"):
+        _log.warning("SECURITY: remote access is ON together with permission=%s (full access). "
+                     "A remote client with the token can run anything as you. Consider "
+                     "'guarded' or 'voice', and rotate server.auth_token if it may have leaked.",
+                     orch.settings.brain.permission)
     if _srv.allow_remote and not _srv.auth_token:
         # First time remote is enabled with no token: mint a strong one and persist it, so the
         # user can read it (menu bar / GET /api/pairing) and paste it into the phone app — and
@@ -118,21 +161,41 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
             presented = auth[7:].strip()
         return bool(presented) and hmac.compare_digest(presented, token)
 
+    def _peer_loopback(client) -> bool:
+        return bool(client) and getattr(client, "host", None) in _LOOPBACK
+
+    def _peer_local(scope) -> bool:
+        """A trusted LOCAL caller: the socket peer is actually loopback AND the Host header is
+        loopback. Both are required (#46): the Host header alone is forgeable by any LAN/Tailnet
+        client, and a DNS-rebound page reaches a loopback peer but carries a foreign Host — this
+        catches both. `scope` is a Request or WebSocket (both expose .client and .headers)."""
+        return _peer_loopback(scope.client) and scope.headers.get("host", "") in _ok_hosts
+
     def _origin_ok(headers) -> bool:
-        if headers.get("host", "") not in _ok_hosts:
-            return False
         origin = headers.get("origin")
         return origin is None or origin in _ok_origins
 
+    def _trusted(scope, query_token=None) -> bool:
+        """Either an authenticated remote client (bearer token — unforgeable by a web page), or a
+        genuine loopback caller whose Origin is our own dashboard (CSRF defence for browsers)."""
+        if _authed(scope.headers, query_token):
+            return True
+        return _peer_local(scope) and _origin_ok(scope.headers)
+
+    def _is_public_shell(path: str) -> bool:
+        # The static UI shell carries no secrets and must load to bootstrap the dashboard (incl.
+        # the phone's WKWebView), so it's the one thing served without a token. Every data
+        # endpoint and every mutation goes through _trusted below.
+        return path in ("/", "/settings", "/favicon.ico") or path.startswith("/static")
+
     @app.middleware("http")
     async def _guard(request, call_next):
-        # Read-only GETs are harmless; guard everything that mutates state. A valid bearer token
-        # (remote app) is accepted regardless of Origin — it can't be forged by a web page.
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            if not (_origin_ok(request.headers)
-                    or _authed(request.headers, request.query_params.get("token"))):
-                return JSONResponse({"error": "forbidden: cross-origin request blocked"},
-                                    status_code=403)
+        # Guard EVERYTHING that isn't the public UI shell — data GETs included, so history /
+        # captures / memory / sessions / config can't be read via DNS-rebinding or by an
+        # unauthenticated remote peer (#46). OPTIONS (CORS preflight) passes.
+        if request.method != "OPTIONS" and not _is_public_shell(request.url.path):
+            if not _trusted(request, request.query_params.get("token")):
+                return JSONResponse({"error": "forbidden"}, status_code=403)
         resp = await call_next(request)
         # Never let the in-app WKWebView serve a stale dashboard/asset after an update — each
         # rebuild changes app.js/styles.css at the same URL, so cache them 'no-store'.
@@ -159,7 +222,7 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     # secret it doesn't already have. Meant to back a "Pair phone" QR/details screen.
     @app.get("/api/pairing")
     async def get_pairing(request: Request) -> JSONResponse:
-        if not _origin_ok(request.headers):
+        if not _peer_local(request):
             return JSONResponse({"error": "pairing details are only available locally"},
                                 status_code=403)
         srv = orch.settings.server
@@ -178,11 +241,22 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def get_config() -> JSONResponse:
         cfg = config_path()
         data = yaml.safe_load(cfg.read_text()) if cfg.exists() else {}
-        return JSONResponse({"config": data or {}, "path": str(cfg)})
+        # Never hand out secrets (server.auth_token, stray API keys) even to a local caller — the
+        # dashboard doesn't need them, and this file is the one place the token is persisted (#46).
+        return JSONResponse({"config": _redact_secrets(data or {}), "path": str(cfg)})
 
     @app.put("/api/config")
     async def put_config(payload: dict) -> JSONResponse:
         data = payload.get("config", payload)
+        # GET redacts secrets to "", and the settings UI round-trips the whole config, so a naive
+        # save would erase server.auth_token. Preserve any secret that arrives blank from the
+        # value already on disk (#46), so redaction can't nuke the phone-pairing token.
+        try:
+            cfg = config_path()
+            old = (yaml.safe_load(cfg.read_text()) if cfg.exists() else {}) or {}
+            _restore_blank_secrets(data, old)
+        except Exception:
+            pass
         save_config(data)
         return JSONResponse({"ok": True, "path": str(config_path()),
                              "note": "Some changes apply after Restart."})
@@ -540,10 +614,11 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     # -- event stream ------------------------------------------------------
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
-        # Reject cross-site sockets before accepting — a random web page must not be able to
-        # open this and drive the agent (see the guard above). A loopback dashboard passes
-        # _origin_ok; the mobile app passes _authed with its bearer token (header or ?token=).
-        local_ok = _origin_ok(websocket.headers)
+        # Reject cross-site / non-loopback sockets before accepting — a random web page or LAN
+        # client must not be able to open this and drive the agent. A loopback dashboard passes
+        # _peer_local + Origin (the peer address is checked, not just the forgeable Host); the
+        # mobile app passes _authed with its bearer token (header or ?token=).
+        local_ok = _peer_local(websocket) and _origin_ok(websocket.headers)
         is_remote = (not local_ok) and _authed(
             websocket.headers, websocket.query_params.get("token"))
         if not (local_ok or is_remote):
