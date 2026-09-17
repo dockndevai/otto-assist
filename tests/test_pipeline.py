@@ -195,6 +195,35 @@ def test_looks_like_command_trusts_chained_commands():
         assert cmd(ambient) is False, ambient
 
 
+def test_i18n_language_resolver_and_hinglish():
+    """#i18n Tier 1: voice.language maps to the right Whisper model/language, and Hinglish
+    imperatives/stop/sleep are recognised."""
+    from otto.voice.stt import _resolve_lang
+    from otto.voice.noise import looks_like_command as cmd
+    class V:  # minimal stand-ins
+        def __init__(self, l): self.language = l
+    class S:
+        model = "small.en"; language = "en"; multilingual_model = "small"
+    assert _resolve_lang(V("en"), S()) == ("small.en", "en")       # default: fast English
+    assert _resolve_lang(V("en-IN"), S()) == ("small.en", "en")    # Indian English keeps small.en
+    assert _resolve_lang(V("hinglish"), S()) == ("small", None)    # multilingual, auto-detect
+    assert _resolve_lang(V("hi"), S()) == ("small", "hi")
+    assert _resolve_lang(V("ta"), S()) == ("small", "ta")
+    # Hinglish commands are trusted (skip the model gate)
+    for t in ("kholo chrome", "band karo calculator", "chalao gaana", "dikhao screenshot",
+              "otto gaana chalao"):
+        assert cmd(t) is True, t
+
+
+def test_hinglish_stop_and_sleep():
+    """Hinglish stop/sleep phrases trigger interrupt/sleep."""
+    orch = Orchestrator(load_settings(), EventBus())
+    for t in ("ruko", "ruk jao", "band karo", "bas karo"):
+        assert orch._is_stop_command(t) is True, t
+    for t in ("so jao", "chup ho jao", "otto so jao", "sun na band karo"):
+        assert orch._is_sleep_command(t) is True, t
+
+
 def test_sleep_command_matching_robust():
     """'go to sleep' etc. must trigger sleep even with filler/wake/embedding; not on negations
     or unrelated 'sleep' mentions."""

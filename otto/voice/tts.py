@@ -82,6 +82,15 @@ class Mouth:
         self.settings = settings
         self._engine = settings.voice.tts.engine
         self._voice = settings.voice.tts.voice
+        # #i18n Tier 1: Kokoro's voices are English and mangle Hindi/Hinglish words. When a
+        # non-English language is set and we have a mapped macOS `say` voice for it, speak with
+        # that voice instead (Rishi = Indian English, Lekha = Hindi). English is unaffected.
+        vlang = (getattr(settings.voice, "language", "en") or "en").lower()
+        lang_voices = getattr(settings.voice.tts, "lang_voices", {}) or {}
+        if vlang not in ("en", "") and vlang in {k.lower(): 1 for k in lang_voices}:
+            say_voice = {k.lower(): v for k, v in lang_voices.items()}[vlang]
+            self._engine = "system"
+            self._voice = say_voice
         # macOS say / kokoro shared path
         self._q: "queue.Queue[str | None]" = queue.Queue()
         self._proc: subprocess.Popen | None = None
