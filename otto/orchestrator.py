@@ -1678,7 +1678,13 @@ class Orchestrator:
         # Semantic gate on the hands-free path (always-listen / follow-up) — the noisiest,
         # lowest-intent context. After a deliberate wake word we stay snappy (no model call);
         # any junk that still slips through is caught by the dead-reply suppression on output.
-        need_verify = hands_free and stt.hands_free_verify and not deliberate
+        # BUT a clearly command-shaped utterance ("open chrome", "close the calculator", "otto,
+        # do X") is a real directive — trust it and skip the model gate, which was over-rejecting
+        # genuine chained follow-ups (it dropped "close the calculator" as ambient). Keeps the gate
+        # only for ambiguous/declarative input, so room chatter is still filtered.
+        from .voice.noise import looks_like_command
+        need_verify = (hands_free and stt.hands_free_verify and not deliberate
+                       and not looks_like_command(text))
         # Intent first: react like a person, not a switch. Chit-chat ("hey", "how are you",
         # "thanks") gets a warm INSTANT reply right here — no Claude round-trip, no "On it." —
         # then a short hands-free window so you can keep talking. A question or an action flows

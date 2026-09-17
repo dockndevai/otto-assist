@@ -179,6 +179,22 @@ def test_stt_vad_filter_config_and_recorder_kwargs():
     assert {"faster_whisper_vad_filter", "silero_deactivity_detection"} <= accepted
 
 
+def test_looks_like_command_trusts_chained_commands():
+    """Chained voice commands must skip the flaky model gate: real imperatives are trusted, while
+    ambient/declarative speech still goes to the gate (returns False)."""
+    from otto.voice.noise import looks_like_command as cmd
+    for real in ("To close the calculator.", "Open Calculator.", "close it",
+                 "open chrome and go to gmail", "can you take a screenshot", "please open notes",
+                 "otto, run the tests", "play something nice", "switch to safari",
+                 "type hello world", "scroll down", "read the file"):
+        assert cmd(real) is True, real
+    for ambient in ("I am Otto.", "I start doing my physical therapy.",
+                    "I know the data on sleep and health.", "director of the European Space Force.",
+                    "What was the lower volume?", "I'm gonna go to the bathroom.",
+                    "You should be always ready.", "That have achieved.", "", "the"):
+        assert cmd(ambient) is False, ambient
+
+
 def test_confirm_parser_strict():
     """#47: refusals and unclear answers are never read as approval."""
     from otto.orchestrator import _parse_confirmation
@@ -1919,11 +1935,12 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         await asyncio.sleep(0)
         assert sent == []
 
-        # hands-free semantic gate says NO → dropped
+        # hands-free semantic gate says NO → dropped. Use a DECLARATIVE (non-command-shaped)
+        # utterance so it actually reaches the gate — a verb-led imperative now skips the gate.
         import otto.voice.noise as noise
         async def fake_verify(text, model="haiku"): return False
         monkeypatch.setattr(noise, "is_real_command", fake_verify)
-        orch._dispatch_voice_command("check the guitar back duty", hands_free=True)
+        orch._dispatch_voice_command("the guitar has a nice sound today", hands_free=True)
         await asyncio.sleep(0.05)
         assert sent == []
 
@@ -1933,6 +1950,14 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         orch._dispatch_voice_command("what's the weather", hands_free=True)
         await asyncio.sleep(0.05)
         assert sent == ["what's the weather"]
+
+        # a command-shaped hands-free utterance SKIPS the flaky gate entirely (never dropped),
+        # even when the gate would have said NO — this is the chained-command fix.
+        sent.clear()
+        monkeypatch.setattr(noise, "is_real_command", fake_verify)   # gate would reject...
+        orch._dispatch_voice_command("close the calculator", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == ["close the calculator"]                      # ...but it's trusted anyway
 
         # deliberate (push-to-talk) skips the filter entirely — even short input goes through
         sent.clear()

@@ -28,6 +28,63 @@ def _norm(text: str) -> str:
     return re.sub(r"[^\w\s]", "", (text or "")).strip().lower()
 
 
+# Computer-directed action verbs. An utterance that (after stripping polite/filler lead-ins) STARTS
+# with one of these is a deliberate command — trust it and skip the flaky model gate, so real
+# chained follow-ups like "close the calculator" / "open chrome" are never dropped as ambient.
+_COMMAND_VERBS = {
+    "open", "close", "click", "double-click", "right-click", "tap", "type", "run", "show", "hide",
+    "go", "navigate", "play", "pause", "resume", "stop", "start", "switch", "read", "write", "edit",
+    "search", "find", "look", "delete", "remove", "move", "drag", "scroll", "press", "select",
+    "copy", "paste", "cut", "save", "send", "add", "create", "make", "set", "turn", "mute", "unmute",
+    "focus", "bring", "take", "launch", "quit", "compute", "calculate", "list", "get", "put",
+    "restart", "reload", "refresh", "clear", "undo", "redo", "zoom", "maximize", "minimize",
+    "fix", "build", "check", "commit", "push", "pull", "install", "update", "deploy", "test",
+    "summarize", "explain", "tell", "give", "remind", "schedule", "call", "email", "message",
+    "screenshot", "capture", "record", "translate", "define", "count", "sort", "filter", "enable",
+    "disable", "connect", "disconnect", "download", "upload", "print", "draw", "generate",
+}
+# Polite request prefixes (multi-word) peeled before checking the verb: "can you open…".
+_POLITE_PREFIXES = ("can you", "could you", "would you", "will you", "can we", "could we",
+                    "hey otto", "ok otto", "okay otto", "hey orrin")
+# Single-word lead-ins to peel: STT artifacts ("to close…"), politeness, filler, direct address.
+# Deliberately EXCLUDES subject pronouns (i/me/we/you) and desiderative verbs (want/need) — those
+# signal a DECLARATIVE statement ("I start therapy…"), not an imperative command, so peeling them
+# would misread ambient narration as a command.
+_COMMAND_LEADINS = {
+    "to", "okay", "ok", "so", "um", "uh", "well", "please", "pls", "now", "then", "and", "also",
+    "just", "hey", "hi", "otto", "orrin", "yo", "kindly", "quickly",
+}
+
+
+def looks_like_command(text: str) -> bool:
+    """Fast, deterministic: does this read as a deliberate command to the assistant? True for
+    imperatives that start with an action verb (after peeling polite/filler/address lead-ins) and
+    for anything explicitly addressed to Orrin. Used to skip the model verify gate on the
+    hands-free path so genuine chained commands aren't dropped (the gate over-rejects short ones).
+    Conservative on declaratives ("I start my therapy") so ambient narration still hits the gate."""
+    n = _norm(text)
+    if not n:
+        return False
+    # Peel a polite multi-word prefix first ("can you open…" → "open…").
+    for pre in _POLITE_PREFIXES:
+        if n == pre:
+            return False                       # just politeness, no command
+        if n.startswith(pre + " "):
+            n = n[len(pre) + 1:]
+            break
+    words = n.split()
+    if not words:
+        return False
+    # Explicit address to Orrin with content ("otto, do X") is a command.
+    if words[0] in ("otto", "orrin") and len(words) >= 2:
+        return True
+    # Peel remaining single-word filler (never strip the whole utterance away).
+    i = 0
+    while i < len(words) - 1 and words[i] in _COMMAND_LEADINS:
+        i += 1
+    return words[i] in _COMMAND_VERBS
+
+
 def is_noise(text: str) -> bool:
     """True if `text` is almost certainly hallucinated noise, not a real utterance."""
     t = (text or "").strip()
