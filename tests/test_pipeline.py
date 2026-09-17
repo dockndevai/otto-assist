@@ -655,6 +655,38 @@ def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+def test_output_route_classification(monkeypatch):
+    """#56: built-in speakers are an echo path (not safe for barge-in); headphones/external are."""
+    from otto import audio
+    def route(name): monkeypatch.setattr(audio, "_default_output_name", lambda: name)
+    for internal in ("MacBook Pro Speakers", "Built-in Output", "Speakers", "Internal Speakers"):
+        route(internal); assert audio.output_is_external(force=True) is False, internal
+    for external in ("AirPods Pro", "Sony WH-1000XM5", "External Headphones", "Studio Display"):
+        route(external); assert audio.output_is_external(force=True) is True, external
+    route(None); assert audio.output_is_external(force=True) is False   # unknown → conservative
+
+
+def test_barge_in_auto_only_when_safe(monkeypatch):
+    """#56: barge-in auto-enables on a safe (external) route and stays off on built-in speakers,
+    so mid-speech voice 'stop' works on headphones without an echo loop on the laptop speaker."""
+    from otto import audio
+    orch = Orchestrator(load_settings(), EventBus())
+    stt = orch.settings.voice.stt
+    # forced on always wins
+    stt.barge_in = True;  stt.barge_in_auto = False
+    assert orch._barge_in_active() is True
+    # auto: follows the output route
+    stt.barge_in = False; stt.barge_in_auto = True
+    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: True)
+    assert orch._barge_in_active() is True          # headphones/external → safe → on
+    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: False)
+    assert orch._barge_in_active() is False         # built-in speakers → half-duplex
+    # auto disabled → never barge-in unless forced
+    stt.barge_in_auto = False
+    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: True)
+    assert orch._barge_in_active() is False
+
+
 def test_self_echo_guard():
     """The mic re-hearing Otto's own recent reply is dropped, not run as a command."""
     import time as _time
