@@ -63,7 +63,7 @@ _WAKE_ALIASES = {
     "otto": {"otto", "auto", "oto", "ottos", "otho", "atto", "alto", "otter",
              "ottoh", "audo", "auddo", "ado", "ottto", "hotto", "otta", "auddo"},
 }
-_GREETINGS = {"hey", "hi", "ok", "okay", "yo", "hello", "hay"}
+_GREETINGS = {"hey", "hi", "ok", "okay", "yo", "hello", "hay", "namaste", "namaskar", "arre"}
 
 # Spoken when you say the wake word alone — warm and varied, not a robotic "yes".
 _WAKE_ACKS = [
@@ -1460,6 +1460,9 @@ class Orchestrator:
         "okay stop", "ok stop", "wait", "wait wait", "hold on", "hold on hold on", "cancel",
         "never mind", "nevermind", "quiet", "be quiet", "shush", "shut up", "enough", "pause",
         "halt", "abort", "stop now", "that's enough", "thats enough",
+        # Hinglish (#i18n Tier 1)
+        "ruko", "ruk jao", "ruk jaao", "rukiye", "band karo", "band karo isko", "bas", "bas karo",
+        "chup", "chup ho jao", "rehne do", "rok do",
     }
 
     def _is_stop_command(self, text: str) -> bool:
@@ -1645,11 +1648,15 @@ class Orchestrator:
         "go to sleep now", "pause listening", "stand by", "standby", "mute yourself",
         "go quiet", "be quiet", "stop for now", "sleep", "sleep now", "take a break",
         "stop responding", "quiet down", "shush", "silence", "stop talking", "go away",
+        # Hinglish (#i18n Tier 1)
+        "so jao", "so jaao", "so jao", "chup ho jao", "aram karo", "sun na band karo",
+        "sunna band karo", "abhi ke liye ruko",
     }
     # Distinctive enough to accept even when embedded ("okay otto, go to sleep now buddy").
     _STRONG_SLEEP = ("go to sleep", "goto sleep", "stop listening", "stop listning",
                      "go quiet", "be quiet", "mute yourself", "pause listening",
-                     "stop responding", "stop talking", "go to sleep now")
+                     "stop responding", "stop talking", "go to sleep now",
+                     "so jao", "so jaao", "chup ho jao", "sun na band karo")
     # Filler/politeness/address peeled from the ends before matching.
     _SLEEP_LEAD = _GREETINGS | {"so", "please", "just", "um", "uh", "well", "now", "can", "could",
                                 "would", "will", "you", "lets", "let", "and", "otto", "orrin", "pls"}
@@ -1663,6 +1670,11 @@ class Orchestrator:
         # Don't misfire on a negated sentence ("I don't want to go to sleep").
         if any(w in ("dont", "not", "never", "cant", "cannot", "wont", "dnt") for w in words):
             return False
+        # Check distinctive sleep phrases on the WHOLE utterance first — before peeling filler,
+        # since some (e.g. "so jao") start with a word that's also a filler lead-in ("so").
+        full = " ".join(words)
+        if any(p in full for p in self._STRONG_SLEEP):
+            return True
         trigger = (_norm_words(self.settings.voice.stt.wake_words)[-1:] or ["otto"])[0]
         while words and (words[0] in self._SLEEP_LEAD or _wordish(words[0], trigger)):
             words = words[1:]

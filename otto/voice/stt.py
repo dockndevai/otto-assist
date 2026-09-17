@@ -24,6 +24,20 @@ from typing import Callable
 from ..config import Settings
 
 
+def _resolve_lang(voice, stt):
+    """Map voice.language → (whisper model, whisper language). English keeps the fast small.en;
+    non-English switches to the multilingual model (#i18n Tier 1)."""
+    v = (getattr(voice, "language", "en") or "en").lower()
+    ml = getattr(stt, "multilingual_model", "small")
+    if v in ("en", ""):
+        return stt.model, stt.language            # unchanged default: small.en / en
+    if v == "en-in":
+        return stt.model, "en"                    # Indian English: small.en + Indian priming
+    if v in ("hinglish", "auto"):
+        return ml, None                           # auto-detect per utterance (code-switch)
+    return ml, v                                  # "hi", "ta", … a Whisper language code
+
+
 class _PipeErrorWatch(logging.Handler):
     """Watches the root logger for RealtimeSTT's dead-pipe errors ("Error receiving data from
     connection" / EOFError). When the recorder's worker dies the parent floods these; counting
@@ -182,9 +196,10 @@ class Ears:
         from RealtimeSTT import AudioToTextRecorder  # lazy import
 
         cfg = self.settings.voice.stt
+        model, lang = _resolve_lang(self.settings.voice, cfg)
         params = dict(
-            model=cfg.model,
-            language=cfg.language,
+            model=model,
+            language=lang,
             spinner=False,
             level=logging.WARNING,           # quiet RealtimeSTT's very chatty logging
             # Latency: this Mac has no CUDA and Whisper float16 isn't supported on CPU (it
@@ -220,9 +235,18 @@ class Ears:
         # Prime Whisper with the wake word so it actually transcribes the name (small
         # models otherwise drop "Otto" -> hear "auto"/"your"). Big reliability win for the
         # software ("phrase") wake word.
+        prompt = ""
         if cfg.wakeword_backend == "phrase" and cfg.wake_words:
             name = cfg.wake_words.strip().title()          # "Hey Otto"
-            params["initial_prompt"] = f"{name}. {name.split()[-1]}, "
+            prompt = f"{name}. {name.split()[-1]}, "
+        # Prime the decoder for Indian English / Hinglish so accented speech and common
+        # code-switched words transcribe cleanly (#i18n Tier 1).
+        vlang = (self.settings.voice.language or "en").lower()
+        if vlang in ("en-in", "hinglish", "hi", "auto") or lang != "en":
+            prompt += ("Indian English. Common words: theek hai, accha, haan, nahi, kya, kaise, "
+                       "karo, bolo, dikhao, kholo, band karo, ruko, chalao, ek minute. ")
+        if prompt:
+            params["initial_prompt"] = prompt
         params["on_recording_stop"] = self._rec_stopped
 
         # Live captions: stream partial words as you speak, so the dashboard visibly reacts to

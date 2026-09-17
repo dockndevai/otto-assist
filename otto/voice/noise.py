@@ -42,6 +42,12 @@ _COMMAND_VERBS = {
     "summarize", "explain", "tell", "give", "remind", "schedule", "call", "email", "message",
     "screenshot", "capture", "record", "translate", "define", "count", "sort", "filter", "enable",
     "disable", "connect", "disconnect", "download", "upload", "print", "draw", "generate",
+    # Hinglish imperatives (#i18n Tier 1): kholo=open, band=close, chalao=play, dikhao=show,
+    # likho=type, karo=do, batao=tell, dhundo=search, banao=make, bhejo=send, khojo=find,
+    # padho=read, chalu=start, bandh=close, ruko=stop.
+    "kholo", "band", "bandh", "chalao", "chalaao", "dikhao", "dikhaao", "likho", "karo",
+    "batao", "bataao", "dhundo", "dhundho", "khojo", "banao", "banaao", "bhejo", "padho",
+    "chalu", "kholdo", "kardo", "dedo", "laao", "lao", "suno",
 }
 # Polite request prefixes (multi-word) peeled before checking the verb: "can you open…".
 _POLITE_PREFIXES = ("can you", "could you", "would you", "will you", "can we", "could we",

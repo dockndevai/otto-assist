@@ -114,6 +114,9 @@ class BrainConfig(BaseModel):
 class STTConfig(BaseModel):
     model: str = "small.en"
     language: str = "en"
+    # Multilingual Whisper model used when voice.language is non-English (Hinglish/Hindi/regional).
+    # "small" is the CPU sweet spot; "medium" is more accurate but slow without a GPU.
+    multilingual_model: str = "small"
     # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
     # 1.0s keeps it responsive; the instant spoken ack covers the rest of the wait.
@@ -222,6 +225,11 @@ class TTSConfig(BaseModel):
     # Orrin speaks in its voice — handy for telling parallel workspaces apart. Falls back to
     # `voice`/`kokoro_voice` for projects with no entry.
     project_voices: dict[str, str] = Field(default_factory=dict)
+    # Kokoro's voices are English; for non-English speech (Hinglish/Hindi/regional) fall back to
+    # macOS `say` with a language-appropriate voice. Map of voice.language -> `say` voice name.
+    # (Rishi = Indian English, Lekha = Hindi; install more in System Settings › Spoken Content.)
+    lang_voices: dict[str, str] = Field(
+        default_factory=lambda: {"en-IN": "Rishi", "hi": "Lekha", "hinglish": "Rishi"})
 
 
 class HotkeyConfig(BaseModel):
@@ -237,6 +245,14 @@ class HotkeyConfig(BaseModel):
 class VoiceConfig(BaseModel):
     input_enabled: bool = True
     output_enabled: bool = True
+    # Spoken language / dialect. Drives STT model + Whisper language, a persona hint (Claude
+    # replies in kind), and the spoken voice. Values:
+    #   "en"       — English only, fastest, best accent-agnostic (small.en)          [default]
+    #   "en-IN"    — Indian English (small.en + Indian-name priming; Indian voice)
+    #   "hinglish" — Hindi/English code-switch (multilingual model, auto-detect)
+    #   "hi"       — Hindi          |  "auto" — auto-detect  |  any Whisper code (e.g. "ta")
+    # Non-English values switch STT to the multilingual model (heavier on CPU, no GPU here).
+    language: str = "en"
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
