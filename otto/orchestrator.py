@@ -314,11 +314,13 @@ class Orchestrator:
         # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.
         secs = max(1.0, len(t) / 14.0) + 2.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
-        # Echo handling. With barge-in ON we keep the mic LISTENING during speech so you can say
-        # "stop" to cut in — the stop-word check runs before the echo filter, and everything else
-        # (including Orrin's own echo) is dropped by _output_suppressing. With barge-in OFF we
-        # physically mute the mic during speech (no voice "stop" mid-sentence; use the button).
-        if self.ears is not None and not self.settings.voice.stt.barge_in:
+        # Echo handling. With barge-in ACTIVE we keep the mic LISTENING during speech so you can
+        # say "stop" to cut in — the stop-word check runs before the echo filter, and everything
+        # else (including Orrin's own echo) is dropped by _output_suppressing. With barge-in
+        # inactive we physically mute the mic during speech (no voice "stop" mid-sentence; use the
+        # button) — the safe default on built-in speakers. `_barge_in_active` auto-enables barge-in
+        # only on a headphone/external route where the mic can't hear the output (#56).
+        if self.ears is not None and not self._barge_in_active():
             try:
                 self.ears.set_mic(False)
             except Exception:
@@ -468,15 +470,37 @@ class Orchestrator:
             except Exception:
                 pass
 
+    def _barge_in_active(self) -> bool:
+        """Should the mic stay LIVE while Orrin speaks (so voice "stop" cuts in mid-sentence)?
+        True if barge-in is forced on, OR auto-barge-in is enabled AND the output route is
+        acoustically safe (headphones/AirPods/external — the mic can't hear Orrin). On the
+        built-in speakers this returns False, so we stay half-duplex and never loop (#56)."""
+        stt = self.settings.voice.stt
+        if stt.barge_in:
+            return True
+        if getattr(stt, "barge_in_auto", False):
+            try:
+                from . import audio
+                return audio.output_is_external()
+            except Exception:
+                return False
+        return False
+
     def _output_suppressing(self) -> bool:
-        """True while Otto is speaking (or in the cooldown after) — drop mic input then."""
+        """True while Otto is speaking (or in the cooldown after) — drop mic input then. Anchored
+        to the mouth's ACTUAL playback (plus a short tail via recently_active), so the suppression
+        can't under-cover a Kokoro clip and let the tail echo through as a command (#56)."""
         if self.mouth is None:
             return False
         try:
-            if self.mouth.is_playing():
+            if self.mouth.recently_active(1.5):   # playing, or finished within 1.5s
                 return True
         except Exception:
-            pass
+            try:
+                if self.mouth.is_playing():
+                    return True
+            except Exception:
+                pass
         return time.monotonic() < self._mute_input_until
 
     # -- lifecycle ---------------------------------------------------------
