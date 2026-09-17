@@ -254,6 +254,7 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        self._last_greet_ts = 0.0     # last time a greeting was spoken (to debounce repeats)
         # True while we've paused the user's media (music/video) during a wake->listen window,
         # so we know to resume it afterwards.
         self._ducked = False
@@ -420,7 +421,9 @@ class Orchestrator:
         "ack": ("Okay.", "Got it.", "Sure."),
     }
 
-    def _casual_reply(self, text: str) -> str:
+    def _casual_reply(self, text: str) -> tuple[str, str]:
+        """Return (spoken reply, kind) for chit-chat. `kind` (greet/how/thanks/praise/bye/ack)
+        lets the caller debounce repeated greetings."""
         import random
         norm = " ".join(_norm_words(text))
         if any(w in norm for w in ("thank", "cheers", "appreciat", "much oblig")):
@@ -439,7 +442,7 @@ class Orchestrator:
             key = "greet"
         else:
             key = "ack"
-        return random.choice(self._CASUAL_REPLIES[key])
+        return random.choice(self._CASUAL_REPLIES[key]), key
 
     def _schedule_unmute(self) -> None:
         if self._loop is None:
@@ -1633,21 +1636,44 @@ class Orchestrator:
             return
         self._dispatch_voice_command(text)
 
-    # Utterances that put Otto to sleep (checked after stripping a leading greeting/wake word,
-    # so "otto, stop listening" works too). Whole-utterance match to avoid false triggers.
+    _GREET_DEBOUNCE = 30.0     # seconds — don't repeat a spoken greeting within this window
+
+    # Utterances that put Otto to sleep. Short/ambiguous ones must match the whole (peeled)
+    # utterance; the distinctive multi-word ones below may appear embedded in a longer sentence.
     _SLEEP_PHRASES = {
         "stop listening", "stop listning", "stop listen", "go to sleep", "goto sleep",
         "go to sleep now", "pause listening", "stand by", "standby", "mute yourself",
         "go quiet", "be quiet", "stop for now", "sleep", "sleep now", "take a break",
+        "stop responding", "quiet down", "shush", "silence", "stop talking", "go away",
     }
+    # Distinctive enough to accept even when embedded ("okay otto, go to sleep now buddy").
+    _STRONG_SLEEP = ("go to sleep", "goto sleep", "stop listening", "stop listning",
+                     "go quiet", "be quiet", "mute yourself", "pause listening",
+                     "stop responding", "stop talking", "go to sleep now")
+    # Filler/politeness/address peeled from the ends before matching.
+    _SLEEP_LEAD = _GREETINGS | {"so", "please", "just", "um", "uh", "well", "now", "can", "could",
+                                "would", "will", "you", "lets", "let", "and", "otto", "orrin", "pls"}
+    _SLEEP_TRAIL = {"please", "now", "okay", "ok", "thanks", "thank", "you", "otto", "orrin",
+                    "buddy", "pls", "for", "a", "bit", "while", "please"}
 
     def _is_sleep_command(self, text: str) -> bool:
         words = _norm_words(text)
+        if not words:
+            return False
+        # Don't misfire on a negated sentence ("I don't want to go to sleep").
+        if any(w in ("dont", "not", "never", "cant", "cannot", "wont", "dnt") for w in words):
+            return False
         trigger = (_norm_words(self.settings.voice.stt.wake_words)[-1:] or ["otto"])[0]
-        # peel a leading greeting and/or the wake word ("hey otto stop listening")
-        while words and (words[0] in _GREETINGS or _wordish(words[0], trigger)):
+        while words and (words[0] in self._SLEEP_LEAD or _wordish(words[0], trigger)):
             words = words[1:]
-        return " ".join(words) in self._SLEEP_PHRASES
+        while words and (words[-1] in self._SLEEP_TRAIL or _wordish(words[-1], trigger)):
+            words = words[:-1]
+        core = " ".join(words)
+        if not core:
+            return False
+        if core in self._SLEEP_PHRASES:
+            return True
+        return any(p in core for p in self._STRONG_SLEEP)
 
     def _enter_sleep(self) -> None:
         """Pause hands-free listening until the wake word. The mic stays on for the wake word."""
@@ -1694,7 +1720,18 @@ class Orchestrator:
         if not self._dictation:
             intent = self._classify_intent(text)
             if intent == "casual":
-                reply = self._casual_reply(text)
+                reply, kind = self._casual_reply(text)
+                # Debounce greetings: with always-listen, ambient "hello"s from the room made
+                # Orrin greet over and over. If it already greeted in the last window, stay quietly
+                # listening instead of greeting again (only greetings are debounced — real chit-chat
+                # like "thanks"/"how are you" still gets a reply).
+                now = time.monotonic()
+                if kind == "greet" and (now - self._last_greet_ts) < self._GREET_DEBOUNCE:
+                    print(f"[otto] suppressing repeat greeting: {text!r}",
+                          file=sys.stderr, flush=True)
+                    return
+                if kind == "greet":
+                    self._last_greet_ts = now
                 print(f"[otto] casual: {text!r} -> {reply!r}", file=sys.stderr, flush=True)
                 self.bus.transcript("user", text, final=True)
                 self.bus.transcript("assistant", reply, final=True)

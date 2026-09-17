@@ -195,6 +195,47 @@ def test_looks_like_command_trusts_chained_commands():
         assert cmd(ambient) is False, ambient
 
 
+def test_sleep_command_matching_robust():
+    """'go to sleep' etc. must trigger sleep even with filler/wake/embedding; not on negations
+    or unrelated 'sleep' mentions."""
+    orch = Orchestrator(load_settings(), EventBus())
+    for t in ("go to sleep", "Otto, go to sleep", "okay go to sleep now",
+              "go to sleep now please", "go to sleep otto", "stop listening",
+              "hey otto stop listening", "go quiet", "be quiet now", "stop talking",
+              "stop responding", "go to sleep for a bit", "mute yourself", "take a break",
+              "please go to sleep buddy", "sleep now"):
+        assert orch._is_sleep_command(t) is True, t
+    for t in ("I don't want to go to sleep yet", "not going to sleep", "did you sleep well",
+              "open the sleep tracker", "how much sleep do I need", "play a song",
+              "close the calculator", "what's the weather"):
+        assert orch._is_sleep_command(t) is False, t
+
+
+def test_greeting_debounce(monkeypatch):
+    """Repeated ambient greetings don't make Orrin greet over and over: the 2nd greeting within the
+    window is suppressed, while a non-greeting casual reply still goes through."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.always_listen = True
+        spoken = []
+        monkeypatch.setattr(orch, "_voice_out", lambda t: spoken.append(t))
+        monkeypatch.setattr(orch, "_enter_awaiting_command", lambda **k: None)
+        # force casual classification
+        monkeypatch.setattr(orch, "_classify_intent", lambda t: "casual")
+        orch._dispatch_voice_command("hello", hands_free=True)
+        await asyncio.sleep(0)
+        assert len(spoken) == 1                         # first greeting spoken
+        orch._dispatch_voice_command("hi there", hands_free=True)
+        await asyncio.sleep(0)
+        assert len(spoken) == 1                         # second greeting SUPPRESSED (debounced)
+        # a non-greeting casual reply ("how are you") still speaks — only greetings are debounced
+        orch._dispatch_voice_command("how are you doing", hands_free=True)
+        await asyncio.sleep(0)
+        assert len(spoken) == 2
+    asyncio.run(run())
+
+
 def test_confirm_parser_strict():
     """#47: refusals and unclear answers are never read as approval."""
     from otto.orchestrator import _parse_confirmation
