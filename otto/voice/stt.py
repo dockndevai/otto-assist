@@ -33,8 +33,14 @@ def _resolve_lang(voice, stt):
         return stt.model, stt.language            # unchanged default: small.en / en
     if v == "en-in":
         return stt.model, "en"                    # Indian English: small.en + Indian priming
-    if v in ("hinglish", "auto"):
-        return ml, None                           # auto-detect per utterance (code-switch)
+    if v == "hinglish":
+        # PIN to English on the multilingual model. Auto-detect (None) is disastrous on short
+        # CPU utterances — it flips English/Hindi speech to Japanese/German/gibberish. Pinned
+        # "en" transcribes accented English cleanly and romanizes Hindi words (Latin script),
+        # which Claude reads fine and the neural voice can speak. Commands work again.
+        return ml, "en"
+    if v == "auto":
+        return ml, None                           # true auto-detect (unreliable on CPU; advanced)
     return ml, v                                  # "hi", "ta", … a Whisper language code
 
 
