@@ -1647,6 +1647,40 @@ def test_memory_add_fact_scopes_and_dedups(tmp_path):
     assert "release branch" in pj and "metric units" in g
 
 
+def test_recent_findings_and_research_prompt_dedup(tmp_path):
+    """Background research must be told what it already saved, so it advances instead of
+    re-deriving the same finding (project.md was accumulating near-duplicates)."""
+    from otto.memory import Memory
+    m = Memory(tmp_path / "memory", load_settings())
+    proj = "/tmp/researchproj"
+    # nothing saved yet → empty, and no dedup block is added
+    assert m.recent_findings(proj) == []
+
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+             "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar"]
+    facts = [f"The {w} module needs attention" for w in words]
+    for f in facts:
+        assert asyncio.run(m.add_fact(proj, f)) is True
+    recent = m.recent_findings(proj, limit=12)
+    assert len(recent) == 12                            # capped to the tail
+    assert recent[-1] == "The oscar module needs attention"    # most recent kept
+    assert "The alpha module needs attention" not in recent    # oldest dropped
+    assert all(not r.startswith("- ") for r in recent)  # marker stripped
+
+    # the orchestrator folds those into the research prompt
+    from otto.orchestrator import Orchestrator
+    orch = object.__new__(Orchestrator)
+    orch.memory = m
+    base = Orchestrator._RESEARCH_PROMPT
+    empty_prompt = orch._research_prompt("/tmp/never-seen")
+    assert empty_prompt == base                     # no findings → base prompt unchanged
+    dedup_prompt = orch._research_prompt(proj)
+    assert dedup_prompt.startswith(base)
+    assert "do NOT repeat" in dedup_prompt
+    assert "oscar module" in dedup_prompt
+    assert "alpha module" not in dedup_prompt        # only the recent tail is shown
+
+
 def test_memory_capture_skips_trivial_turns(tmp_path, monkeypatch):
     from otto.memory import Memory, project_slug
     s = load_settings(); s.memory.auto_capture = True
