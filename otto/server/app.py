@@ -483,6 +483,17 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                              "facts": facts, "summary": summary,
                              "docs": docs, "doc_count": len(docs)})
 
+    @app.get("/api/suggestions")
+    async def get_suggestions() -> JSONResponse:
+        """Open suggestions/risks from background research — so the Home can show what Orrin
+        found while idle, persistently (the live WS tiles are transient)."""
+        items: list = []
+        try:
+            items = orch.memory.list_suggestions(status="open", limit=24)
+        except Exception:
+            items = []
+        return JSONResponse({"items": items})
+
     # -- deck: live state for the Home constellation (all real, no static data) --
     @app.get("/api/deck")
     async def get_deck() -> JSONResponse:

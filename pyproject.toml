@@ -1,6 +1,6 @@
 [project]
 name = "otto-assist"
-version = "0.2.26"
+version = "0.2.27"
 description = "A realtime, voice-driven personal assistant that wraps Claude as its brain."
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
