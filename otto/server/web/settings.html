@@ -5,42 +5,87 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- #54: block remote scripts/styles/beacons; inline style/script/handlers need 'unsafe-inline'. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
-  <title>Otto — Settings</title>
+  <title>Orrin — Settings</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" />
   <style>
-    :root { --bg:#0a0e14; --panel:#111721; --line:#1e2836; --text:#dfe7f2; --muted:#7d8aa0; --accent:#37c0ff; }
-    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text);
-      font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,sans-serif; }
-    .wrap { max-width:760px; margin:0 auto; padding:32px 24px 64px; }
-    h1 { letter-spacing:3px; font-size:20px; } a { color:var(--accent); text-decoration:none; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; margin:16px 0; }
-    .card h2 { font-size:14px; letter-spacing:2px; color:var(--muted); margin:0 0 16px; text-transform:uppercase; }
-    label { display:block; font-size:13px; color:var(--muted); margin:12px 0 4px; }
-    input, select { width:100%; background:#0d131c; border:1px solid var(--line); color:var(--text);
-      padding:9px 11px; border-radius:8px; font-size:14px; outline:none; }
-    input:focus, select:focus { border-color:var(--accent); }
-    .row { display:flex; gap:8px; align-items:center; }
-    .row input[type=checkbox] { width:auto; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:0 16px; }
-    button { background:var(--accent); color:#001521; border:0; border-radius:9px; padding:10px 18px;
-      font-weight:600; cursor:pointer; font-size:14px; }
-    button.ghost { background:#16202c; color:var(--text); border:1px solid var(--line); }
-    .proj { display:flex; justify-content:space-between; align-items:center; padding:9px 11px;
-      border:1px solid var(--line); border-radius:8px; margin:6px 0; font-size:13px; }
-    .proj.cur { border-color:var(--accent); }
-    .muted { color:var(--muted); font-size:12px; }
-    .bar { position:sticky; bottom:0; background:linear-gradient(transparent,var(--bg) 40%); padding-top:24px;
-      display:flex; gap:10px; align-items:center; }
-    #msg { color:var(--accent); font-size:13px; }
+    /* Liquid Glass — matches the dashboard (styles.css tokens). */
+    :root{
+      --ink:#1b2438;--muted:#5b6577;--faint:#8590a3;
+      --ground-1:#eef2f8;--ground-2:#e6ecf6;--ground-3:#f4f0f7;
+      --glass:rgba(255,255,255,.52);--glass-strong:rgba(255,255,255,.74);--glass-line:rgba(255,255,255,.85);--glass-edge:rgba(120,140,180,.16);
+      --accent-1:#38bdf8;--accent-2:#7c6cf0;--accent-3:#f0a5d0;--b1:56,189,248;--b2:124,108,240;--b3:240,165,208;
+      --good:#2fbf87;--warn:#e0a020;--crit:#e5484d;
+      --shadow:0 22px 50px -26px rgba(40,60,110,.42);--shadow-soft:0 8px 22px -14px rgba(40,60,110,.30);
+      --r-lg:22px;--r-md:16px;--r-sm:12px;color-scheme:light;
+    }
+    :root[data-v="mint"]{--accent-1:#2dd4bf;--accent-2:#38bdf8;--accent-3:#a7f3d0;--b1:45,212,191;--b2:56,189,248;--b3:167,243,208;--ground-3:#eef7f4}
+    :root[data-v="ember"]{--accent-1:#fb9d6a;--accent-2:#f0709a;--accent-3:#f5c77e;--b1:251,157,106;--b2:240,112,154;--b3:245,199,126;--ground-1:#f6f0ec;--ground-3:#f7eef2}
+    :root[data-v="ice"]{--accent-1:#5aa9f0;--accent-2:#8aa0e8;--accent-3:#bcd6f5;--b1:90,169,240;--b2:138,160,232;--b3:188,214,245;--ground-1:#eef1f7;--ground-2:#e7ebf4}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100%;color:var(--ink);font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;
+      background:
+        radial-gradient(55% 50% at 15% 8%,rgba(var(--b1),.18),transparent 60%),
+        radial-gradient(50% 45% at 90% 6%,rgba(var(--b2),.16),transparent 62%),
+        radial-gradient(65% 55% at 82% 98%,rgba(var(--b3),.14),transparent 60%),
+        linear-gradient(160deg,var(--ground-1),var(--ground-2) 55%,var(--ground-3));background-attachment:fixed}
+    a{color:var(--accent-2);text-decoration:none}
+    .wrap{max-width:780px;margin:0 auto;padding:26px clamp(16px,3vw,24px) 120px}
+    .top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+    .brand{display:flex;align-items:center;gap:10px;font-family:"Sora",system-ui,sans-serif;font-weight:600;font-size:19px;letter-spacing:.4px}
+    .brand .dot{width:20px;height:20px;border-radius:50%;background:conic-gradient(from 210deg,var(--accent-1),var(--accent-2),var(--accent-3),var(--accent-1));box-shadow:0 0 12px rgba(var(--b2),.55)}
+    .brand small{font-family:"IBM Plex Sans";font-weight:500;font-size:13px;color:var(--faint);letter-spacing:0}
+    .spacer{flex:1}
+    .back{font-size:13px;color:var(--muted);padding:7px 13px;border-radius:999px;background:var(--glass-strong);border:1px solid var(--glass-edge)}
+    .cfgpath{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint);margin:2px 0 20px;word-break:break-all}
+    .card{background:var(--glass);backdrop-filter:blur(22px) saturate(150%);-webkit-backdrop-filter:blur(22px) saturate(150%);
+      border:1px solid var(--glass-line);box-shadow:var(--shadow-soft);border-radius:var(--r-lg);padding:20px 22px;margin:16px 0}
+    .card h2{font-family:"Sora",sans-serif;font-size:12px;letter-spacing:1.4px;color:var(--faint);margin:0 0 4px;text-transform:uppercase}
+    .card .hint{font-size:12.5px;color:var(--muted);margin:0 0 16px}
+    label{display:block;font-size:12.5px;color:var(--muted);margin:14px 0 5px;font-weight:500}
+    input[type=text],input:not([type]),select{width:100%;background:var(--glass-strong);border:1px solid var(--glass-edge);color:var(--ink);
+      padding:10px 12px;border-radius:var(--r-sm);font-size:14px;font-family:inherit;outline:none;transition:.2s}
+    input:focus,select:focus{border-color:var(--accent-2);box-shadow:0 0 0 3px rgba(var(--b2),.14)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px}
+    @media(max-width:560px){.grid{grid-template-columns:1fr}}
+    .chk{display:flex;align-items:center;gap:10px;margin:12px 0;font-size:13.5px;color:var(--ink);cursor:pointer}
+    .chk input{position:absolute;opacity:0;width:0;height:0}
+    .chk .tog{width:38px;height:22px;border-radius:999px;background:rgba(120,140,180,.28);position:relative;transition:.22s;flex:none}
+    .chk .tog::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:.22s}
+    .chk input:checked + .tog{background:linear-gradient(120deg,var(--accent-1),var(--accent-2))}
+    .chk input:checked + .tog::after{transform:translateX(16px)}
+    .chk input:focus-visible + .tog{box-shadow:0 0 0 3px rgba(var(--b2),.2)}
+    .chk .lbl{line-height:1.3}.chk .lbl small{display:block;color:var(--faint);font-size:11.5px}
+    .proj{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--glass-edge);
+      border-radius:var(--r-sm);margin:8px 0;background:var(--glass-strong)}
+    .proj.cur{border-color:var(--accent-2);box-shadow:0 0 0 2px rgba(var(--b2),.12)}
+    .proj .nm{font-size:13.5px;font-weight:500}.proj .pt{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint);word-break:break-all}
+    button{font-family:inherit;font-weight:600;cursor:pointer;border-radius:999px;font-size:13.5px;transition:.2s;border:0}
+    .btn{background:linear-gradient(120deg,var(--accent-1),var(--accent-2));color:#fff;padding:11px 22px;box-shadow:var(--shadow-soft)}
+    .btn:hover{filter:brightness(1.05)}
+    .btn.ghost{background:var(--glass-strong);color:var(--ink);border:1px solid var(--glass-edge);box-shadow:none}
+    .btn.sm{padding:7px 15px;font-size:12.5px}
+    .bar{position:fixed;left:0;right:0;bottom:0;padding:16px clamp(16px,3vw,24px);padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));
+      display:flex;gap:12px;align-items:center;justify-content:center;
+      background:linear-gradient(transparent,var(--ground-2) 55%);backdrop-filter:blur(6px)}
+    .bar .inner{width:100%;max-width:780px;display:flex;gap:12px;align-items:center}
+    #msg{font-size:13px;color:var(--accent-2);font-weight:500}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>OTTO · SETTINGS</h1>
-    <p class="muted">Config file: <span id="cfgpath">…</span> · <a href="/">← Dashboard</a></p>
+    <div class="top">
+      <div class="brand"><span class="dot"></span>Orrin <small>Settings</small></div>
+      <div class="spacer"></div>
+      <a class="back" href="/">← Dashboard</a>
+    </div>
+    <div class="cfgpath" id="cfgpath">…</div>
 
     <div class="card">
       <h2>Project</h2>
-      <p class="muted">Otto continues the selected project's most recent Claude conversation.</p>
+      <p class="hint">Orrin continues the selected project's most recent Claude conversation.</p>
       <div id="projects"></div>
     </div>
 
@@ -48,62 +93,113 @@
       <h2>Brain</h2>
       <div class="grid">
         <div><label>Model (blank = Claude default)</label><input id="brain_model" placeholder="sonnet / opus" /></div>
-        <div><label>Permission prompts</label>
+        <div><label>Permission</label>
           <select id="brain_permission">
-            <option value="voice">voice — ask me</option>
-            <option value="auto">auto — approve</option>
-            <option value="deny">deny — reject</option>
+            <option value="bypass">bypass — full access, no prompts</option>
+            <option value="auto">auto — approve consequential actions</option>
+            <option value="guarded">guarded — confirm only dangerous ones</option>
+            <option value="voice">voice — ask me each time</option>
+            <option value="deny">deny — reject actions</option>
           </select>
         </div>
       </div>
-      <label class="row"><input type="checkbox" id="brain_use_claude_config" /> &nbsp;Use my Claude config (MCP, subagents, skills, CLAUDE.md)</label>
-      <label class="row"><input type="checkbox" id="brain_continue" /> &nbsp;Continue the project's latest session</label>
-      <label class="row"><input type="checkbox" id="brain_register_mcp" /> &nbsp;Expose Otto as an MCP for Claude (/mcp)</label>
+      <label class="chk"><input type="checkbox" id="brain_use_claude_config" /><span class="tog"></span><span class="lbl">Use my Claude config<small>MCP servers, subagents, skills, CLAUDE.md</small></span></label>
+      <label class="chk"><input type="checkbox" id="brain_computer_use" /><span class="tog"></span><span class="lbl">Desktop control<small>screenshots, click & type via mac-control</small></span></label>
+      <label class="chk"><input type="checkbox" id="brain_continue" /><span class="tog"></span><span class="lbl">Continue the project's latest session</span></label>
+      <label class="chk"><input type="checkbox" id="brain_register_mcp" /><span class="tog"></span><span class="lbl">Expose Orrin as an MCP for Claude<small>mounted at /mcp</small></span></label>
     </div>
 
     <div class="card">
-      <h2>Voice</h2>
-      <label class="row"><input type="checkbox" id="voice_input" /> &nbsp;Microphone / wake word</label>
-      <label class="row"><input type="checkbox" id="voice_output" /> &nbsp;Speak replies</label>
+      <h2>Voice &amp; language</h2>
+      <label class="chk"><input type="checkbox" id="voice_input" /><span class="tog"></span><span class="lbl">Microphone / wake word</span></label>
+      <label class="chk"><input type="checkbox" id="voice_output" /><span class="tog"></span><span class="lbl">Speak replies</span></label>
       <div class="grid">
-        <div><label>Wake word</label><input id="stt_wake" /></div>
-        <div><label>Whisper model</label><input id="stt_model" placeholder="small.en" /></div>
-        <div><label>TTS engine</label>
-          <select id="tts_engine"><option value="system">system (local)</option><option value="elevenlabs">elevenlabs</option></select>
+        <div><label>Language / dialect</label>
+          <select id="voice_language">
+            <option value="en">English (fastest)</option>
+            <option value="en-IN">Indian English</option>
+            <option value="hinglish">Hinglish (Hindi + English)</option>
+            <option value="hi">Hindi</option>
+            <option value="auto">Auto-detect</option>
+          </select>
         </div>
-        <div><label>TTS voice (elevenlabs)</label><input id="tts_voice" /></div>
+        <div><label>Wake word</label><input id="stt_wake" placeholder="hey otto" /></div>
+        <div><label>TTS engine</label>
+          <select id="tts_engine">
+            <option value="kokoro">kokoro — neural (natural)</option>
+            <option value="system">system — macOS say</option>
+            <option value="elevenlabs">elevenlabs (cloud)</option>
+          </select>
+        </div>
+        <div><label>TTS voice (elevenlabs / system)</label><input id="tts_voice" placeholder="e.g. Rishi" /></div>
+        <div><label>Whisper model</label><input id="stt_model" placeholder="small.en" /></div>
         <div><label>Push-to-talk hotkey</label><input id="hotkey" placeholder="&lt;cmd&gt;+&lt;shift&gt;+j" /></div>
       </div>
     </div>
 
-    <div class="bar">
-      <button id="save">Save</button>
-      <button class="ghost" onclick="location.href='/'">Cancel</button>
-      <span id="msg"></span>
+    <div class="card">
+      <h2>Background research</h2>
+      <p class="hint">When you're idle, Orrin quietly researches one project at a time (read-only) and saves findings + suggestions to memory. They surface on the Home and in the daily brief.</p>
+      <label class="chk"><input type="checkbox" id="idle_research" /><span class="tog"></span><span class="lbl">Idle background research</span></label>
+      <label class="chk"><input type="checkbox" id="idle_git_weight" /><span class="tog"></span><span class="lbl">Prefer recently-worked projects<small>weight selection by recent git activity</small></span></label>
+      <label class="chk"><input type="checkbox" id="morning_brief" /><span class="tog"></span><span class="lbl">Daily morning brief<small>a spoken cross-project summary once a day</small></span></label>
+      <div class="grid">
+        <div><label>Idle delay before researching (seconds)</label><input id="idle_delay" placeholder="300" /></div>
+        <div><label>Morning brief hour (0–23, local)</label><input id="brief_hour" placeholder="9" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Suggestions &amp; memory</h2>
+      <label class="chk"><input type="checkbox" id="mem_suggestions" /><span class="tog"></span><span class="lbl">Actionable-suggestion queue</span></label>
+      <label class="chk"><input type="checkbox" id="mem_risk_alerts" /><span class="tog"></span><span class="lbl">Alert on high-severity risks<small>notification + dashboard alert</small></span></label>
+      <label class="chk"><input type="checkbox" id="mem_cross_project" /><span class="tog"></span><span class="lbl">Cross-project awareness<small>answer "what should we do" across all projects</small></span></label>
+      <div class="grid">
+        <div><label>Age out open suggestions after (days)</label><input id="mem_stale_days" placeholder="14" /></div>
+      </div>
     </div>
   </div>
 
+  <div class="bar"><div class="inner">
+    <button class="btn" id="save">Save</button>
+    <button class="btn ghost" onclick="location.href='/'">Cancel</button>
+    <span id="msg"></span>
+  </div></div>
+
   <script>
+    try { var v = localStorage.getItem('orrin-variant'); if (v) document.documentElement.setAttribute('data-v', v); } catch (e) {}
     const $ = (id) => document.getElementById(id);
     let cfg = {};
+    const numOr = (s, d) => { const n = parseFloat(s); return isFinite(n) ? n : d; };
 
     async function load() {
       const r = await (await fetch('/api/config')).json();
       cfg = r.config || {};
-      $('cfgpath').textContent = r.path;
-      const b = cfg.brain || {}, v = cfg.voice || {}, stt = (v.stt||{}), tts = (v.tts||{}), hk = (v.hotkey||{});
+      $('cfgpath').textContent = 'Config: ' + (r.path || '');
+      const b = cfg.brain || {}, v = cfg.voice || {}, stt = (v.stt || {}), tts = (v.tts || {}), hk = (v.hotkey || {}), m = cfg.memory || {};
       $('brain_model').value = b.model || '';
-      $('brain_permission').value = b.permission || 'voice';
+      $('brain_permission').value = b.permission || 'bypass';
       $('brain_use_claude_config').checked = b.use_claude_config !== false;
+      $('brain_computer_use').checked = b.computer_use !== false;
       $('brain_continue').checked = b.continue_conversation !== false;
       $('brain_register_mcp').checked = b.register_mcp !== false;
       $('voice_input').checked = v.input_enabled !== false;
       $('voice_output').checked = v.output_enabled !== false;
-      $('stt_wake').value = stt.wake_words ?? 'hey jarvis';
+      $('voice_language').value = v.language || 'en';
+      $('stt_wake').value = stt.wake_words ?? 'hey otto';
       $('stt_model').value = stt.model ?? 'small.en';
-      $('tts_engine').value = tts.engine ?? 'system';
+      $('tts_engine').value = tts.engine ?? 'kokoro';
       $('tts_voice').value = tts.voice ?? '';
       $('hotkey').value = hk.push_to_talk ?? '<cmd>+<shift>+j';
+      $('idle_research').checked = v.idle_research !== false;
+      $('idle_git_weight').checked = v.idle_research_git_weight !== false;
+      $('morning_brief').checked = v.morning_brief !== false;
+      $('idle_delay').value = v.idle_research_delay ?? 300;
+      $('brief_hour').value = v.morning_brief_hour ?? 9;
+      $('mem_suggestions').checked = m.suggestions !== false;
+      $('mem_risk_alerts').checked = m.risk_alerts !== false;
+      $('mem_cross_project').checked = m.cross_project !== false;
+      $('mem_stale_days').value = m.suggestion_stale_days ?? 14;
       loadProjects();
     }
 
@@ -113,13 +209,12 @@
       (r.projects || []).forEach(p => {
         const row = document.createElement('div');
         row.className = 'proj' + (p.current ? ' cur' : '');
-        row.innerHTML = `<span>${p.name}<br><span class="muted">${p.path}</span></span>`;
+        row.innerHTML = `<span><span class="nm">${p.name}</span><br><span class="pt">${p.path}</span></span>`;
         const btn = document.createElement('button');
-        btn.className = 'ghost'; btn.textContent = p.current ? 'Current' : 'Switch';
+        btn.className = 'btn sm ghost'; btn.textContent = p.current ? 'Current' : 'Switch';
         btn.disabled = p.current;
         btn.onclick = async () => {
-          await fetch('/api/project/switch', {method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({path: p.path})});
+          await fetch('/api/project/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: p.path }) });
           $('msg').textContent = 'Switching project…'; setTimeout(loadProjects, 1500);
         };
         row.appendChild(btn); el.appendChild(row);
@@ -131,21 +226,32 @@
         model: $('brain_model').value.trim(),
         permission: $('brain_permission').value,
         use_claude_config: $('brain_use_claude_config').checked,
+        computer_use: $('brain_computer_use').checked,
         continue_conversation: $('brain_continue').checked,
         register_mcp: $('brain_register_mcp').checked,
       });
-      cfg.voice = cfg.voice || {}; cfg.voice.stt = cfg.voice.stt || {}; cfg.voice.tts = cfg.voice.tts || {};
-      cfg.voice.hotkey = cfg.voice.hotkey || {};
-      cfg.voice.input_enabled = $('voice_input').checked;
-      cfg.voice.output_enabled = $('voice_output').checked;
-      cfg.voice.stt.wake_words = $('stt_wake').value;
-      cfg.voice.stt.model = $('stt_model').value;
-      cfg.voice.tts.engine = $('tts_engine').value;
-      cfg.voice.tts.voice = $('tts_voice').value;
-      cfg.voice.hotkey.push_to_talk = $('hotkey').value;
-      const r = await (await fetch('/api/config', {method:'PUT', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({config: cfg})})).json();
-      $('msg').textContent = r.note || 'Saved.';
+      const v = cfg.voice = cfg.voice || {};
+      v.stt = v.stt || {}; v.tts = v.tts || {}; v.hotkey = v.hotkey || {};
+      v.input_enabled = $('voice_input').checked;
+      v.output_enabled = $('voice_output').checked;
+      v.language = $('voice_language').value;
+      v.stt.wake_words = $('stt_wake').value;
+      v.stt.model = $('stt_model').value;
+      v.tts.engine = $('tts_engine').value;
+      v.tts.voice = $('tts_voice').value;
+      v.hotkey.push_to_talk = $('hotkey').value;
+      v.idle_research = $('idle_research').checked;
+      v.idle_research_git_weight = $('idle_git_weight').checked;
+      v.morning_brief = $('morning_brief').checked;
+      v.idle_research_delay = numOr($('idle_delay').value, 300);
+      v.morning_brief_hour = Math.max(0, Math.min(23, Math.round(numOr($('brief_hour').value, 9))));
+      const m = cfg.memory = cfg.memory || {};
+      m.suggestions = $('mem_suggestions').checked;
+      m.risk_alerts = $('mem_risk_alerts').checked;
+      m.cross_project = $('mem_cross_project').checked;
+      m.suggestion_stale_days = numOr($('mem_stale_days').value, 14);
+      const r = await (await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: cfg }) })).json();
+      $('msg').textContent = r.note || 'Saved. Some changes apply on restart.';
     };
 
     load();

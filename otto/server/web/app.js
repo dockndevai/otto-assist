@@ -197,9 +197,9 @@
         { const c = ensureCluster(MAIN, "Orrin needs you"); const b = addBlk(c, "reply", esc(ev.question || "")); b.style.borderLeft = "3px solid var(--warn)"; $("cmdInput").focus(); }
         return;
       case "canvas_render": renderCanvas(ev); return;
-      case "suggestion": if (!replaying) suggestionTile(ev.item); return;
-      case "alert": if (!replaying) riskAlert(ev.item); return;
-      case "suggestion_resolved": if (!replaying) savedPulse("resolved · suggestion"); return;
+      case "suggestion": if (!replaying) { placeSuggestion(ev.item, { flash: true }); savedPulse("new suggestion"); } return;
+      case "alert": if (!replaying) { placeSuggestion(ev.item, { flash: true }); } return;
+      case "suggestion_resolved": if (!replaying) { removeSuggestion(ev.id); savedPulse("resolved · suggestion"); } return;
       case "notify": toastNotify(ev.title, ev.body); return;
       case "preflight": renderPreflight(ev); return;
       case "mood": return; // reserved
@@ -248,25 +248,36 @@
     setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 6000);
   }
 
-  /* suggestion → faint floating tile that drifts away (background, low-key) */
-  function suggestionTile(item) {
-    if (!item) return;
+  /* ---------------- background work: PERSISTENT suggestion tiles ----------------
+     Idle research is transient (a pass lasts seconds, and you're away while it runs), so its
+     findings must stay visible on the Home, not flash and vanish. Open suggestions render as
+     faint floating tiles that persist until resolved — risks get a stronger, alert style. */
+  const suggNodes = new Map(); // id -> { node, ai }
+  function placeSuggestion(item, opts) {
+    if (!item || !item.id || suggNodes.has(item.id)) {
+      if (item && suggNodes.has(item.id) && opts && opts.flash) { const n = suggNodes.get(item.id).node; n.classList.remove("flash"); void n.offsetWidth; n.classList.add("flash"); }
+      return;
+    }
+    if (usedAnchors.size >= ANCHORS.length) return;      // no free spot — don't overlap
     const ai = takeAnchor(), an = ANCHORS[ai];
+    const risk = item.kind === "risk";
     const name = esc(item.name || "a project"), txt = esc(item.text || "");
-    const node = el(`<div class="cluster ghosty"><div class="ch"><span class="ic">💡</span><span class="nm">Suggestion · ${name}</span></div><div class="deck"><div class="blk note in">${txt}</div></div></div>`);
+    const icon = risk ? "⚠" : "💡", head = risk ? "Risk · " : "Suggestion · ";
+    const noteStyle = risk ? ' style="border-left:3px solid var(--warn)"' : "";
+    const node = el(`<div class="cluster ghosty${risk ? " risk" : ""}${opts && opts.flash ? " flash" : ""}"><div class="ch"><span class="ic">${icon}</span><span class="nm">${head}${name}</span></div><div class="deck"><div class="blk note in"${noteStyle}>${txt}</div></div></div>`);
     Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
     layer.appendChild(node);
-    setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 9000);
+    suggNodes.set(item.id, { node, ai });
   }
-  /* alert → prominent, longer-lived risk toast (high-severity risks only) */
-  function riskAlert(item) {
-    if (!item) return;
-    const ai = takeAnchor(), an = ANCHORS[ai];
-    const name = esc(item.name || "a project"), txt = esc(item.text || "");
-    const node = el(`<div class="cluster"><div class="ch"><span class="ic">⚠</span><span class="nm">Risk · ${name}</span></div><div class="deck"><div class="blk note in" style="border-left:3px solid var(--warn)">${txt}</div></div></div>`);
-    Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
-    layer.appendChild(node);
-    setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 14000);
+  function removeSuggestion(id) {
+    const s = suggNodes.get(id); if (!s) return;
+    s.node.classList.add("out"); usedAnchors.delete(s.ai);
+    setTimeout(() => s.node.remove(), 560); suggNodes.delete(id);
+  }
+  function loadSuggestions() {
+    fetch("/api/suggestions").then((r) => r.json()).then((d) => {
+      (d.items || []).slice(0, 4).forEach((it) => placeSuggestion(it));
+    }).catch(() => {});
   }
 
   /* ---------------- alerts (preflight) as tiny top icons ---------------- */
@@ -303,7 +314,7 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => { wsReady = true; conn.classList.remove("show"); setState("idle"); };
+    ws.onopen = () => { wsReady = true; conn.classList.remove("show"); setState("idle"); loadSuggestions(); };
     ws.onmessage = (m) => { let ev; try { ev = JSON.parse(m.data); } catch (e) { return; } try { route(ev); } catch (e) {} };
     ws.onclose = () => { wsReady = false; conn.classList.add("show"); setTimeout(connect, 1500); };
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
