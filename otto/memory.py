@@ -365,6 +365,16 @@ class Memory:
             block = block[:cap].rsplit("\n", 1)[0] + "\n…\n[end overview]"
         return block
 
+    def recent_findings(self, project_path: str, *, limit: int = 12) -> list[str]:
+        """The most recently saved durable facts for a project (tail of project.md's bullets,
+        since facts are appended). Used to tell a background-research pass what it already knows
+        so it investigates something NEW instead of re-deriving the same conclusion."""
+        pdir = self.root / "projects" / project_slug(project_path)
+        bullets = self._bullets(self._read(pdir / "project.md"))
+        tail = bullets[-limit:] if limit and len(bullets) > limit else bullets
+        # strip the leading "- "/"* " marker so the caller can format them itself
+        return [b[2:].strip() for b in tail]
+
     _CROSS_RE = re.compile(
         r"\b(across|all (my |the )?projects|every project|other projects?|going on|what should we|"
         r"suggestions?|what.?s next|overview|big picture|my projects|each project)\b", re.I)

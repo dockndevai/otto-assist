@@ -634,6 +634,24 @@ class Orchestrator:
         "1-3 durable findings and one actionable suggestion for this project. Do not speak. Stop "
         "after saving.")
 
+    def _research_prompt(self, path: str) -> str:
+        """Base prompt + what we already know about this project, so the pass advances instead of
+        re-deriving the same finding (finding-level dedup — project.md was accumulating near-
+        duplicates because the brain was never told its own prior conclusions)."""
+        try:
+            known = self.memory.recent_findings(path, limit=12)
+        except Exception:
+            known = []
+        if not known:
+            return self._RESEARCH_PROMPT
+        block = "\n".join(f"- {k}" for k in known)
+        return (self._RESEARCH_PROMPT + "\n\nYou have ALREADY saved these findings about this "
+                "project in past passes — do NOT repeat, rephrase, or re-derive any of them. "
+                "Investigate something genuinely NEW, or meaningfully advance one of these "
+                "(e.g. it changed, was resolved, or a next step is now clear). If after looking "
+                "you find nothing new worth saving, save nothing and stop.\n"
+                "Already known:\n" + block)
+
     def _arm_idle_research(self) -> None:
         v = self.settings.voice
         if not getattr(v, "idle_research", False) or self._loop is None:
@@ -727,7 +745,7 @@ class Orchestrator:
                 return
             print(f"[otto] idle research -> {ws.name} (read-only)", file=sys.stderr, flush=True)
             self.bus.publish({"type": "research", "active": True, "name": ws.name})
-            await self._run_turn(ws, self._RESEARCH_PROMPT, echo_user=False, research=True)
+            await self._run_turn(ws, self._research_prompt(path), echo_user=False, research=True)
             if not self._research_cancelled:
                 self.memory.mark_researched(path)
         except Exception as e:
