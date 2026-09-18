@@ -77,6 +77,16 @@ rm -rf build dist
 [ -d "$APP" ] || { echo "Build failed: $APP not produced"; exit 1; }
 echo "    Built $APP"
 
+# Signing strategy:
+#   SIGN_ID set            -> real Developer ID (hardened runtime + timestamp, for notarization).
+#   LOCAL_SIGN_ID present   -> stable SELF-SIGNED identity. The whole point: an ad-hoc signature's
+#                             code hash changes every rebuild, so macOS treats each build as a new
+#                             app and DROPS every TCC grant (mic / Accessibility / Screen Recording)
+#                             — the "re-grant permissions on every reinstall" pain. A stable local
+#                             cert keeps the app's designated requirement constant, so grants PERSIST
+#                             across rebuilds. Create it once with scripts/setup_signing.sh.
+#   neither                -> ad-hoc (PyInstaller default); grants drop each rebuild.
+LOCAL_SIGN_ID="${LOCAL_SIGN_ID:-Orrin Local Signing}"
 if [ -n "${SIGN_ID:-}" ]; then
   echo "==> Code-signing (hardened runtime, inside-out)"
   # Notarization requires EVERY Mach-O in the bundle to be signed with a secure timestamp and
@@ -93,6 +103,24 @@ if [ -n "${SIGN_ID:-}" ]; then
     --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
   echo "    Signed with: $SIGN_ID"
+elif security find-certificate -c "$LOCAL_SIGN_ID" >/dev/null 2>&1; then
+  echo "==> Code-signing with STABLE LOCAL identity ($LOCAL_SIGN_ID) — TCC grants persist across rebuilds"
+  # No hardened runtime / timestamp: those are for notarization. A plain self-signed signature is
+  # enough to give the bundle a constant designated requirement so TCC remembers its grants.
+  while IFS= read -r -d '' f; do
+    if file "$f" | grep -q "Mach-O"; then
+      codesign --force --sign "$LOCAL_SIGN_ID" "$f" 2>/dev/null || true
+    fi
+  done < <(find "$APP" -type f -print0 | sort -rz)
+  codesign --force --entitlements packaging/pyinstaller/entitlements.plist \
+    --sign "$LOCAL_SIGN_ID" "$APP"
+  codesign --verify --deep --strict --verbose=2 "$APP" \
+    || echo "    (self-signed verify warnings are expected — Gatekeeper still warns on first open)"
+  echo "    Signed with local identity: $LOCAL_SIGN_ID"
+else
+  echo "==> No signing identity — using ad-hoc (PyInstaller default)."
+  echo "    ⚠️  macOS will DROP mic/Accessibility/Screen-Recording grants on every rebuild."
+  echo "    Fix once:  bash scripts/setup_signing.sh   (creates a stable local identity)"
 fi
 
 echo "==> Creating DMG"
