@@ -197,6 +197,9 @@
         { const c = ensureCluster(MAIN, "Orrin needs you"); const b = addBlk(c, "reply", esc(ev.question || "")); b.style.borderLeft = "3px solid var(--warn)"; $("cmdInput").focus(); }
         return;
       case "canvas_render": renderCanvas(ev); return;
+      case "suggestion": if (!replaying) suggestionTile(ev.item); return;
+      case "alert": if (!replaying) riskAlert(ev.item); return;
+      case "suggestion_resolved": if (!replaying) savedPulse("resolved · suggestion"); return;
       case "notify": toastNotify(ev.title, ev.body); return;
       case "preflight": renderPreflight(ev); return;
       case "mood": return; // reserved
@@ -243,6 +246,27 @@
     Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
     layer.appendChild(node);
     setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 6000);
+  }
+
+  /* suggestion → faint floating tile that drifts away (background, low-key) */
+  function suggestionTile(item) {
+    if (!item) return;
+    const ai = takeAnchor(), an = ANCHORS[ai];
+    const name = esc(item.name || "a project"), txt = esc(item.text || "");
+    const node = el(`<div class="cluster ghosty"><div class="ch"><span class="ic">💡</span><span class="nm">Suggestion · ${name}</span></div><div class="deck"><div class="blk note in">${txt}</div></div></div>`);
+    Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
+    layer.appendChild(node);
+    setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 9000);
+  }
+  /* alert → prominent, longer-lived risk toast (high-severity risks only) */
+  function riskAlert(item) {
+    if (!item) return;
+    const ai = takeAnchor(), an = ANCHORS[ai];
+    const name = esc(item.name || "a project"), txt = esc(item.text || "");
+    const node = el(`<div class="cluster"><div class="ch"><span class="ic">⚠</span><span class="nm">Risk · ${name}</span></div><div class="deck"><div class="blk note in" style="border-left:3px solid var(--warn)">${txt}</div></div></div>`);
+    Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
+    layer.appendChild(node);
+    setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 14000);
   }
 
   /* ---------------- alerts (preflight) as tiny top icons ---------------- */

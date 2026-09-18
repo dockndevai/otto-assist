@@ -55,6 +55,13 @@ class WorkspaceContext:
     async def remember_document(self, title: str, content: str) -> str:
         return await self.orch._ws_remember_document(self.project, title, content)
 
+    async def suggest(self, text: str, kind: str = "action", severity: str = "low",
+                      rationale: str = "") -> str:
+        return await self.orch._ws_suggest(self.project, text, kind, severity, rationale)
+
+    async def resolve_suggestion(self, suggestion_id: str, status: str = "done") -> str:
+        return await self.orch._ws_resolve_suggestion(suggestion_id, status)
+
 
 class Workspace:
     """One project running its own Claude chat, in parallel with others."""

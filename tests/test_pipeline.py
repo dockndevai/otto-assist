@@ -1680,6 +1680,145 @@ def test_recent_findings_and_research_prompt_dedup(tmp_path):
     assert "oscar module" in dedup_prompt
     assert "alpha module" not in dedup_prompt        # only the recent tail is shown
 
+    # open suggestions are also injected, with the resolve instruction
+    sg = m.add_suggestion(proj, "Ship the release", kind="action")
+    prompt2 = orch._research_prompt(proj)
+    assert "Open suggestions" in prompt2
+    assert "Ship the release" in prompt2 and sg["id"] in prompt2
+    assert "resolve_suggestion" in prompt2
+
+
+def test_suggestions_store_lifecycle(tmp_path):
+    """The suggestion queue: add + content-dedup, urgency ordering, status updates, staleness."""
+    from otto.memory import Memory
+    m = Memory(tmp_path / "memory", load_settings())
+    p = "/tmp/suggproj"
+    m.register_project(p, last_active=1.0)
+
+    a = m.add_suggestion(p, "Add tests for the parser", kind="action", severity="low")
+    assert a and a["status"] == "open" and a["kind"] == "action"
+    # same text again while open → dedup (returns None)
+    assert m.add_suggestion(p, "add   tests for the PARSER") is None
+    r = m.add_suggestion(p, "Secret key is committed in the diff", kind="risk", severity="high")
+    assert r and r["kind"] == "risk"
+
+    openlist = m.list_suggestions(status="open")
+    assert len(openlist) == 2
+    assert openlist[0]["id"] == r["id"]            # risk/high sorts to the top
+
+    # resolve the risk by id → drops out of the open list
+    assert m.set_suggestion_status(r["id"], "done") is True
+    openlist = m.list_suggestions(status="open")
+    assert [s["id"] for s in openlist] == [a["id"]]
+    assert m.list_suggestions(status="done")[0]["id"] == r["id"]
+    # unknown id → no-op
+    assert m.set_suggestion_status("deadbeef00", "done") is False
+
+    # staleness: age the remaining open suggestion past the cutoff
+    import json as _json
+    path = m.suggestions_path(p)
+    recs = [_json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+    for rec in recs:
+        if rec["id"] == a["id"]:
+            rec["ts"] = 0.0                        # ancient
+    path.write_text("".join(_json.dumps(x) + "\n" for x in recs))
+    assert m.expire_stale_suggestions(max_age_days=1.0) == 1
+    assert m.list_suggestions(status="open") == []
+
+    digest = m.suggestions_digest()               # nothing open now
+    assert digest == ""
+
+
+def test_overview_includes_open_suggestions(tmp_path):
+    from otto.memory import Memory
+    m = Memory(tmp_path / "memory", load_settings())
+    p = "/tmp/ovproj"
+    m.register_project(p, last_active=5.0)
+    asyncio.run(m.add_fact(p, "Uses a ledger table"))
+    m.add_suggestion(p, "Wire up CI on the release branch", kind="action")
+    ov = m.overview()
+    assert "ovproj" in ov and "Wire up CI" in ov and "open suggestions" in ov.lower()
+
+
+def test_next_research_git_weight(tmp_path, monkeypatch):
+    """Selection prefers recently-committed projects when git weighting is on, and falls back to
+    least-recently-researched rotation when it's off."""
+    import time
+    from otto.orchestrator import Orchestrator
+    from otto.memory import Memory
+    from otto import projects as projmod
+    now = time.time()
+    orch = object.__new__(Orchestrator)
+    orch.focused = "/tmp/focused-proj"
+    orch.settings = load_settings()
+    orch.memory = Memory(tmp_path / "memory", orch.settings)
+    orch._git_ct_cache = {}
+    commits = {"/tmp/active": now - 60, "/tmp/quiet": now - 5_000_000, "/tmp/nogit": 0.0}
+    orch._git_last_commit = lambda path: commits.get(path, 0.0)
+    monkeypatch.setattr(projmod, "list_projects",
+                        lambda **k: [projmod.Project(path=p, name=p.split("/")[-1])
+                                     for p in commits])
+
+    orch.settings.voice.idle_research_git_weight = True
+    assert orch._next_research_project() == "/tmp/active"    # newest commit wins
+
+    # weighting off + differentiated research times → least-recently-researched wins
+    orch.settings.voice.idle_research_git_weight = False
+    from otto.memory import project_slug
+    reg = {project_slug("/tmp/active"): {"path": "/tmp/active", "last_research": now - 10},
+           project_slug("/tmp/quiet"): {"path": "/tmp/quiet", "last_research": now - 100_000},
+           project_slug("/tmp/nogit"): {"path": "/tmp/nogit", "last_research": now - 50_000}}
+    monkeypatch.setattr(orch.memory, "registry", lambda: reg)
+    # /tmp/active was researched 10s ago (< 30-min gap) → excluded; oldest of the rest wins
+    assert orch._next_research_project() == "/tmp/quiet"
+
+
+def test_morning_brief_due_gating(tmp_path):
+    import time
+    from otto.orchestrator import Orchestrator
+    orch = object.__new__(Orchestrator)
+    orch.settings = load_settings()
+    orch.settings.voice.morning_brief = True
+    orch.settings.voice.morning_brief_hour = 0        # any hour qualifies
+    orch._last_brief_day = ""
+    assert orch._morning_brief_due() is True
+    orch._last_brief_day = time.strftime("%Y-%m-%d")   # already briefed today
+    assert orch._morning_brief_due() is False
+    orch._last_brief_day = ""
+    orch.settings.voice.morning_brief = False           # disabled
+    assert orch._morning_brief_due() is False
+
+
+def test_ws_suggest_escalates_high_risk(tmp_path, monkeypatch):
+    """A new high-severity risk publishes a dashboard alert + fires a notification; a routine
+    suggestion only publishes a tile; a duplicate open suggestion does neither."""
+    import otto.orchestrator as omod
+    from otto.orchestrator import Orchestrator
+    from otto.memory import Memory
+    from otto.server.events import EventBus
+    monkeypatch.setattr(omod.subprocess, "Popen", lambda *a, **k: None)  # no real osascript
+    events: list = []
+    bus = EventBus(); bus.add_sink(events.append)
+    orch = object.__new__(Orchestrator)
+    orch.settings = load_settings()
+    orch.memory = Memory(tmp_path / "memory", orch.settings)
+    orch.bus = bus
+    p = "/tmp/riskproj"
+
+    msg = asyncio.run(orch._ws_suggest(p, "Refactor the loader", "action", "low", ""))
+    assert "saved suggestion" in msg
+    kinds = [e["type"] for e in events]
+    assert "suggestion" in kinds and "alert" not in kinds
+
+    events.clear()
+    msg = asyncio.run(orch._ws_suggest(p, "API token committed to git", "risk", "high", "in diff"))
+    kinds = [e["type"] for e in events]
+    assert "suggestion" in kinds and "alert" in kinds and "notify" in kinds
+
+    events.clear()
+    msg = asyncio.run(orch._ws_suggest(p, "Refactor the loader", "action", "low", ""))
+    assert "already had" in msg and events == []
+
 
 def test_memory_capture_skips_trivial_turns(tmp_path, monkeypatch):
     from otto.memory import Memory, project_slug
