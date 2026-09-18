@@ -82,15 +82,13 @@ class Mouth:
         self.settings = settings
         self._engine = settings.voice.tts.engine
         self._voice = settings.voice.tts.voice
-        # #i18n Tier 1: Kokoro's voices are English and mangle Hindi/Hinglish words. When a
-        # non-English language is set and we have a mapped macOS `say` voice for it, speak with
-        # that voice instead (Rishi = Indian English, Lekha = Hindi). English is unaffected.
-        vlang = (getattr(settings.voice, "language", "en") or "en").lower()
-        lang_voices = getattr(settings.voice.tts, "lang_voices", {}) or {}
-        if vlang not in ("en", "") and vlang in {k.lower(): 1 for k in lang_voices}:
-            say_voice = {k.lower(): v for k, v in lang_voices.items()}[vlang]
-            self._engine = "system"
-            self._voice = say_voice
+        # #i18n Tier 1: keep the neural engine (Kokoro) for everything — it speaks ROMANIZED
+        # Hinglish ("calculator kholo") fine, just English-accented. Only DEVANAGARI text (which
+        # Kokoro can't pronounce) is routed per-utterance to a macOS `say` Indian voice below.
+        # (Do NOT switch the whole engine here — that made every reply, English included, robotic.)
+        self._lang = (getattr(settings.voice, "language", "en") or "en").lower()
+        self._lang_voices = {k.lower(): v for k, v in
+                             (getattr(settings.voice.tts, "lang_voices", {}) or {}).items()}
         # macOS say / kokoro shared path
         self._q: "queue.Queue[str | None]" = queue.Queue()
         self._proc: subprocess.Popen | None = None
@@ -163,17 +161,32 @@ class Mouth:
                   file=sys.stderr, flush=True)
             return None
 
+    @staticmethod
+    def _has_devanagari(text: str) -> bool:
+        return any("ऀ" <= c <= "ॿ" for c in (text or ""))
+
+    def _say_voice_for(self, text: str) -> str | None:
+        """Only Devanagari (script Kokoro can't pronounce) forces a macOS `say` Indian voice for
+        THIS utterance — pick the Hindi voice, or the language's mapped voice as a fallback."""
+        if not self._has_devanagari(text) or not self._lang_voices:
+            return None
+        return self._lang_voices.get("hi") or self._lang_voices.get(self._lang) \
+            or next(iter(self._lang_voices.values()), None)
+
     # -- say / kokoro worker ----------------------------------------------
     def _render_job(self, text: str) -> tuple[list[str], str | None]:
         """Build the playback argv for one utterance + an optional temp file to clean up.
-        kokoro → synth to WAV + afplay; system (or kokoro synth failure) → `say`."""
-        if self._engine == "kokoro" and self._kokoro is not None:
+        kokoro → synth to WAV + afplay (neural, incl. romanized Hinglish); Devanagari or a
+        system engine → `say` (with an Indian voice for Devanagari)."""
+        dev_voice = self._say_voice_for(text)
+        if self._engine == "kokoro" and self._kokoro is not None and not dev_voice:
             wav = self._synth_kokoro(text)
             if wav:
                 return ["/usr/bin/afplay", wav], wav
         argv = ["/usr/bin/say"]
-        if self._voice:
-            argv += ["-v", self._voice]
+        voice = dev_voice or self._voice
+        if voice:
+            argv += ["-v", voice]
         argv.append(text)
         return argv, None
 
