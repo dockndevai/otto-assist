@@ -242,6 +242,11 @@ class Orchestrator:
         self._research_ws: Workspace | None = None   # dedicated, kept OUT of self.workspaces
         self._research_running = False
         self._research_cancelled = False
+        self._git_ct_cache: dict[str, tuple[float, float]] = {}   # path -> (commit_time, cached_at)
+        # Daily morning brief: a re-arming timer; fires at most once per calendar day at/after the
+        # configured local hour, on the first quiet moment. Cancelled the instant you speak/type.
+        self._morning_brief_handle = None
+        self._last_brief_day = ""     # "YYYY-MM-DD" of the last brief, so it fires once a day
         self._last_wake = 0.0     # debounce timestamp for wake-word detections
         self._last_ack = ""     # last greeting spoken (to ignore its own echo)
         # Recently-spoken lines (text, monotonic ts) — so we can drop the mic re-hearing Otto's
@@ -565,6 +570,7 @@ class Orchestrator:
         # Seed the cross-project registry (so the overview spans every project) + arm idle research.
         self._loop.create_task(self._seed_registry())
         self._arm_idle_research()
+        self._arm_morning_brief()
 
     async def _seed_registry(self) -> None:
         """Register every discoverable project in memory so the cross-project overview covers
@@ -580,6 +586,12 @@ class Orchestrator:
                 self.memory.register_project(p.path, last_active=mt)
         except Exception as e:
             print(f"[otto] registry seed failed: {e!r}", file=sys.stderr, flush=True)
+        # Age out suggestions nobody acted on, so the queue reflects what's still live.
+        try:
+            days = float(getattr(self.settings.memory, "suggestion_stale_days", 14.0))
+            self.memory.expire_stale_suggestions(max_age_days=days)
+        except Exception:
+            pass
 
     def _schedule_startup_briefing(self) -> None:
         v = self.settings.voice
@@ -623,6 +635,63 @@ class Orchestrator:
         except Exception as e:
             print(f"[otto] startup briefing failed: {e!r}", file=sys.stderr, flush=True)
 
+    # -- daily morning brief ----------------------------------------------
+    _MORNING_BRIEF_PROMPT = (
+        "SYSTEM: Daily morning brief — the user just became active for the day and hasn't said "
+        "anything yet. You are their SYSTEM-LEVEL assistant across the whole Mac. Using the "
+        "cross-project overview and open suggestions below (gathered by overnight background "
+        "research), give a SHORT spoken briefing (3-4 natural sentences): what changed / what's "
+        "notable across their projects, then the 1-2 most useful things they could do today "
+        "(lead with any high-severity risk). Be specific and grounded in the notes below — no "
+        "generic pep talk. Speak it naturally: no lists, no markdown. If there's genuinely "
+        "nothing to report, a brief good-morning is fine.")
+
+    def _arm_morning_brief(self, *, delay: float = 300.0) -> None:
+        """Re-arming daily timer: check every few minutes and fire the brief once per day once
+        we're past the configured hour and the user is quiet."""
+        v = self.settings.voice
+        if not getattr(v, "morning_brief", True) or self._loop is None:
+            return
+        if self._morning_brief_handle is not None:
+            self._morning_brief_handle.cancel()
+        self._morning_brief_handle = self._loop.call_later(
+            max(30.0, delay), lambda: self._loop.create_task(self._morning_brief_tick()))
+
+    def _cancel_morning_brief(self) -> None:
+        if self._morning_brief_handle is not None:
+            self._morning_brief_handle.cancel()
+            self._morning_brief_handle = None
+
+    def _morning_brief_due(self) -> bool:
+        v = self.settings.voice
+        if not getattr(v, "morning_brief", True):
+            return False
+        lt = time.localtime()
+        today = time.strftime("%Y-%m-%d", lt)
+        if self._last_brief_day == today:
+            return False                                   # already briefed today
+        return lt.tm_hour >= int(getattr(v, "morning_brief_hour", 9))
+
+    async def _morning_brief_tick(self) -> None:
+        self._morning_brief_handle = None
+        if not self._morning_brief_due():
+            self._arm_morning_brief()
+            return
+        # Only speak into a quiet moment — never talk over a turn, research, or a remote phone.
+        if (not self._idle_quiescent() or self.voice_muted
+                or (self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote)):
+            self._arm_morning_brief()
+            return
+        self._last_brief_day = time.strftime("%Y-%m-%d")
+        try:
+            pre = self.memory.overview() if self.settings.memory.cross_project else ""
+            prompt = (self._MORNING_BRIEF_PROMPT + "\n\n" + pre) if pre else self._MORNING_BRIEF_PROMPT
+            await self._run_turn(self.focused_ws, prompt, echo_user=False)
+        except Exception as e:
+            print(f"[otto] morning brief failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self._arm_morning_brief()                       # re-arm for tomorrow
+
     # -- idle background research -----------------------------------------
     _RESEARCH_PROMPT = (
         "SYSTEM: Background research pass on THIS project — the user is idle and NOT watching. "
@@ -630,27 +699,44 @@ class Orchestrator:
         "(status, log, diff), and search — but you must NOT edit files, run write/destructive "
         "commands, or commit (those are blocked anyway). Investigate ONE concrete thing that "
         "advances understanding of this project (recent changes, an open thread, a likely next "
-        "step, or a risk), reach a single clear conclusion, then call the remember tool to save "
-        "1-3 durable findings and one actionable suggestion for this project. Do not speak. Stop "
-        "after saving.")
+        "step, or a risk), reach a single clear conclusion. Then save what you learned: durable "
+        "FACTS via the `remember` tool (1-3), and anything the user might ACT on via the "
+        "`suggest` tool — one concrete actionable suggestion, plus any RISK you spotted "
+        "(kind='risk', severity 'high' only for urgent hazards like data loss, security, or a "
+        "broken build/release). Do not speak. Stop after saving.")
 
     def _research_prompt(self, path: str) -> str:
         """Base prompt + what we already know about this project, so the pass advances instead of
         re-deriving the same finding (finding-level dedup — project.md was accumulating near-
-        duplicates because the brain was never told its own prior conclusions)."""
+        duplicates because the brain was never told its own prior conclusions). Also lists the
+        open suggestions so the pass can retire any that are already resolved."""
+        extra: list[str] = []
         try:
             known = self.memory.recent_findings(path, limit=12)
         except Exception:
             known = []
-        if not known:
+        if known:
+            block = "\n".join(f"- {k}" for k in known)
+            extra.append(
+                "You have ALREADY saved these findings about this project in past passes — do "
+                "NOT repeat, rephrase, or re-derive any of them. Investigate something genuinely "
+                "NEW, or meaningfully advance one of these (e.g. it changed, was resolved, or a "
+                "next step is now clear). If after looking you find nothing new worth saving, "
+                "save nothing and stop.\nAlready known:\n" + block)
+        try:
+            opensugg = self.memory.list_suggestions(project_path=path, status="open", limit=12)
+        except Exception:
+            opensugg = []
+        if opensugg:
+            block = "\n".join(f"- (id {s['id']}) {s['text']}" for s in opensugg)
+            extra.append(
+                "These suggestions are already OPEN for this project — do NOT duplicate them. If "
+                "your read shows any of them is now done or no longer applies, call "
+                "`resolve_suggestion` with its id (status 'done' or 'dismissed').\n"
+                "Open suggestions:\n" + block)
+        if not extra:
             return self._RESEARCH_PROMPT
-        block = "\n".join(f"- {k}" for k in known)
-        return (self._RESEARCH_PROMPT + "\n\nYou have ALREADY saved these findings about this "
-                "project in past passes — do NOT repeat, rephrase, or re-derive any of them. "
-                "Investigate something genuinely NEW, or meaningfully advance one of these "
-                "(e.g. it changed, was resolved, or a next step is now clear). If after looking "
-                "you find nothing new worth saving, save nothing and stop.\n"
-                "Already known:\n" + block)
+        return self._RESEARCH_PROMPT + "\n\n" + "\n\n".join(extra)
 
     def _arm_idle_research(self) -> None:
         v = self.settings.voice
@@ -682,9 +768,30 @@ class Orchestrator:
                 and self.focused_ws.state == "idle"
                 and not self._research_running)
 
+    def _git_last_commit(self, path: str) -> float:
+        """Unix time of the project's last git commit, 0 if not a repo. Cached briefly so a
+        selection pass doesn't re-spawn git for every project every few minutes."""
+        now = time.time()
+        cached = self._git_ct_cache.get(path)
+        if cached is not None and (now - cached[1]) < 600.0:   # 10-min TTL
+            return cached[0]
+        ct = 0.0
+        try:
+            out = subprocess.run(
+                ["git", "-C", path, "log", "-1", "--format=%ct"],
+                capture_output=True, text=True, timeout=3.0)
+            if out.returncode == 0 and out.stdout.strip():
+                ct = float(out.stdout.strip())
+        except Exception:
+            ct = 0.0
+        self._git_ct_cache[path] = (ct, now)
+        return ct
+
     def _next_research_project(self) -> str | None:
-        """Least-recently-researched eligible project (skip the focused one and anything touched
-        within idle_research_min_gap) — gives 'one at a time, rotating' for free."""
+        """Pick the next project to research: rotate through everything that's due (past
+        idle_research_min_gap), least-recently-researched first, but — when
+        idle_research_git_weight is on — bias toward projects with recent git activity so
+        attention tracks where the user is actually working."""
         from pathlib import Path
         from .memory import project_slug
         from .projects import list_projects, discover_recent
@@ -701,7 +808,8 @@ class Orchestrator:
         reg = self.memory.registry()
         now = time.time()
         gap = float(self.settings.voice.idle_research_min_gap)
-        eligible: list[tuple[float, str]] = []
+        git_weight = bool(getattr(self.settings.voice, "idle_research_git_weight", True))
+        eligible: list[tuple[float, float, str]] = []      # (git_recency, -last_research, path)
         home = str(Path.home())
         for path in cands:
             full = str(Path(path).expanduser())
@@ -714,13 +822,15 @@ class Orchestrator:
                 or self.memory.project_updated_at(path)
             if last and (now - last) < gap:
                 continue                                   # freshly researched — skip for now
-            eligible.append((last or 0.0, path))
+            git_ct = self._git_last_commit(full) if git_weight else 0.0
+            eligible.append((git_ct, -(last or 0.0), path))
         if not eligible:
             return None
-        eligible.sort(key=lambda x: x[0])                  # least-recent first
+        # Recent git activity first, then least-recently-researched (rotation/fairness fallback).
+        eligible.sort(key=lambda x: (x[0], x[1]), reverse=True)
         mx = int(self.settings.voice.idle_research_max_projects or 0)
         pool = eligible[:mx] if mx else eligible
-        return pool[0][1]
+        return pool[0][2]
 
     async def _idle_research_tick(self) -> None:
         self._idle_research_handle = None
@@ -2305,6 +2415,38 @@ class Orchestrator:
             return f"saved “{e['title']}” to this project's memory ({e['chars']} chars)"
         except Exception as ex:
             return f"couldn't save that note: {ex}"
+
+    async def _ws_suggest(self, project: str, text: str, kind: str = "action",
+                          severity: str = "low", rationale: str = "") -> str:
+        """Save an actionable suggestion / risk to the queue, and escalate genuinely-new
+        high-severity risks (notification + dashboard alert) so they don't sit unseen."""
+        if not getattr(self.settings.memory, "suggestions", True):
+            return "suggestion queue is disabled"
+        try:
+            rec = self.memory.add_suggestion(project, text, kind=kind, severity=severity,
+                                             rationale=rationale)
+        except Exception as ex:
+            return f"couldn't save that suggestion: {ex}"
+        if rec is None:
+            return "already had that suggestion open"
+        # Dashboard tile for every new suggestion; a hard alert only for new high-severity risks.
+        self.bus.publish({"type": "suggestion", "item": rec})
+        if (rec.get("kind") == "risk" and rec.get("severity") == "high"
+                and getattr(self.settings.memory, "risk_alerts", True)):
+            self.bus.publish({"type": "alert", "item": rec})
+            self.notify(f"⚠ Risk in {rec.get('name', 'a project')}", rec.get("text", ""))
+        return f"saved suggestion (id {rec['id']})"
+
+    async def _ws_resolve_suggestion(self, suggestion_id: str, status: str = "done") -> str:
+        try:
+            ok = self.memory.set_suggestion_status(suggestion_id, status)
+        except Exception as ex:
+            return f"couldn't update that suggestion: {ex}"
+        if ok:
+            self.bus.publish({"type": "suggestion_resolved", "id": suggestion_id,
+                              "status": status})
+            return f"marked {suggestion_id} {status}"
+        return "no matching open suggestion"
 
     async def _ws_ask_user(self, project: str, question: str) -> str:
         if project == self.focused:

@@ -269,6 +269,15 @@ class VoiceConfig(BaseModel):
     idle_research_readonly: bool = True       # hard read-only (recommended; do not disable)
     idle_research_min_gap: float = 1800.0     # don't re-research a project within 30 min
     idle_research_max_projects: int = 0       # 0 = all discovered projects, in rotation
+    # Weight research-project selection by recent git activity, so attention tracks where you're
+    # actually working (breaks ties among eligible projects toward recently-committed ones).
+    idle_research_git_weight: bool = True
+    # Daily "morning brief": once a day, on first quiet moment at/after this local hour, Orrin
+    # gives a spoken cross-project briefing synthesizing overnight findings + open suggestions.
+    # Set morning_brief=False to disable. Cancelled the instant you speak/type, like the startup
+    # briefing; fires at most once per calendar day.
+    morning_brief: bool = True
+    morning_brief_hour: int = 9               # local hour (0-23) the brief becomes eligible
 
 
 class MemoryConfig(BaseModel):
@@ -303,6 +312,13 @@ class MemoryConfig(BaseModel):
     # Also add the whole memory/projects dir to Claude's readable dirs so it can read a sibling
     # project's notes verbatim. Off by default — the injected digest covers the common case.
     expose_overview_dirs: bool = False
+    # Actionable-suggestion queue: background research saves each actionable suggestion / risk as
+    # a tracked item (open → done/dismissed/stale) so Orrin can surface and act on them. Risks at
+    # `high` severity are escalated immediately (notification + dashboard alert) when found.
+    suggestions: bool = True
+    risk_alerts: bool = True                  # notify + dashboard alert on new high-severity risks
+    suggestion_stale_days: float = 14.0       # open suggestions older than this are aged out
+    max_open_suggestions: int = 50
 
 
 class Settings(BaseSettings):

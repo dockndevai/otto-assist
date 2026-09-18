@@ -25,6 +25,9 @@ class AssistantContext(Protocol):
     def notify(self, title: str, body: str = "") -> None: ...
     async def remember_fact(self, fact: str, scope: str = "project") -> bool: ...
     async def remember_document(self, title: str, content: str) -> str: ...
+    async def suggest(self, text: str, kind: str = "action", severity: str = "low",
+                      rationale: str = "") -> str: ...
+    async def resolve_suggestion(self, suggestion_id: str, status: str = "done") -> str: ...
 
 
 def _text(msg: str) -> dict[str, Any]:
@@ -122,16 +125,45 @@ def build_server(ctx: AssistantContext):
         msg = await ctx.remember_document(args["title"], args["content"])
         return _text(msg)
 
+    @tool(
+        "suggest",
+        "Save an ACTIONABLE suggestion or a RISK for THIS project to Orrin's suggestion queue, "
+        "so the user can review and act on it later (and so it can surface in a briefing). Use "
+        "this — NOT remember — for anything the user might DO: a next step, an improvement, a "
+        "fix, or a risk you spotted. Keep `text` to one concrete imperative sentence. "
+        "kind='action' (default) for a suggested next step; kind='risk' for a problem/hazard. "
+        "severity='low' (default), 'medium', or 'high' — use 'high' only for genuinely urgent "
+        "risks (data loss, security, broken build/release), which alert the user immediately. "
+        "Put brief supporting context in `rationale`. Durable facts still go to `remember`.",
+        {"text": str, "kind": str, "severity": str, "rationale": str},
+    )
+    async def suggest(args: dict[str, Any]) -> dict[str, Any]:
+        msg = await ctx.suggest(args["text"], args.get("kind") or "action",
+                                args.get("severity") or "low", args.get("rationale") or "")
+        return _text(msg)
+
+    @tool(
+        "resolve_suggestion",
+        "Close out a suggestion in Orrin's queue by its id (ids appear next to open suggestions "
+        "in the overview/brief). Use status='done' when it's been handled, 'dismissed' when it "
+        "no longer applies, or 'stale' if it's outdated. Do this when a background pass finds an "
+        "open suggestion has already been resolved, or when the user says they've done it.",
+        {"suggestion_id": str, "status": str},
+    )
+    async def resolve_suggestion(args: dict[str, Any]) -> dict[str, Any]:
+        msg = await ctx.resolve_suggestion(args["suggestion_id"], args.get("status") or "done")
+        return _text(msg)
+
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="0.1.0",
         tools=[say, ask_user, render_canvas, set_status, set_mood, notify,
-               remember, remember_document],
+               remember, remember_document, suggest, resolve_suggestion],
     )
 
 
 # Fully-qualified tool names, for allowed_tools / permission logic.
 def qualified_names() -> list[str]:
     names = ["say", "ask_user", "render_canvas", "set_status", "set_mood", "notify",
-             "remember", "remember_document"]
+             "remember", "remember_document", "suggest", "resolve_suggestion"]
     return [f"mcp__{SERVER_NAME}__{n}" for n in names]

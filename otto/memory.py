@@ -30,6 +30,7 @@ the project's session); this store adds the curated, cross-session, cross-projec
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -358,12 +359,16 @@ class Memory:
             for fact in self._bullets(self._read(pdir / "project.md"))[:per_project_facts]:
                 parts.append(f"    - {fact}")
         parts.append("[end overview]")
-        block = "\n".join(parts)
+        sugg = self.suggestions_digest()
         cap = max(400, max_chars if max_chars is not None
                   else getattr(self._cfg, "max_overview_chars", 4000))
-        if len(block) > cap:
-            block = block[:cap].rsplit("\n", 1)[0] + "\n…\n[end overview]"
-        return block
+        # Reserve room for the suggestions so the truncation never drops them — they're the
+        # actionable part a brief most needs.
+        proj_block = "\n".join(parts)
+        budget = cap - (len(sugg) + 2 if sugg else 0)
+        if len(proj_block) > budget:
+            proj_block = proj_block[:max(200, budget)].rsplit("\n", 1)[0] + "\n…\n[end overview]"
+        return proj_block + ("\n\n" + sugg if sugg else "")
 
     def recent_findings(self, project_path: str, *, limit: int = 12) -> list[str]:
         """The most recently saved durable facts for a project (tail of project.md's bullets,
@@ -374,6 +379,153 @@ class Memory:
         tail = bullets[-limit:] if limit and len(bullets) > limit else bullets
         # strip the leading "- "/"* " marker so the caller can format them itself
         return [b[2:].strip() for b in tail]
+
+    # -- actionable suggestions + risks (the research queue's output) ------
+    #
+    # Findings (durable facts) go in project.md. A *suggestion* is different: it's an open loop
+    # the user might act on, so it needs a lifecycle (open → done/dismissed/stale) and a
+    # severity, and it must be listable across projects. Those live in a per-project
+    # `suggestions.jsonl`, one JSON record per line, appended and occasionally rewritten.
+    _SUGG_SEV = {"low": 0, "medium": 1, "high": 2}
+
+    def suggestions_path(self, project_path: str) -> Path:
+        return self.project_dir(project_path) / "suggestions.jsonl"
+
+    @staticmethod
+    def _suggestion_id(slug: str, text: str) -> str:
+        """Content-stable id so re-deriving the same suggestion updates one record, not many."""
+        return hashlib.sha1(f"{slug}\x1f{_normalize(text)}".encode()).hexdigest()[:10]
+
+    def _read_suggestions(self, project_path: str) -> list[dict]:
+        out: list[dict] = []
+        for ln in self._read(self.suggestions_path(project_path)).splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                rec = json.loads(ln)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
+
+    def add_suggestion(self, project_path: str, text: str, *, kind: str = "action",
+                       severity: str = "low", rationale: str = "") -> dict | None:
+        """Save an actionable suggestion or risk. De-dupes against open suggestions by content
+        (an id is derived from the normalized text). Returns the record if it's newly opened,
+        None if we already had it open (so callers can escalate only genuinely-new risks)."""
+        text = re.sub(r"\s+", " ", (text or "").strip())
+        if not text:
+            return None
+        kind = "risk" if str(kind).lower() == "risk" else "action"
+        severity = str(severity).lower()
+        if severity not in self._SUGG_SEV:
+            severity = "low"
+        slug = project_slug(project_path)
+        sid = self._suggestion_id(slug, text)
+        recs = self._read_suggestions(project_path)
+        for r in recs:
+            if r.get("id") == sid and r.get("status") == "open":
+                return None                             # already an open suggestion — no dup
+        rec = {"id": sid, "ts": time.time(), "kind": kind, "severity": severity,
+               "text": text, "rationale": re.sub(r"\s+", " ", (rationale or "").strip()),
+               "status": "open", "project": str(Path(project_path).expanduser()),
+               "name": str(project_path).rstrip("/").split("/")[-1] or project_path}
+        try:
+            p = self.suggestions_path(project_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            return None
+        return rec
+
+    def set_suggestion_status(self, sid: str, status: str, *,
+                              project_path: str | None = None) -> bool:
+        """Mark a suggestion done/dismissed/stale (or re-open). Finds it by id across projects
+        when project_path isn't given. Rewrites that project's jsonl in place."""
+        status = str(status).lower()
+        if status not in ("open", "done", "dismissed", "stale"):
+            return False
+        projects = ([project_path] if project_path
+                    else [e.get("path") for e in self.registry().values() if e.get("path")])
+        for proj in projects:
+            if not proj:
+                continue
+            recs = self._read_suggestions(proj)
+            hit = False
+            for r in recs:
+                if r.get("id") == sid and r.get("status") != status:
+                    r["status"] = status
+                    r["resolved_ts"] = time.time()
+                    hit = True
+            if hit:
+                try:
+                    self._atomic_write(self.suggestions_path(proj),
+                                       "".join(json.dumps(r) + "\n" for r in recs))
+                    return True
+                except Exception:
+                    return False
+        return False
+
+    def expire_stale_suggestions(self, *, max_age_days: float = 14.0) -> int:
+        """Age out open suggestions nobody acted on, so the queue stays current. Returns count."""
+        if max_age_days <= 0:
+            return 0
+        cutoff = time.time() - max_age_days * 86400.0
+        n = 0
+        for e in self.registry().values():
+            proj = e.get("path")
+            if not proj:
+                continue
+            recs = self._read_suggestions(proj)
+            changed = False
+            for r in recs:
+                if r.get("status") == "open" and float(r.get("ts", 0)) < cutoff:
+                    r["status"] = "stale"
+                    r["resolved_ts"] = time.time()
+                    changed = True
+                    n += 1
+            if changed:
+                try:
+                    self._atomic_write(self.suggestions_path(proj),
+                                       "".join(json.dumps(r) + "\n" for r in recs))
+                except Exception:
+                    pass
+        return n
+
+    def list_suggestions(self, *, project_path: str | None = None, status: str = "open",
+                         limit: int = 50) -> list[dict]:
+        """Open suggestions (or another status), most urgent first: risks and high severity to
+        the top, then most recent. Spans every registered project unless one is given."""
+        projects = ([project_path] if project_path
+                    else [e.get("path") for e in self.registry().values() if e.get("path")])
+        out: list[dict] = []
+        for proj in projects:
+            if not proj:
+                continue
+            for r in self._read_suggestions(proj):
+                if status in ("", "any") or r.get("status") == status:
+                    out.append(r)
+        out.sort(key=lambda r: (r.get("kind") == "risk",
+                                self._SUGG_SEV.get(r.get("severity", "low"), 0),
+                                r.get("ts", 0)), reverse=True)
+        return out[:limit] if limit else out
+
+    def suggestions_digest(self, *, limit: int = 8, max_chars: int = 1200) -> str:
+        """A compact block of the top open suggestions for injection into a brief/overview."""
+        items = self.list_suggestions(status="open", limit=limit)
+        if not items:
+            return ""
+        lines = ["[Orrin open suggestions — things you could act on, most urgent first.]"]
+        for r in items:
+            tag = ("⚠ RISK" if r.get("kind") == "risk" else "→") \
+                + (f"/{r['severity']}" if r.get("severity") and r["severity"] != "low" else "")
+            lines.append(f"{tag} [{r.get('name', '?')}] {r.get('text', '')} (id {r.get('id')})")
+        lines.append("[end suggestions]")
+        block = "\n".join(lines)
+        return block[:max_chars].rsplit("\n", 1)[0] if len(block) > max_chars else block
 
     _CROSS_RE = re.compile(
         r"\b(across|all (my |the )?projects|every project|other projects?|going on|what should we|"
