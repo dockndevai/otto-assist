@@ -13,6 +13,20 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 HERE = SPECPATH
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
+# Single source of truth for the version: otto/__init__.py. Read it without importing the
+# package (its deps may not be importable in the build env) so the app plist never drifts
+# from the code again (it was pinned at 0.2.11 for many releases).
+def _read_version():
+    import re
+    try:
+        txt = open(os.path.join(ROOT, "otto", "__init__.py")).read()
+        m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', txt)
+        return m.group(1) if m else "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+VERSION = _read_version()
+
 datas, binaries, hiddenimports = [], [], []
 
 # Heavy/awkward packages that need their data files + dylibs collected wholesale.
@@ -88,8 +102,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Orrin",
         "CFBundleDisplayName": "Orrin",
-        "CFBundleShortVersionString": "0.2.11",
-        "CFBundleVersion": "0.2.11",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,                     # menu-bar agent: no Dock icon
         "NSMicrophoneUsageDescription":
