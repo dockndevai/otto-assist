@@ -206,7 +206,8 @@ def test_i18n_language_resolver_and_hinglish():
         model = "small.en"; language = "en"; multilingual_model = "small"
     assert _resolve_lang(V("en"), S()) == ("small.en", "en")       # default: fast English
     assert _resolve_lang(V("en-IN"), S()) == ("small.en", "en")    # Indian English keeps small.en
-    assert _resolve_lang(V("hinglish"), S()) == ("small", None)    # multilingual, auto-detect
+    assert _resolve_lang(V("hinglish"), S()) == ("small", "en")    # multilingual, pinned English
+    assert _resolve_lang(V("auto"), S()) == ("small", None)        # true auto-detect (advanced)
     assert _resolve_lang(V("hi"), S()) == ("small", "hi")
     assert _resolve_lang(V("ta"), S()) == ("small", "ta")
     # Hinglish commands are trusted (skip the model gate)
