@@ -248,35 +248,43 @@
     setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 6000);
   }
 
-  /* ---------------- background work: PERSISTENT suggestion tiles ----------------
+  /* ---------------- background work: ONE compact findings panel ----------------
      Idle research is transient (a pass lasts seconds, and you're away while it runs), so its
-     findings must stay visible on the Home, not flash and vanish. Open suggestions render as
-     faint floating tiles that persist until resolved — risks get a stronger, alert style. */
-  const suggNodes = new Map(); // id -> { node, ai }
-  function placeSuggestion(item, opts) {
-    if (!item || !item.id || suggNodes.has(item.id)) {
-      if (item && suggNodes.has(item.id) && opts && opts.flash) { const n = suggNodes.get(item.id).node; n.classList.remove("flash"); void n.offsetWidth; n.classList.add("flash"); }
-      return;
+     findings must stay visible on the Home. Earlier we scattered one floating tile per finding —
+     with many open they piled onto the same anchors and the text became an unreadable mess. Now
+     everything lives in a SINGLE faint panel, top-left, as short one-line rows (project + truncated
+     text, risks first). Readable, non-overlapping, still ambient. */
+  const SUGG_MAX = 6;
+  const suggItems = new Map(); // id -> item
+  let suggPanel = null, flashId = null;
+  const suggRank = (it) => (it.kind === "risk" ? 100 : 0) + ({ high: 20, medium: 10, low: 0 }[it.severity] || 0);
+  function renderSuggPanel() {
+    const items = [...suggItems.values()].sort((a, b) => suggRank(b) - suggRank(a) || (b.ts || 0) - (a.ts || 0));
+    if (!items.length) { if (suggPanel) { suggPanel.remove(); suggPanel = null; } return; }
+    if (!suggPanel) {
+      suggPanel = el(`<div class="suggpanel"><div class="sph"><span class="spd"></span>Background findings</div><div class="spbody"></div></div>`);
+      layer.appendChild(suggPanel);
     }
-    if (usedAnchors.size >= ANCHORS.length) return;      // no free spot — don't overlap
-    const ai = takeAnchor(), an = ANCHORS[ai];
-    const risk = item.kind === "risk";
-    const name = esc(item.name || "a project"), txt = esc(item.text || "");
-    const icon = risk ? "⚠" : "💡", head = risk ? "Risk · " : "Suggestion · ";
-    const noteStyle = risk ? ' style="border-left:3px solid var(--warn)"' : "";
-    const node = el(`<div class="cluster ghosty${risk ? " risk" : ""}${opts && opts.flash ? " flash" : ""}"><div class="ch"><span class="ic">${icon}</span><span class="nm">${head}${name}</span></div><div class="deck"><div class="blk note in"${noteStyle}>${txt}</div></div></div>`);
-    Object.assign(node.style, an.css); node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
-    layer.appendChild(node);
-    suggNodes.set(item.id, { node, ai });
+    const shown = items.slice(0, SUGG_MAX), extra = items.length - shown.length;
+    const rows = shown.map((it) => {
+      const risk = it.kind === "risk";
+      const t = (it.text || "").length > 84 ? it.text.slice(0, 82) + "…" : (it.text || "");
+      return `<div class="sprow${risk ? " risk" : ""}${it.id === flashId ? " flash" : ""}"><span class="spi">${risk ? "⚠" : "💡"}</span><span class="spt"><b>${esc(it.name || "?")}</b> ${esc(t)}</span></div>`;
+    }).join("");
+    suggPanel.querySelector(".spbody").innerHTML = rows + (extra > 0 ? `<div class="spmore">+${extra} more</div>` : "");
   }
-  function removeSuggestion(id) {
-    const s = suggNodes.get(id); if (!s) return;
-    s.node.classList.add("out"); usedAnchors.delete(s.ai);
-    setTimeout(() => s.node.remove(), 560); suggNodes.delete(id);
+  function placeSuggestion(item, opts) {
+    if (!item || !item.id) return;
+    suggItems.set(item.id, item);
+    if (opts && opts.flash) { flashId = item.id; setTimeout(() => { if (flashId === item.id) { flashId = null; renderSuggPanel(); } }, 1400); }
+    renderSuggPanel();
   }
+  function removeSuggestion(id) { if (suggItems.delete(id)) renderSuggPanel(); }
   function loadSuggestions() {
     fetch("/api/suggestions").then((r) => r.json()).then((d) => {
-      (d.items || []).slice(0, 4).forEach((it) => placeSuggestion(it));
+      suggItems.clear();
+      (d.items || []).forEach((it) => { if (it && it.id) suggItems.set(it.id, it); });
+      renderSuggPanel();
     }).catch(() => {});
   }
 
