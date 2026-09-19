@@ -49,8 +49,12 @@ SIG="$(codesign -dvv "$APP_DST" 2>&1 | grep -i 'Authority=' | head -1)"
 [ -z "$SIG" ] && SIG="$(codesign -dv "$APP_DST" 2>&1 | grep -qi 'adhoc' && echo 'Signature=ad-hoc (grants will drop on rebuild)' || echo 'unsigned')"
 echo "   installed v$VER  |  $SIG"
 
-bold "④ Launching one instance"
-open "$APP_DST"
+bold "④ Launching (shell launch — so the mic recorder actually starts)"
+# IMPORTANT: `open`/Finder/Dock launch of the bundle does NOT spawn the RealtimeSTT recorder
+# subprocess — Orrin comes up but is DEAF. A shell launch does spawn it, and (run from your
+# Terminal) inherits Terminal's stable mic grant. We launch the same way as ~/Launch Orrin.command.
+nohup "$APP_DST/Contents/MacOS/Orrin" >/dev/null 2>&1 &
+disown 2>/dev/null || true
 PORT="$("$ROOT/.venv/bin/python" - <<'PY' 2>/dev/null || echo 8000
 from otto.config import load_settings
 print(load_settings().server.port)
@@ -64,6 +68,8 @@ done
 if [ -n "$UP" ]; then
   bold "✓ Orrin v$VER is up at http://127.0.0.1:${PORT}  (1 instance)"
 else
-  echo "⚠ Dashboard didn't answer yet. If macOS is showing a Microphone prompt, click Allow —"
-  echo "  launching via Finder/open waits on it. Then it will come up."
+  echo "⚠ Dashboard didn't answer yet — give it ~15s to load the model, then reload the page."
 fi
+echo
+echo "  To listen, launch Orrin from a Terminal (or double-click ~/Launch Orrin.command) —"
+echo "  NOT the Dock/Finder icon, which starts it deaf. Say \"Otto\" to wake it."
