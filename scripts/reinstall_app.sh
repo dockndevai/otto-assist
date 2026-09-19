@@ -45,7 +45,8 @@ rm -rf "$APP_DST"
 cp -R "$APP_SRC" "$APP_DST"
 xattr -dr com.apple.quarantine "$APP_DST" 2>/dev/null || true
 VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DST/Contents/Info.plist" 2>/dev/null || echo '?')"
-SIG="$(codesign -dv "$APP_DST" 2>&1 | grep -iE 'Authority|Signature=adhoc' | head -1 || echo 'unsigned/adhoc')"
+SIG="$(codesign -dvv "$APP_DST" 2>&1 | grep -i 'Authority=' | head -1)"
+[ -z "$SIG" ] && SIG="$(codesign -dv "$APP_DST" 2>&1 | grep -qi 'adhoc' && echo 'Signature=ad-hoc (grants will drop on rebuild)' || echo 'unsigned')"
 echo "   installed v$VER  |  $SIG"
 
 bold "④ Launching one instance"
