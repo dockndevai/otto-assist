@@ -179,10 +179,16 @@ class STTConfig(BaseModel):
     # On the built-in speakers it stays half-duplex (no echo loop). So plugging in headphones gives
     # clean mid-speech voice "stop" with zero config, and unplugging reverts to safe half-duplex.
     barge_in_auto: bool = True
-    # "phrase" = software wake word (any phrase, no account); "oww" (openWakeWord built-ins
-    # like "hey jarvis"); "pvporcupine" (custom .ppn, needs a Picovoice key).
-    wakeword_backend: str = "phrase"
-    wake_words: str = "hey otto"
+    # Wake-word backend. Default "oww" (openWakeWord) with the bundled "hey_jarvis" model: a TRUE
+    # hardware gate — a tiny always-on model waits for the wake word and Whisper only transcribes
+    # AFTER it fires (big idle-CPU win, no false triggers, no account, works out of the box).
+    #   "oww"         — openWakeWord built-in ("hey_jarvis", "alexa", "hey_mycroft", …), no account.
+    #   "phrase"      — software phrase match; transcribes ALL audio continuously (heavier), any word.
+    #   "efficientword" — few-shot custom word via `python -m otto.enroll_wake_word` (no account);
+    #                    also transcribes continuously (not a gate).
+    #   "pvporcupine" — custom .ppn keyword, needs a Picovoice AccessKey (external account).
+    wakeword_backend: str = "oww"
+    wake_words: str = "hey_jarvis"
     wake_word_sensitivity: float = 0.6
     # Speak a greeting ("what can I do?") when the wake word fires. OFF by default: it's
     # repetitive, and on a speaker it feeds the wake detector its own voice → a greet loop.
