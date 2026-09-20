@@ -200,6 +200,7 @@
       case "suggestion": if (!replaying) { placeSuggestion(ev.item, { flash: true }); savedPulse("new suggestion"); } return;
       case "alert": if (!replaying) { placeSuggestion(ev.item, { flash: true }); } return;
       case "suggestion_resolved": if (!replaying) { removeSuggestion(ev.id); savedPulse("resolved · suggestion"); } return;
+      case "roadmap": if (!replaying) { roadmapText = ev.text || roadmapText; renderRoadmap(); savedPulse("roadmap updated"); } return;
       case "notify": toastNotify(ev.title, ev.body); return;
       case "preflight": renderPreflight(ev); return;
       case "mood": return; // reserved
@@ -248,30 +249,52 @@
     setTimeout(() => { node.classList.add("out"); usedAnchors.delete(ai); setTimeout(() => node.remove(), 560); }, 6000);
   }
 
-  /* ---------------- background work: ONE compact findings panel ----------------
-     Idle research is transient (a pass lasts seconds, and you're away while it runs), so its
-     findings must stay visible on the Home. Earlier we scattered one floating tile per finding —
-     with many open they piled onto the same anchors and the text became an unreadable mess. Now
-     everything lives in a SINGLE faint panel, top-left, as short one-line rows (project + truncated
-     text, risks first). Readable, non-overlapping, still ambient. */
-  const SUGG_MAX = 6;
+  /* ---------------- background work: SEPARATE panels by type ----------------
+     Idle research is transient (a pass runs for seconds while you're away), so its output must
+     stay visible on the Home. It's split into three faint floating panels — Risks (⚠), Ideas &
+     next steps (💡), and the daily Roadmap (🗺) — each in its own corner, compact one-line rows,
+     readable, no overlap. Reconciled from /api/suggestions + /api/roadmap and live WS events. */
+  const SUGG_MAX = 5;
   const suggItems = new Map(); // id -> item
-  let suggPanel = null, flashId = null;
-  const suggRank = (it) => (it.kind === "risk" ? 100 : 0) + ({ high: 20, medium: 10, low: 0 }[it.severity] || 0);
-  function renderSuggPanel() {
-    const items = [...suggItems.values()].sort((a, b) => suggRank(b) - suggRank(a) || (b.ts || 0) - (a.ts || 0));
-    if (!items.length) { if (suggPanel) { suggPanel.remove(); suggPanel = null; } return; }
-    if (!suggPanel) {
-      suggPanel = el(`<div class="suggpanel"><div class="sph"><span class="spd"></span>Background findings</div><div class="spbody"></div></div>`);
-      layer.appendChild(suggPanel);
+  let roadmapText = "", flashId = null;
+  const suggRank = (it) => ({ high: 20, medium: 10, low: 0 }[it.severity] || 0);
+
+  function bgPanel(cls, icon, title) {
+    let p = layer.querySelector("." + cls);
+    if (!p) {
+      p = el(`<div class="bgpanel ${cls}"><div class="bph"><span class="bpi">${icon}</span>${title}</div><div class="bpbody"></div></div>`);
+      layer.appendChild(p);
     }
+    return p;
+  }
+  function dropPanel(cls) { const p = layer.querySelector("." + cls); if (p) p.remove(); }
+  function suggRowsHtml(items) {
     const shown = items.slice(0, SUGG_MAX), extra = items.length - shown.length;
     const rows = shown.map((it) => {
-      const risk = it.kind === "risk";
-      const t = (it.text || "").length > 84 ? it.text.slice(0, 82) + "…" : (it.text || "");
-      return `<div class="sprow${risk ? " risk" : ""}${it.id === flashId ? " flash" : ""}"><span class="spi">${risk ? "⚠" : "💡"}</span><span class="spt"><b>${esc(it.name || "?")}</b> ${esc(t)}</span></div>`;
+      const raw = (it.text || "").replace(/^FEATURE:\s*/i, "");
+      const t = raw.length > 96 ? raw.slice(0, 94) + "…" : raw;
+      return `<div class="bprow${it.id === flashId ? " flash" : ""}"><b>${esc(it.name || "?")}</b> ${esc(t)}</div>`;
     }).join("");
-    suggPanel.querySelector(".spbody").innerHTML = rows + (extra > 0 ? `<div class="spmore">+${extra} more</div>` : "");
+    return rows + (extra > 0 ? `<div class="bpmore">+${extra} more</div>` : "");
+  }
+  function renderSuggPanel() {
+    const all = [...suggItems.values()];
+    const risks = all.filter((x) => x.kind === "risk").sort((a, b) => suggRank(b) - suggRank(a) || (b.ts || 0) - (a.ts || 0));
+    const ideas = all.filter((x) => x.kind !== "risk").sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (risks.length) bgPanel("panel-risks", "⚠", "Risks").querySelector(".bpbody").innerHTML = suggRowsHtml(risks);
+    else dropPanel("panel-risks");
+    if (ideas.length) bgPanel("panel-ideas", "💡", "Ideas &amp; next steps").querySelector(".bpbody").innerHTML = suggRowsHtml(ideas);
+    else dropPanel("panel-ideas");
+  }
+  function renderRoadmap() {
+    const lines = (roadmapText || "").split("\n")
+      .map((l) => l.trim()).filter((l) => l && !l.startsWith("#")).slice(0, 7);
+    if (!lines.length) { dropPanel("panel-roadmap"); return; }
+    const body = lines.map((l) => {
+      const t = l.length > 104 ? l.slice(0, 102) + "…" : l;
+      return `<div class="bprow">${esc(t)}</div>`;
+    }).join("");
+    bgPanel("panel-roadmap", "🗺", "Roadmap").querySelector(".bpbody").innerHTML = body;
   }
   function placeSuggestion(item, opts) {
     if (!item || !item.id) return;
@@ -286,6 +309,9 @@
       (d.items || []).forEach((it) => { if (it && it.id) suggItems.set(it.id, it); });
       renderSuggPanel();
     }).catch(() => {});
+  }
+  function loadRoadmap() {
+    fetch("/api/roadmap").then((r) => r.json()).then((d) => { roadmapText = d.roadmap || ""; renderRoadmap(); }).catch(() => {});
   }
 
   /* ---------------- alerts (preflight) as tiny top icons ---------------- */
@@ -322,7 +348,7 @@
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => { wsReady = true; conn.classList.remove("show"); setState("idle"); loadSuggestions(); };
+    ws.onopen = () => { wsReady = true; conn.classList.remove("show"); setState("idle"); loadSuggestions(); loadRoadmap(); };
     ws.onmessage = (m) => { let ev; try { ev = JSON.parse(m.data); } catch (e) { return; } try { route(ev); } catch (e) {} };
     ws.onclose = () => { wsReady = false; conn.classList.add("show"); setTimeout(connect, 1500); };
     ws.onerror = () => { try { ws.close(); } catch (e) {} };
