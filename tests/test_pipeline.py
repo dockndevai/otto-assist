@@ -1671,6 +1671,9 @@ def test_recent_findings_and_research_prompt_dedup(tmp_path):
     from otto.orchestrator import Orchestrator
     orch = object.__new__(Orchestrator)
     orch.memory = m
+    orch.settings = load_settings()
+    orch.settings.voice.idle_research_feature_every = 0   # force investigate mode for this test
+    orch._research_pass_i = 0
     base = Orchestrator._RESEARCH_PROMPT
     empty_prompt = orch._research_prompt("/tmp/never-seen")
     assert empty_prompt == base                     # no findings → base prompt unchanged
@@ -1686,6 +1689,46 @@ def test_recent_findings_and_research_prompt_dedup(tmp_path):
     assert "Open suggestions" in prompt2
     assert "Ship the release" in prompt2 and sg["id"] in prompt2
     assert "resolve_suggestion" in prompt2
+
+
+def test_research_objective_rotation_and_roadmap_and_sleep(tmp_path):
+    """Feature passes rotate in; roadmap round-trips; research may run while asleep."""
+    from otto.orchestrator import Orchestrator
+    from otto.memory import Memory
+    orch = object.__new__(Orchestrator)
+    orch.memory = Memory(tmp_path / "memory", load_settings())
+    orch.settings = load_settings()
+    orch.settings.voice.idle_research_feature_every = 3
+
+    # rotation: pass index 2,5,8 (i%3==2) are FEATURE passes, the rest investigate
+    modes = []
+    for i in range(6):
+        orch._research_pass_i = i
+        p = orch._research_prompt("/tmp/never-seen")   # no findings → just the base prompt
+        modes.append("feature" if p == Orchestrator._FEATURE_PROMPT else "investigate")
+    assert modes == ["investigate", "investigate", "feature",
+                     "investigate", "investigate", "feature"]
+    # every=0 disables feature passes entirely
+    orch.settings.voice.idle_research_feature_every = 0
+    orch._research_pass_i = 2
+    assert orch._research_prompt("/tmp/never-seen") == Orchestrator._RESEARCH_PROMPT
+
+    # roadmap save/read round-trip
+    assert orch.memory.read_roadmap() == ""
+    orch.memory.save_roadmap("1. [proj] do X — why — S\n2. [proj] do Y — why — M")
+    rm = orch.memory.read_roadmap()
+    assert "do X" in rm and "do Y" in rm and rm.startswith("# Orrin roadmap")
+
+    # research quiescence allows sleeping when the flag is on, unlike the (spoken) idle gate
+    orch.state = "idle"; orch._sleeping = True; orch._awaiting_command = False
+    orch._follow_up_active = False; orch._pending_answer = None; orch._research_running = False
+    class _WS:  state = "idle"
+    orch.focused = "p"; orch.workspaces = {"p": _WS()}   # focused_ws is a property over these
+    orch.settings.voice.idle_research_while_asleep = True
+    assert orch._research_quiescent() is True          # research runs while asleep
+    assert orch._idle_quiescent() is False             # spoken brief does NOT
+    orch.settings.voice.idle_research_while_asleep = False
+    assert orch._research_quiescent() is False          # opt back out
 
 
 def test_suggestions_store_lifecycle(tmp_path):

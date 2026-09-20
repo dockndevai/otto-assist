@@ -243,6 +243,8 @@ class Orchestrator:
         self._research_running = False
         self._research_cancelled = False
         self._git_ct_cache: dict[str, tuple[float, float]] = {}   # path -> (commit_time, cached_at)
+        self._research_pass_i = 0     # counts research passes → rotates the objective (feature/risk)
+        self._last_roadmap_day = ""   # "YYYY-MM-DD" of the last roadmap synthesis (once/day)
         # Daily morning brief: a re-arming timer; fires at most once per calendar day at/after the
         # configured local hour, on the first quiet moment. Cancelled the instant you speak/type.
         self._morning_brief_handle = None
@@ -685,6 +687,10 @@ class Orchestrator:
         self._last_brief_day = time.strftime("%Y-%m-%d")
         try:
             pre = self.memory.overview() if self.settings.memory.cross_project else ""
+            roadmap = self.memory.read_roadmap() if self.settings.memory.cross_project else ""
+            if roadmap:
+                pre = (pre + "\n\n[Today's prioritized roadmap — lead the brief with its top 1-2 "
+                       "items:]\n" + roadmap).strip()
             prompt = (self._MORNING_BRIEF_PROMPT + "\n\n" + pre) if pre else self._MORNING_BRIEF_PROMPT
             await self._run_turn(self.focused_ws, prompt, echo_user=False)
         except Exception as e:
@@ -705,11 +711,37 @@ class Orchestrator:
         "(kind='risk', severity 'high' only for urgent hazards like data loss, security, or a "
         "broken build/release). Do not speak. Stop after saving.")
 
+    _FEATURE_PROMPT = (
+        "SYSTEM: Background PLANNING pass on THIS project — the user is idle and NOT watching. "
+        "Work SILENTLY and strictly READ-ONLY (read files, read-only git/shell, search; no edits, "
+        "no commits). Your job this pass is to think like a product+eng planner: propose ONE "
+        "concrete NEW feature or improvement for this project, grounded in what the code actually "
+        "is and where it's heading (recent commits, TODOs, gaps, rough edges). Sketch a short plan "
+        "for it: WHAT it is (one line), WHY it helps, a ROUGH approach (2-4 steps / key files), and "
+        "rough EFFORT (S/M/L). Then save it via the `suggest` tool as kind='action' with the text "
+        "starting 'FEATURE: <name> — <why>; plan: <steps>; effort: <S|M|L>'. Optionally save 1-2 "
+        "durable FACTS via `remember` if you learned something structural. Prefer a genuinely NEW "
+        "idea over restating known work. Do not speak. Stop after saving.")
+
+    _ROADMAP_PROMPT = (
+        "SYSTEM: Daily cross-project ROADMAP synthesis — the user is idle and NOT watching. Using "
+        "ONLY the cross-project overview and open suggestions below (gathered by background "
+        "research), synthesize a single PRIORITIZED plan across ALL projects. Output a clean ranked "
+        "list of the 5-8 highest-value things to do next: each item = `[project] what to do — why "
+        "(one line) — effort S/M/L`. Put urgent risks (security, data loss, broken release) at the "
+        "top, then high-leverage features/next-steps. Be concrete and specific; group nothing you "
+        "can't ground in the notes below. Reply with ONLY the ranked list (no preamble). Do not use "
+        "any tools. Do not speak.")
+
     def _research_prompt(self, path: str) -> str:
         """Base prompt + what we already know about this project, so the pass advances instead of
         re-deriving the same finding (finding-level dedup — project.md was accumulating near-
         duplicates because the brain was never told its own prior conclusions). Also lists the
-        open suggestions so the pass can retire any that are already resolved."""
+        open suggestions so the pass can retire any that are already resolved. Rotates the
+        objective: every Nth pass is feature/planning, the rest are investigate/risk."""
+        every = int(getattr(self.settings.voice, "idle_research_feature_every", 3) or 0)
+        is_feature = every > 0 and (self._research_pass_i % every == every - 1)
+        base = self._FEATURE_PROMPT if is_feature else self._RESEARCH_PROMPT
         extra: list[str] = []
         try:
             known = self.memory.recent_findings(path, limit=12)
@@ -735,8 +767,8 @@ class Orchestrator:
                 "`resolve_suggestion` with its id (status 'done' or 'dismissed').\n"
                 "Open suggestions:\n" + block)
         if not extra:
-            return self._RESEARCH_PROMPT
-        return self._RESEARCH_PROMPT + "\n\n" + "\n\n".join(extra)
+            return base
+        return base + "\n\n" + "\n\n".join(extra)
 
     def _arm_idle_research(self) -> None:
         v = self.settings.voice
@@ -762,6 +794,19 @@ class Orchestrator:
     def _idle_quiescent(self) -> bool:
         return (self.state == "idle"
                 and not self._sleeping
+                and not self._awaiting_command
+                and not self._follow_up_active
+                and not (self._pending_answer is not None and not self._pending_answer.done())
+                and self.focused_ws.state == "idle"
+                and not self._research_running)
+
+    def _research_quiescent(self) -> bool:
+        """Like _idle_quiescent, but background research is SILENT so it may also run while asleep
+        (paused via 'stop listening') when idle_research_while_asleep is on. Spoken things
+        (morning brief) still use _idle_quiescent so they never talk over a sleep."""
+        sleeping_ok = getattr(self.settings.voice, "idle_research_while_asleep", True)
+        return (self.state == "idle"
+                and (sleeping_ok or not self._sleeping)
                 and not self._awaiting_command
                 and not self._follow_up_active
                 and not (self._pending_answer is not None and not self._pending_answer.done())
@@ -832,16 +877,60 @@ class Orchestrator:
         pool = eligible[:mx] if mx else eligible
         return pool[0][2]
 
+    def _roadmap_due(self) -> bool:
+        """Once per calendar day, at/after the brief hour: time to re-synthesize the roadmap."""
+        v = self.settings.voice
+        if not getattr(v, "roadmap_synthesis", True) or not self.settings.memory.cross_project:
+            return False
+        lt = time.localtime()
+        if self._last_roadmap_day == time.strftime("%Y-%m-%d", lt):
+            return False
+        return lt.tm_hour >= int(getattr(v, "morning_brief_hour", 9))
+
     async def _idle_research_tick(self) -> None:
         self._idle_research_handle = None
-        if not self.settings.voice.idle_research or not self._idle_quiescent():
+        if not self.settings.voice.idle_research or not self._research_quiescent():
             self._arm_idle_research()
             return
+        # Once a day, synthesize the cross-project roadmap before the next project pass.
+        if self._roadmap_due():
+            await self._run_roadmap_synthesis()
+            return                                  # re-arms in its own finally
         path = self._next_research_project()
         if path is None:
             self._arm_idle_research()
             return
+        self._research_pass_i += 1                  # rotates feature vs investigate objective
         await self._run_idle_research(path)
+
+    async def _run_roadmap_synthesis(self) -> None:
+        """Daily: fold the whole cross-project overview + open suggestions into one prioritized
+        plan and save it to memory/roadmap.md (silent; the morning brief reads it out)."""
+        self._research_running = True
+        self._research_cancelled = False
+        self._last_roadmap_day = time.strftime("%Y-%m-%d")
+        try:
+            overview = self.memory.overview() if self.settings.memory.cross_project else ""
+            if not overview:
+                return
+            ws = await self._open_research_ws(self.focused)
+            if ws is None or self._research_cancelled:
+                return
+            print("[otto] roadmap synthesis (cross-project)", file=sys.stderr, flush=True)
+            self.bus.publish({"type": "research", "active": True, "name": "roadmap"})
+            await self._run_turn(ws, self._ROADMAP_PROMPT + "\n\n" + overview,
+                                 echo_user=False, research=True)
+            plan = (getattr(ws, "last_reply", "") or "").strip()
+            if plan and not self._research_cancelled:
+                self.memory.save_roadmap(plan)
+                self.bus.publish({"type": "roadmap", "text": plan[:600]})
+        except Exception as e:
+            print(f"[otto] roadmap synthesis failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self.bus.publish({"type": "research", "active": False})
+            await self._close_research_ws()
+            self._research_running = False
+            self._arm_idle_research()
 
     async def _run_idle_research(self, path: str) -> None:
         self._research_running = True
