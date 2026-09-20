@@ -272,6 +272,15 @@ class VoiceConfig(BaseModel):
     # Weight research-project selection by recent git activity, so attention tracks where you're
     # actually working (breaks ties among eligible projects toward recently-committed ones).
     idle_research_git_weight: bool = True
+    # Keep researching in the background even while "asleep" (paused via "stop listening"). It's
+    # silent (never speaks), so it's safe while paused; set False to pause research when you sleep it.
+    idle_research_while_asleep: bool = True
+    # Rotate the research objective: every Nth pass proposes a NEW feature/improvement with a short
+    # plan (instead of hunting risks/next-steps). 0 disables feature passes; 3 = ~1 in 3.
+    idle_research_feature_every: int = 3
+    # Daily cross-project roadmap: once a day (at/after morning_brief_hour) synthesize all findings
+    # + open suggestions into a prioritized plan, saved to memory/roadmap.md and spoken in the brief.
+    roadmap_synthesis: bool = True
     # Daily "morning brief": once a day, on first quiet moment at/after this local hour, Orrin
     # gives a spoken cross-project briefing synthesizing overnight findings + open suggestions.
     # Set morning_brief=False to disable. Cancelled the instant you speak/type, like the startup

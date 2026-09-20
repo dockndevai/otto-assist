@@ -93,6 +93,28 @@ class Memory:
     def global_path(self) -> Path:
         return self.root / "global.md"
 
+    @property
+    def roadmap_path(self) -> Path:
+        """Top-level, cross-project prioritized plan written by the daily roadmap synthesis."""
+        return self.root / "roadmap.md"
+
+    def save_roadmap(self, text: str) -> None:
+        """Persist the latest synthesized cross-project roadmap (timestamped header + body)."""
+        text = (text or "").strip()
+        if not text:
+            return
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        body = f"# Orrin roadmap — updated {stamp}\n\n{text}\n"
+        try:
+            self._atomic_write(self.roadmap_path, body)
+        except Exception:
+            pass
+
+    def read_roadmap(self, *, max_chars: int = 2000) -> str:
+        """The current roadmap (bounded), or '' if none yet."""
+        txt = self._read(self.roadmap_path).strip()
+        return txt[:max_chars] if len(txt) > max_chars else txt
+
     def project_dir(self, project_path: str) -> Path:
         d = self.root / "projects" / project_slug(project_path)
         d.mkdir(parents=True, exist_ok=True)

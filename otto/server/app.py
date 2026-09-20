@@ -483,6 +483,16 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                              "facts": facts, "summary": summary,
                              "docs": docs, "doc_count": len(docs)})
 
+    @app.get("/api/roadmap")
+    async def get_roadmap() -> JSONResponse:
+        """The latest cross-project prioritized plan from the daily roadmap synthesis."""
+        text = ""
+        try:
+            text = orch.memory.read_roadmap()
+        except Exception:
+            text = ""
+        return JSONResponse({"roadmap": text})
+
     @app.get("/api/suggestions")
     async def get_suggestions() -> JSONResponse:
         """Open suggestions/risks from background research — so the Home can show what Orrin
