@@ -238,12 +238,27 @@ class Ears:
             # silero_vad package via onnxruntime: offline, no download, no prompt.
             on_recording_start=self._rec_started,
         )
+        # Effective wake-word backend, with a graceful fallback: a hardware gate (pvporcupine/oww)
+        # only transcribes AFTER the wake word (big CPU win), but it needs its model assets. If a
+        # pvporcupine .ppn keyword file or PICOVOICE_ACCESS_KEY is missing, fall back to the
+        # always-listen 'phrase' wake word so Otto keeps hearing you instead of failing to start.
+        wb, ww = cfg.wakeword_backend, cfg.wake_words
+        if wb in ("pvporcupine", "porcupine", "pvp"):
+            ppn_ok = str(ww).endswith(".ppn") and os.path.exists(os.path.expanduser(str(ww)))
+            key_ok = bool(os.environ.get("PICOVOICE_ACCESS_KEY", "").strip())
+            if not (ppn_ok and key_ok):
+                miss = ([] if ppn_ok else ["a .ppn keyword file"]) + \
+                       ([] if key_ok else ["PICOVOICE_ACCESS_KEY"])
+                print(f"[otto] pvporcupine wake word needs {' + '.join(miss)}; falling back to the "
+                      "'phrase' wake word ('otto') until set.", file=sys.stderr, flush=True)
+                wb, ww = "phrase", "otto"
+
         # Prime Whisper with the wake word so it actually transcribes the name (small
         # models otherwise drop "Otto" -> hear "auto"/"your"). Big reliability win for the
         # software ("phrase") wake word.
         prompt = ""
-        if cfg.wakeword_backend == "phrase" and cfg.wake_words:
-            name = cfg.wake_words.strip().title()          # "Hey Otto"
+        if wb == "phrase" and ww:
+            name = ww.strip().title()          # "Hey Otto"
             prompt = f"{name}. {name.split()[-1]}, "
         # Prime the decoder for Indian English / Hinglish so accented speech and common
         # code-switched words transcribe cleanly (#i18n Tier 1).
@@ -269,17 +284,17 @@ class Ears:
         # "phrase" / "efficientword" transcribe everything (continuous VAD); the wake is
         # decided elsewhere (phrase match, or the EfficientWord-Net listener). Other
         # backends use RealtimeSTT's own hardware wake-word gate.
-        use_gate = bool(cfg.wake_words) and cfg.wakeword_backend not in ("phrase", "efficientword")
+        use_gate = bool(ww) and wb not in ("phrase", "efficientword")
         if use_gate:
             params.update(
-                wakeword_backend=cfg.wakeword_backend,
-                wake_words=cfg.wake_words,
+                wakeword_backend=wb,
+                wake_words=ww,
                 wake_words_sensitivity=cfg.wake_word_sensitivity,
                 on_wakeword_detected=lambda: self._post(self._on_wake),
             )
-            if cfg.wakeword_backend in ("pvporcupine", "porcupine", "pvp"):
+            if wb in ("pvporcupine", "porcupine", "pvp"):
                 _install_porcupine_custom_keyword_shim()
-            elif cfg.wakeword_backend in ("oww", "openwakeword") and cfg.oww_model_path:
+            elif wb in ("oww", "openwakeword") and cfg.oww_model_path:
                 # Custom trained openWakeWord model (e.g. "hey otto"): load it directly and
                 # match on its own name so only this model triggers.
                 from pathlib import Path
