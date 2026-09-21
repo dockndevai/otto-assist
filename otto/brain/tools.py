@@ -28,6 +28,10 @@ class AssistantContext(Protocol):
     async def suggest(self, text: str, kind: str = "action", severity: str = "low",
                       rationale: str = "") -> str: ...
     async def resolve_suggestion(self, suggestion_id: str, status: str = "done") -> str: ...
+    async def remind(self, message: str, delay_seconds: float,
+                     repeat_seconds: float = 0.0) -> str: ...
+    async def list_reminders(self) -> str: ...
+    async def cancel_reminder(self, reminder_id: str) -> str: ...
 
 
 def _text(msg: str) -> dict[str, Any]:
@@ -154,16 +158,57 @@ def build_server(ctx: AssistantContext):
         msg = await ctx.resolve_suggestion(args["suggestion_id"], args.get("status") or "done")
         return _text(msg)
 
+    @tool(
+        "remind",
+        "Set a reminder / timer / alarm that speaks to the user at a future time (this is how you "
+        "act OUTSIDE the current turn). `delay_seconds` = seconds from now until it fires — YOU "
+        "convert the user's phrasing: 'in 20 minutes' → 1200, 'in 2 hours' → 7200, 'timer for 10 "
+        "minutes' → 600; for a clock time ('at 7am', 'at 6:30pm') compute the seconds from the "
+        "current local time to that moment. For a recurring nudge ('every 30 minutes', 'every "
+        "hour') set `repeat_seconds` (e.g. 1800) — otherwise leave it 0 for a one-shot. `message` "
+        "is what you'll SAY when it fires, phrased to the user (e.g. 'Time to take the pasta off'). "
+        "Confirm briefly to the user after setting it.",
+        {"message": str, "delay_seconds": float, "repeat_seconds": float},
+    )
+    async def remind(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            delay = float(args.get("delay_seconds") or 0)
+            repeat = float(args.get("repeat_seconds") or 0)
+        except (TypeError, ValueError):
+            return _text("delay_seconds must be a number of seconds from now")
+        msg = await ctx.remind(args.get("message", ""), delay, repeat)
+        return _text(msg)
+
+    @tool(
+        "list_reminders",
+        "List the user's pending reminders/timers (with their ids and when they'll fire). Use when "
+        "the user asks what reminders or timers they have.",
+        {},
+    )
+    async def list_reminders(_args: dict[str, Any]) -> dict[str, Any]:
+        return _text(await ctx.list_reminders())
+
+    @tool(
+        "cancel_reminder",
+        "Cancel a pending reminder/timer by its id (from list_reminders). Use when the user says to "
+        "cancel or stop a reminder/timer.",
+        {"reminder_id": str},
+    )
+    async def cancel_reminder(args: dict[str, Any]) -> dict[str, Any]:
+        return _text(await ctx.cancel_reminder(args.get("reminder_id", "")))
+
     return create_sdk_mcp_server(
         name=SERVER_NAME,
         version="0.1.0",
         tools=[say, ask_user, render_canvas, set_status, set_mood, notify,
-               remember, remember_document, suggest, resolve_suggestion],
+               remember, remember_document, suggest, resolve_suggestion,
+               remind, list_reminders, cancel_reminder],
     )
 
 
 # Fully-qualified tool names, for allowed_tools / permission logic.
 def qualified_names() -> list[str]:
     names = ["say", "ask_user", "render_canvas", "set_status", "set_mood", "notify",
-             "remember", "remember_document", "suggest", "resolve_suggestion"]
+             "remember", "remember_document", "suggest", "resolve_suggestion",
+             "remind", "list_reminders", "cancel_reminder"]
     return [f"mcp__{SERVER_NAME}__{n}" for n in names]

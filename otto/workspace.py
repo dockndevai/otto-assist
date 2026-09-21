@@ -62,6 +62,16 @@ class WorkspaceContext:
     async def resolve_suggestion(self, suggestion_id: str, status: str = "done") -> str:
         return await self.orch._ws_resolve_suggestion(suggestion_id, status)
 
+    async def remind(self, message: str, delay_seconds: float,
+                     repeat_seconds: float = 0.0) -> str:
+        return await self.orch._ws_remind(message, delay_seconds, repeat_seconds)
+
+    async def list_reminders(self) -> str:
+        return await self.orch._ws_list_reminders()
+
+    async def cancel_reminder(self, reminder_id: str) -> str:
+        return await self.orch._ws_cancel_reminder(reminder_id)
+
 
 class Workspace:
     """One project running its own Claude chat, in parallel with others."""
