@@ -2495,3 +2495,48 @@ def test_scheduler_persist_fire_reload_cancel(tmp_path):
         s.shutdown()
 
     asyncio.run(run_reload())
+
+
+def test_append_jsonl_capped_rotates(tmp_path):
+    """Append-only logs rotate in place once past the byte cap (keep the last N), staying valid."""
+    import json
+    from otto.memory import Memory
+    p = tmp_path / "log.jsonl"
+    for i in range(500):
+        Memory.append_jsonl_capped(p, {"i": i, "pad": "x" * 100}, max_bytes=5000, keep=20)
+    lines = p.read_text().splitlines()
+    # Bounded by the byte cap (oscillates between `keep` after a trim and the ~max_bytes ceiling)
+    # — the point is it never grows toward the 500 we wrote.
+    assert 0 < len(lines) < 60
+    recs = [json.loads(ln) for ln in lines]          # still valid JSONL
+    assert recs[-1]["i"] == 499                       # newest kept
+    assert recs[0]["i"] > 400                          # oldest dropped
+
+
+def test_capture_serializes_not_drops(tmp_path, monkeypatch):
+    """Back-to-back captures on one project all extract (serialized) instead of the 2nd+ being
+    silently dropped while the 1st is in flight — the memory-loss bug."""
+    from otto.memory import Memory, project_slug
+    s = load_settings(); s.memory.auto_capture = True
+    m = Memory(tmp_path / "mem", s)
+    calls = {"n": 0}
+
+    async def fake_extract(self, proj, user, reply):
+        calls["n"] += 1
+        n = calls["n"]
+        await asyncio.sleep(0.05)                     # overlap so they'd collide on the guard
+        return {"project_facts": [f"alpha{n} beta{n}"], "user_facts": [], "summary": "did a thing"}
+
+    monkeypatch.setattr(Memory, "_extract", fake_extract)
+    proj = "/tmp/capproj"
+
+    async def run():
+        await asyncio.gather(*[
+            m.capture(proj, f"how should we structure the billing service take {i}?",
+                      f"use a ledger table variant {i}") for i in range(3)
+        ])
+
+    asyncio.run(run())
+    assert calls["n"] == 3                            # all three captured, none dropped
+    pj = (tmp_path / "mem" / "projects" / project_slug(proj) / "project.md").read_text()
+    assert "alpha1" in pj and "alpha2" in pj and "alpha3" in pj

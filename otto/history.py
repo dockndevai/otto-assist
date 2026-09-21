@@ -29,11 +29,17 @@ class History:
         if event.get("type") not in _PERSIST_TYPES:
             return
         project = event.get("ws") or self.resolve_project()
+        # Rotate in place so the dashboard-replay log doesn't grow without bound (load() only
+        # ever tails it anyway).
         try:
-            with self._path(project).open("a") as f:
-                f.write(json.dumps(event) + "\n")
+            from .memory import Memory
+            Memory.append_jsonl_capped(self._path(project), event, keep=1000)
         except Exception:
-            pass
+            try:
+                with self._path(project).open("a") as f:
+                    f.write(json.dumps(event) + "\n")
+            except Exception:
+                pass
 
     def load(self, project: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         """Return the last `limit` transcript events + only the most recent canvas, for a

@@ -1019,6 +1019,7 @@ class Orchestrator:
                 on_wake=self._on_speech_start,
                 on_recording_stop=self._on_recording_stop,
                 on_realtime=self._on_voice_partial,
+                on_health=self._on_stt_health,
             )
             self.ears.start()
             # Global push-to-talk. Under the menu-bar app the hotkey is owned there and
@@ -2221,6 +2222,22 @@ class Orchestrator:
                 self._status("idle", "Ready")
         self._loop.call_later(2.5, _reset)
 
+    def _on_stt_health(self, status: str) -> None:
+        """The recorder went deaf at runtime (mic permission revoked / device unplugged) or
+        recovered. Tell the user — going silently deaf with no feedback is the worst failure."""
+        if status == "deaf":
+            self._status("error", "Can't hear the microphone")
+            self.notify("Orrin can't hear you",
+                        "The microphone stopped working — check Privacy & Security ▸ Microphone, "
+                        "or reconnect your mic.")
+            self._voice_out("I've lost the microphone — please check its permission, "
+                            "or reconnect it.")
+        elif status == "ok":
+            self.notify("Microphone back", "Orrin can hear you again.")
+            self._voice_out("Okay, I can hear you again.")
+            if self.state.startswith("error"):
+                self._status("idle", "Ready")
+
     def _on_ptt_press(self) -> None:
         # Global hotkey (⌘⇧J): first HALT whatever Orrin's doing (barge-in — reliable, no mic
         # needed), then arm capture of your next utterance — same as the Talk button.
@@ -2257,6 +2274,7 @@ class Orchestrator:
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
+            errored = False   # so a voice-only user hears that a turn failed (not just a toast)
             # Prepend durable memory (facts + recent summary + relevant saved-note excerpts)
             # so Claude has cross-session context. The dashboard/transcript already showed the
             # user's *clean* text above; only what we send to the brain carries the
@@ -2303,6 +2321,7 @@ class Orchestrator:
                             self._status("working", ev["name"])
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
+                            errored = True
                             self.bus.notify(
                                 "Brain error",
                                 ev.get("error_text") or "The model returned an error.")
@@ -2319,6 +2338,7 @@ class Orchestrator:
                             if p == self.focused:
                                 self._publish_session()
             except Exception as e:
+                errored = True
                 print(f"[otto] turn error ({ws.name}): {e!r}", file=sys.stderr, flush=True)
                 _log.exception("Turn failed in workspace %s", ws.name)
                 self.bus.notify("Error", str(e))
@@ -2338,6 +2358,14 @@ class Orchestrator:
                 reply = assistant_text.strip()
                 print(f"[otto] turn done ({ws.name}), reply len={len(reply)}",
                       file=sys.stderr, flush=True)
+                # A voice-only user (screen not visible) must HEAR that a request failed —
+                # otherwise a crashed turn is pure silence. Speak a short apology when the
+                # focused, user-facing turn errored and produced no reply to speak.
+                if errored and not reply and not research and p == self.focused:
+                    try:
+                        self._voice_out("Sorry — that hit an error. Mind trying again?")
+                    except Exception:
+                        pass
                 ws.state = "idle"
                 ws.last_reply = reply
                 if reply:
