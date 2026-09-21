@@ -174,7 +174,16 @@ AS
 sync
 # Detach may need a retry if a (possibly timed-out) Finder still holds the volume.
 hdiutil detach "/Volumes/$VOL" >/dev/null 2>&1 || { sleep 2; hdiutil detach "/Volumes/$VOL" -force >/dev/null 2>&1 || true; }
-hdiutil convert "$RW" -format UDZO -ov -o "$DMG"
+# `hdiutil convert` can transiently fail with "Resource temporarily unavailable" on busy CI
+# runners when the RW image isn't fully released yet. Retry with a force-detach + growing backoff
+# instead of failing the whole release build on a flake.
+for _attempt in 1 2 3 4 5; do
+  if hdiutil convert "$RW" -format UDZO -ov -o "$DMG"; then break; fi
+  echo "    hdiutil convert failed (attempt $_attempt) — force-detaching + retrying…"
+  hdiutil detach "/Volumes/$VOL" -force >/dev/null 2>&1 || true
+  sync; sleep $((_attempt * 3))
+  if [ "$_attempt" = 5 ]; then echo "hdiutil convert failed after 5 attempts"; exit 1; fi
+done
 rm -f "$RW"
 
 if [ -n "${SIGN_ID:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
