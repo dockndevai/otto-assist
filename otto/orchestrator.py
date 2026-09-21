@@ -209,6 +209,7 @@ class Orchestrator:
         }
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
+        self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
@@ -581,6 +582,14 @@ class Orchestrator:
             self.scheduler.start(self._loop)
         except Exception as e:
             print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
+        # Smart gate for hands-free always-listen (loads its model in the background).
+        if getattr(self.settings.voice.stt, "smart_gate", False):
+            try:
+                from .voice.smartgate import SmartGate
+                self.smart_gate = SmartGate()
+                self.smart_gate.start()
+            except Exception as e:
+                print(f"[otto] smart-gate init failed: {e!r}", file=sys.stderr, flush=True)
 
     async def _seed_registry(self) -> None:
         """Register every discoverable project in memory so the cross-project overview covers
@@ -1948,9 +1957,18 @@ class Orchestrator:
         # do X") is a real directive — trust it and skip the model gate, which was over-rejecting
         # genuine chained follow-ups (it dropped "close the calculator" as ambient). Keeps the gate
         # only for ambiguous/declarative input, so room chatter is still filtered.
-        from .voice.noise import looks_like_command
-        need_verify = (hands_free and stt.hands_free_verify and not deliberate
-                       and not looks_like_command(text))
+        from .voice.noise import looks_like_command, looks_like_question
+        # Hands-free semantic gate for ambiguous input. Obvious commands ("open chrome") AND clear
+        # questions ("what's the weather", "otto …?") skip it and stay instant — the laya gate only
+        # sees the ambiguous middle (declarative/ambient-shaped speech), where it drops room/TV/
+        # side-talk. Prefer the fast LOCAL laya gate when ready; else the Haiku verify (if enabled).
+        smart_ready = bool(getattr(stt, "smart_gate", False) and self.smart_gate is not None
+                           and self.smart_gate.ready)
+        ambiguous = (hands_free and not deliberate
+                     and not looks_like_command(text) and not looks_like_question(text))
+        use_laya = ambiguous and smart_ready
+        need_verify = ambiguous and not smart_ready and stt.hands_free_verify
+        need_gate = use_laya or need_verify
         # Intent first: react like a person, not a switch. Chit-chat ("hey", "how are you",
         # "thanks") gets a warm INSTANT reply right here — no Claude round-trip, no "On it." —
         # then a short hands-free window so you can keep talking. A question or an action flows
@@ -1980,25 +1998,37 @@ class Orchestrator:
                 # Keep the conversation open, hands-free — no need to say the wake word again.
                 self._enter_awaiting_command(greet=False, follow_up=True)
                 return
-        if not stt.refine and not self._dictation and not need_verify:
+        if not stt.refine and not self._dictation and not need_gate:
             self._ack(intent); self.submit_user_input(text)   # fast path — ack, no model calls
             return
         if self._loop is not None:
-            self._loop.create_task(self._dispatch_async(text, need_verify, intent))
+            self._loop.create_task(self._dispatch_async(text, need_gate, intent, use_laya))
         else:
             self.submit_user_input(text)
 
-    async def _dispatch_async(self, text: str, verify: bool = False,
-                              intent: str = "command") -> None:
-        if verify:
-            try:
-                from .voice.noise import is_real_command
-                if not await is_real_command(text, model=self.settings.voice.stt.verify_model):
-                    print(f"[otto] dropped (not a command): {text!r}",
+    async def _dispatch_async(self, text: str, gate: bool = False,
+                              intent: str = "command", use_laya: bool = False) -> None:
+        if gate:
+            if use_laya and self.smart_gate is not None:
+                try:
+                    score = await self._loop.run_in_executor(None, self.smart_gate.score, text)
+                except Exception:
+                    score = None
+                thr = float(getattr(self.settings.voice.stt, "smart_gate_threshold", 0.55))
+                if score is not None and score < thr:
+                    print(f"[otto] smart-gate dropped ambient (p={score:.2f}): {text!r}",
                           file=sys.stderr, flush=True)
                     return
-            except Exception:
-                pass
+            else:
+                try:
+                    from .voice.noise import is_real_command
+                    if not await is_real_command(
+                            text, model=self.settings.voice.stt.verify_model):
+                        print(f"[otto] dropped (not a command): {text!r}",
+                              file=sys.stderr, flush=True)
+                        return
+                except Exception:
+                    pass
         if self.settings.voice.stt.refine:
             try:
                 from .voice.refine import refine_transcript

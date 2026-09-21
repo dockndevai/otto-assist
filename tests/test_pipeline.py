@@ -2540,3 +2540,16 @@ def test_capture_serializes_not_drops(tmp_path, monkeypatch):
     assert calls["n"] == 3                            # all three captured, none dropped
     pj = (tmp_path / "mem" / "projects" / project_slug(proj) / "project.md").read_text()
     assert "alpha1" in pj and "alpha2" in pj and "alpha3" in pj
+
+
+def test_looks_like_question_and_command_gate_bypass():
+    """Questions (incl. Hinglish + 'otto …?') bypass the smart gate; ambient declaratives don't."""
+    from otto.voice.noise import looks_like_question, looks_like_command
+    for q in ["what's the weather today", "how do I open this", "otto what time is it",
+              "kya haal hai", "kaise ho", "batao kitne baje hain", "is it going to rain?"]:
+        assert looks_like_question(q), q
+    for notq in ["yeah I think that's fine", "chalo ghar chalte hain", "the build passed",
+                 "i start my therapy tomorrow"]:
+        assert not looks_like_question(notq), notq
+    # commands still detected (unchanged)
+    assert looks_like_command("open the calculator") and looks_like_command("otto play music")
