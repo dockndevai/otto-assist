@@ -134,6 +134,7 @@ class Ears:
         on_wake: Callable[[], None],
         on_recording_stop: Callable[[], None] | None = None,
         on_realtime: Callable[[str], None] | None = None,
+        on_health: Callable[[str], None] | None = None,
     ) -> None:
         self.settings = settings
         self._loop = loop
@@ -143,6 +144,9 @@ class Ears:
         self._on_wake = on_wake
         self._on_recording_stop = on_recording_stop
         self._on_realtime = on_realtime
+        self._on_health = on_health          # "deaf" when the mic dies, "ok" when it recovers
+        self._consec_errors = 0
+        self._deaf_reported = False
         self._recorder = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -337,9 +341,20 @@ class Ears:
                 # log it and back off briefly before retrying.
                 import logging
                 logging.getLogger("otto").warning("recorder error: %r", e)
+                self._consec_errors += 1
+                # Persistent failure (mic permission revoked, device unplugged) = we've gone
+                # deaf. Tell the user ONCE instead of silently retrying forever.
+                if (self._consec_errors >= 6 and not self._deaf_reported
+                        and self._on_health is not None):
+                    self._deaf_reported = True
+                    self._post(self._on_health, "deaf")
                 time.sleep(0.5)
                 continue
             self._last_text = time.monotonic()   # .text() returned -> transcription path alive
+            if self._deaf_reported and self._on_health is not None:
+                self._post(self._on_health, "ok")   # recovered — clear the alert
+            self._consec_errors = 0
+            self._deaf_reported = False
             if text and self._running:
                 self._post(self._on_final, text.strip())
 

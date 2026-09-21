@@ -42,6 +42,9 @@ from .config import Settings
 
 _FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
+# Max captures queued+in-flight per project before we coalesce (bound burst model calls).
+_MAX_CAPTURE_QUEUE = 5
+
 # Common words dropped from document keyword indexing / query matching (keeps retrieval on
 # content words). Deliberately small and dependency-free.
 _STOP = {
@@ -78,7 +81,10 @@ class Memory:
         self.root = Path(root)
         self.settings = settings
         self._locks: dict[str, asyncio.Lock] = {}
-        self._capturing: set[str] = set()   # projects with an extract in flight (avoid pile-up)
+        # In-flight + queued capture count per project. Captures SERIALIZE on the per-project
+        # lock (so we never lose a turn's facts during an active session) but the queue is
+        # bounded so a burst can't spawn unbounded model calls.
+        self._capturing: dict[str, int] = {}
         try:
             (self.root / "projects").mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -239,17 +245,33 @@ class Memory:
         lines = lines[: self._cfg.max_summary_lines]
         self._atomic_write(path, head + "\n" + "\n".join(lines) + "\n")
 
+    @staticmethod
+    def append_jsonl_capped(path: Path, rec: dict, *,
+                            max_bytes: int = 2_000_000, keep: int = 2000) -> None:
+        """Append one JSON record, then rotate in place (keep the last `keep` lines) once the
+        file grows past `max_bytes` — so these append-only logs don't grow without bound over
+        months of daily use."""
+        try:
+            with path.open("a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            return
+        try:
+            if path.stat().st_size > max_bytes:
+                lines = path.read_text().splitlines()[-keep:]
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text("\n".join(lines) + ("\n" if lines else ""))
+                os.replace(tmp, path)
+        except Exception:
+            pass
+
     def record_turn(self, project_path: str, user_text: str, reply: str,
                     session_id: str | None = None) -> None:
         """Append the raw exchange to the durable per-project log + update the index."""
         pdir = self.project_dir(project_path)
         rec = {"ts": time.time(), "session_id": session_id,
                "user": user_text, "reply": reply}
-        try:
-            with (pdir / "turns.jsonl").open("a") as f:
-                f.write(json.dumps(rec) + "\n")
-        except Exception:
-            pass
+        self.append_jsonl_capped(pdir / "turns.jsonl", rec)
         self._touch_index(project_path)
 
     def record_capture(self, project_path: str, text: str, source: str = "voice") -> None:
@@ -261,11 +283,7 @@ class Memory:
             return
         pdir = self.project_dir(project_path)
         rec = {"ts": time.time(), "text": text, "source": source}
-        try:
-            with (pdir / "captures.jsonl").open("a") as f:
-                f.write(json.dumps(rec) + "\n")
-        except Exception:
-            pass
+        self.append_jsonl_capped(pdir / "captures.jsonl", rec)
 
     def list_captures(self, project_path: str, limit: int = 100) -> list[dict[str, Any]]:
         """Most-recent-first heard utterances for a project."""
@@ -678,9 +696,11 @@ class Memory:
         if not reply.strip() or self._is_trivial(user_text, reply):
             return result                       # nothing durable in a greeting/ack — skip the call
         slug = project_slug(project_path)
-        if slug in self._capturing:
-            return result                       # a capture is already in flight; don't pile up
-        self._capturing.add(slug)
+        # Serialize (don't DROP) so back-to-back turns don't silently lose their durable facts;
+        # only coalesce under an extreme backlog to keep model calls bounded.
+        if self._capturing.get(slug, 0) >= _MAX_CAPTURE_QUEUE:
+            return result                       # extreme backlog — turn is still recorded above
+        self._capturing[slug] = self._capturing.get(slug, 0) + 1
         try:
             async with self._lock(slug):
                 data = await self._extract(project_path, user_text, reply)
@@ -700,7 +720,9 @@ class Memory:
                 self._push_summary(pdir, summary)
                 result["summarized"] = True
         finally:
-            self._capturing.discard(slug)
+            self._capturing[slug] = self._capturing.get(slug, 1) - 1
+            if self._capturing[slug] <= 0:
+                self._capturing.pop(slug, None)
         return result
 
     @staticmethod
