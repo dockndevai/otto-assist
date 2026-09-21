@@ -206,6 +206,15 @@ class STTConfig(BaseModel):
     # their phrase (run `python -m otto.enroll_wake_word`). Points at the generated *_ref.json.
     eff_reference: str = ""
     eff_threshold: float = 0.70
+    # Smart gate: on the hands-free (always-listen) path, use a fast LOCAL model (laya, ~50ms
+    # CPU) to tell speech addressed to Orrin from ambient room/TV/side-talk — so always-listen
+    # only acts on what's meant for it. Off by default (needs the laya package + a one-time model
+    # download); when unavailable it transparently falls back to the keyword heuristics. Obvious
+    # commands ("open chrome") bypass it and stay instant. Drops utterances scoring below the
+    # threshold as ambient. Recommended with permission='guarded' since always-listen + bypass
+    # would let a rare false-positive run an action unconfirmed.
+    smart_gate: bool = False
+    smart_gate_threshold: float = 0.55
 
 
 class TTSConfig(BaseModel):

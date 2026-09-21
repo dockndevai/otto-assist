@@ -91,6 +91,32 @@ def looks_like_command(text: str) -> bool:
     return words[i] in _COMMAND_VERBS
 
 
+# Interrogatives (English + Hinglish) that open a question directed at the assistant. The
+# smart-gate model only recognizes imperatives, so wh-questions ("what's the weather?") would be
+# wrongly dropped as ambient — treat a clear question lead as addressed and skip the gate.
+_QUESTION_LEADS = {
+    "what", "whats", "what's", "when", "where", "why", "who", "whose", "whom", "which", "how",
+    "is", "are", "am", "can", "could", "do", "does", "did", "will", "would", "should", "tell",
+    "kya", "kaise", "kaisa", "kab", "kahan", "kaun", "kitna", "kitne", "kaunsa", "batao", "bata",
+}
+
+
+def looks_like_question(text: str) -> bool:
+    """Fast, deterministic: does this open like a question/request directed at the assistant?
+    Complements looks_like_command so genuine questions aren't dropped by the semantic gate."""
+    n = _norm(text)
+    if not n:
+        return False
+    words = n.split()
+    if not words:
+        return False
+    if words[0] in ("otto", "orrin") and len(words) >= 2:
+        return True
+    if words[0] in _QUESTION_LEADS and len(words) >= 2:
+        return True
+    return n.endswith("?")
+
+
 def is_noise(text: str) -> bool:
     """True if `text` is almost certainly hallucinated noise, not a real utterance."""
     t = (text or "").strip()
