@@ -187,6 +187,9 @@ class Mouth:
         voice = dev_voice or self._voice
         if voice:
             argv += ["-v", voice]
+        rate = int(getattr(self.settings.voice.tts, "say_rate", 0) or 0)
+        if rate > 0:                                   # slow the OS default → calmer, more natural
+            argv += ["-r", str(rate)]
         argv.append(text)
         return argv, None
 

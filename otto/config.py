@@ -223,6 +223,9 @@ class TTSConfig(BaseModel):
     # "elevenlabs" = premium cloud voice (needs ELEVENLABS_API_KEY).
     engine: Literal["system", "elevenlabs", "kokoro"] = "system"
     voice: str = ""                              # macOS `say` voice (engine "system")
+    # Speaking rate (words/min) for the macOS `say` voice. 0 = the OS default (often too fast).
+    # ~150-170 sounds calmer/more natural for a spoken assistant.
+    say_rate: int = 0
     # Kokoro (engine "kokoro"): a voice id (see otto.voice.tts.KOKORO_VOICES), speaking speed,
     # and where the model files live (blank = OTTO_HOME/models/kokoro).
     kokoro_voice: str = "af_heart"
