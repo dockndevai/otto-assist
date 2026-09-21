@@ -208,6 +208,7 @@ class Orchestrator:
                                     resume=settings.brain.sessions.get(self.focused)),
         }
         self.mouth = None       # set in start() if voice output enabled
+        self.scheduler = None   # proactive reminders/timers; created in start()
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
@@ -573,6 +574,13 @@ class Orchestrator:
         self._loop.create_task(self._seed_registry())
         self._arm_idle_research()
         self._arm_morning_brief()
+        # Proactive reminders/timers — load any persisted from a prior run and arm them.
+        try:
+            from .scheduler import Scheduler
+            self.scheduler = Scheduler(self, OTTO_HOME / "reminders.json")
+            self.scheduler.start(self._loop)
+        except Exception as e:
+            print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
 
     async def _seed_registry(self) -> None:
         """Register every discoverable project in memory so the cross-project overview covers
@@ -1204,6 +1212,8 @@ class Orchestrator:
         if self._eff:
             self._eff.stop()
         self._cancel_idle_research()
+        if self.scheduler is not None:
+            self.scheduler.shutdown()
         await self._close_research_ws()
         for ws in list(self.workspaces.values()):
             await ws.brain.disconnect()
@@ -2536,6 +2546,57 @@ class Orchestrator:
                               "status": status})
             return f"marked {suggestion_id} {status}"
         return "no matching open suggestion"
+
+    # -- reminders / timers (proactive scheduler) -------------------------
+    @staticmethod
+    def _fmt_when(secs: float) -> str:
+        secs = int(max(0, secs))
+        if secs < 60:
+            return f"{secs}s"
+        if secs < 3600:
+            return f"{secs // 60}m" + (f" {secs % 60}s" if secs % 60 else "")
+        h, rem = divmod(secs, 3600)
+        return f"{h}h" + (f" {rem // 60}m" if rem // 60 else "")
+
+    async def _ws_remind(self, message: str, delay_seconds: float,
+                         repeat_seconds: float = 0.0) -> str:
+        if self.scheduler is None:
+            return "reminders aren't available right now"
+        if not (message or "").strip():
+            return "what should I remind you about?"
+        try:
+            rec = self.scheduler.add(float(delay_seconds), message,
+                                     repeat_seconds=float(repeat_seconds or 0.0))
+        except Exception as ex:
+            return f"couldn't set that reminder: {ex}"
+        self.bus.publish({"type": "reminder_set", "item": rec})
+        when = self._fmt_when(float(delay_seconds))
+        if rec.get("repeat"):
+            return f"set — I'll remind you every {self._fmt_when(rec['repeat'])} (id {rec['id']})"
+        return f"set — I'll remind you in {when} (id {rec['id']})"
+
+    async def _ws_list_reminders(self) -> str:
+        if self.scheduler is None:
+            return "reminders aren't available right now"
+        items = self.scheduler.active()
+        if not items:
+            return "no reminders set"
+        now = time.time()
+        lines = []
+        for r in items:
+            when = self._fmt_when(float(r.get("fire_at", now)) - now)
+            rep = f" (every {self._fmt_when(r['repeat'])})" if r.get("repeat") else ""
+            lines.append(f"(id {r['id']}) in {when}{rep}: {r.get('message', '')}")
+        return "\n".join(lines)
+
+    async def _ws_cancel_reminder(self, reminder_id: str) -> str:
+        if self.scheduler is None:
+            return "reminders aren't available right now"
+        rec = self.scheduler.cancel(reminder_id)
+        if rec is None:
+            return "no matching reminder"
+        self.bus.publish({"type": "reminder_cancelled", "id": rec["id"]})
+        return f"cancelled: {rec.get('message', rec['id'])}"
 
     async def _ws_ask_user(self, project: str, question: str) -> str:
         if project == self.focused:

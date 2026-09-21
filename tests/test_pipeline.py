@@ -2430,3 +2430,68 @@ def test_sleep_holds_against_acoustic_wake():
     orch.settings.voice.stt.wake_words = "hey otto"
     orch._on_voice_final("hey otto")
     assert orch._sleeping is False
+
+
+def test_scheduler_persist_fire_reload_cancel(tmp_path):
+    """Reminders persist to disk, fire (notify + speak), survive reload (missed one-shot fires,
+    recurring rolls forward), and cancel cleanly."""
+    import json
+    import time as _t
+    from otto.scheduler import Scheduler
+    store = tmp_path / "reminders.json"
+
+    # roll_forward: next future occurrence strictly after `now`
+    assert Scheduler._roll_forward(900.0, 60.0, 1000.0) == 1020.0
+    assert Scheduler._roll_forward(2000.0, 60.0, 1000.0) == 2000.0  # already future → unchanged
+
+    class FakeOrch:
+        def __init__(self):
+            self.notified = []
+            self.said = []
+        def notify(self, t, b):
+            self.notified.append((t, b))
+        async def say(self, m):
+            self.said.append(m)
+
+    async def run_fire():
+        orch = FakeOrch()
+        s = Scheduler(orch, store)
+        s.start(asyncio.get_running_loop())
+        rec = s.add(1.0, "take the pasta off")
+        assert store.exists()
+        assert any(r["message"] == "take the pasta off" for r in json.loads(store.read_text()))
+        assert len(s.active()) == 1
+        # cancel-by-prefix works, then re-add
+        r2 = s.add(100.0, "later thing")
+        assert s.cancel(r2["id"][:4]) is not None
+        assert len(s.active()) == 1
+        await asyncio.sleep(1.5)
+        assert any("take the pasta off" in m for m in orch.said)
+        assert orch.notified
+        assert s.active() == []                       # one-shot removed after firing
+        assert json.loads(store.read_text()) == []    # removal persisted
+        s.shutdown()
+
+    asyncio.run(run_fire())
+
+    async def run_reload():
+        orch = FakeOrch()
+        now = _t.time()
+        store.write_text(json.dumps([
+            {"id": "aaaaaa", "fire_at": now - 100, "message": "missed one",
+             "title": "Orrin", "repeat": 0, "created": 0},
+            {"id": "bbbbbb", "fire_at": now - 100, "message": "stand up",
+             "title": "Orrin", "repeat": 3600, "created": 0},
+        ]))
+        s = Scheduler(orch, store)
+        s.start(asyncio.get_running_loop())
+        # recurring rolled forward to a future time, still pending
+        act = {r["id"]: r for r in s.active()}
+        assert "bbbbbb" in act and act["bbbbbb"]["fire_at"] > now
+        # missed one-shot fires ~2s after start, announced as missed
+        await asyncio.sleep(2.7)
+        assert any("missed one" in m for m in orch.said)
+        assert any("Missed" in m for m in orch.said)
+        s.shutdown()
+
+    asyncio.run(run_reload())
