@@ -270,6 +270,10 @@ class Ears:
         if vlang in ("en-in", "hinglish", "hi", "auto") or lang != "en":
             prompt += ("Indian English. Common words: theek hai, accha, haan, nahi, kya, kaise, "
                        "karo, bolo, dikhao, kholo, band karo, ruko, chalao, ek minute. ")
+        # Prime app/tool proper nouns the small model otherwise mangles (e.g. "IntelliJ" ->
+        # "intelligence") so "open IntelliJ" transcribes correctly.
+        prompt += ("Apps: IntelliJ, PyCharm, WebStorm, VS Code, Xcode, Terminal, iTerm, Chrome, "
+                   "Safari, Slack, Notion, Obsidian, Spotify, Finder, GitHub, Claude, Orrin. ")
         if prompt:
             params["initial_prompt"] = prompt
         params["on_recording_stop"] = self._rec_stopped

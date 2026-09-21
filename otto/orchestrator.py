@@ -1964,7 +1964,10 @@ class Orchestrator:
         # side-talk. Prefer the fast LOCAL laya gate when ready; else the Haiku verify (if enabled).
         smart_ready = bool(getattr(stt, "smart_gate", False) and self.smart_gate is not None
                            and self.smart_gate.ready)
-        ambiguous = (hands_free and not deliberate
+        # In a live conversation (the follow-up window right after Orrin replied) TRUST what you
+        # say — you're clearly talking to it — so a conversational follow-up ("...the Oceane
+        # project, correct?") isn't dropped by the gate.
+        ambiguous = (hands_free and not deliberate and not self._follow_up_active
                      and not looks_like_command(text) and not looks_like_question(text))
         use_laya = ambiguous and smart_ready
         need_verify = ambiguous and not smart_ready and stt.hands_free_verify
