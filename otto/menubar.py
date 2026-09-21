@@ -11,10 +11,13 @@ Run:  python -m otto.menubar
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 
 import rumps
@@ -58,6 +61,111 @@ _STATE_ICON = {
 }
 
 
+# -- single-instance guard + orphan sweep --------------------------------------
+# The #1 cause of "Orrin stopped listening" is TWO instances running at once (a Dock
+# double-click on top of the launcher, or leftover STT workers from a crashed run): they
+# fight over the microphone and the recognizer's worker pipe dies (EOFError flood). A flock
+# guarantees a single MAIN, and a startup sweep clears orphaned multiprocessing workers that
+# reparented to launchd after a prior crash and would otherwise collide with the new recorder.
+_lock_fd = None   # kept open for the process lifetime so the flock is held
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True     # exists, just not ours to signal
+    except Exception:
+        return False
+
+
+def _acquire_single_instance_lock_or_exit() -> None:
+    global _lock_fd
+    from .config import OTTO_HOME
+    lock_path = OTTO_HOME / "orrin.lock"
+    try:
+        OTTO_HOME.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fd = open(lock_path, "a+")   # Python opens fds non-inheritable, so children can't hold it
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Locked. If the recorded MAIN pid is dead, this is a ghost hold (e.g. an orphaned
+        # worker that inherited the fd) — sweep and retry once rather than refuse to start.
+        other = ""
+        try:
+            fd.seek(0)
+            other = fd.read().strip()
+        except Exception:
+            pass
+        stale = other.isdigit() and not _pid_alive(int(other))
+        if stale:
+            _sweep_orphan_workers()
+            time.sleep(0.5)
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print(f"[otto] Orrin is already running{f' (pid {other})' if other else ''}; "
+                  "this instance is exiting to avoid a microphone collision.",
+                  file=sys.stderr, flush=True)
+            sys.exit(0)
+    try:
+        fd.seek(0)
+        fd.truncate()
+        fd.write(str(os.getpid()))
+        fd.flush()
+    except Exception:
+        pass
+    _lock_fd = fd   # hold the lock until the process dies (fd close releases it)
+
+
+# Path markers that identify OUR multiprocessing workers (not some unrelated python).
+_OTTO_PROC_MARKERS = ("personal-assist/.venv", "Orrin.app/Contents/MacOS",
+                      "Application Support/Otto/venv", "otto-assist")
+
+
+def _sweep_orphan_workers() -> int:
+    """Kill leftover RealtimeSTT multiprocessing workers from a prior crashed/duplicate run.
+    Safe to call before we spawn our own recorder — every match is an orphan by then. Returns
+    the count killed."""
+    me = os.getpid()
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return 0
+    killed = 0
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_s, _, cmd = line.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid == me or "multiprocessing" not in cmd:
+            continue
+        # Only OUR STT workers: the EXECUTABLE (argv[0]) must be the otto python / Orrin binary,
+        # so a shell/editor/grep that merely mentions the path isn't matched.
+        exe = cmd.split(" ", 1)[0]
+        if not any(m in exe for m in _OTTO_PROC_MARKERS):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except Exception:
+            pass
+    if killed:
+        print(f"[otto] swept {killed} orphan STT worker(s) before start",
+              file=sys.stderr, flush=True)
+    return killed
+
+
 class OttoApp(rumps.App):
     def __init__(self) -> None:
         # Colored logo that changes with state; text fallback so it's never blank.
@@ -79,6 +187,7 @@ class OttoApp(rumps.App):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
         self._dash = None       # in-app dashboard window (lazy)
+        self._shutting_down = False   # set on intentional Quit/Restart so the supervisor stops
 
         self.status_item = rumps.MenuItem("Starting…")
         self.project_menu = rumps.MenuItem("Project")
@@ -217,16 +326,52 @@ class OttoApp(rumps.App):
 
     # -- backend (its own asyncio loop, off the main thread) ---------------
     def _run_backend(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._backend_main())
-        except Exception as e:  # surface fatal backend errors to the menu + log
-            import traceback
-
-            self.orch.state = f"error: {e}"
-            print(f"[otto] backend crashed: {e}", file=sys.stderr, flush=True)
-            traceback.print_exc()
+        """Supervise the backend: if the asyncio loop (orchestrator + brain + STT + server)
+        crashes, restart it in-process instead of leaving a live menu bar over a dead backend
+        (the silent-zombie failure). Crash-loop guard: if it keeps dying fast, exit the whole
+        process so launchd (KeepAlive) can relaunch a clean one."""
+        crashes: list[float] = []
+        while not self._shutting_down:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            clean = False
+            try:
+                self._loop.run_until_complete(self._backend_main())
+                clean = True                      # server exited normally (Quit/Restart)
+            except Exception as e:                # backend crashed — log and recover
+                import traceback
+                self.orch.state = f"error: {e}"
+                print(f"[otto] backend crashed: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc()
+            finally:
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
+            if clean or self._shutting_down:
+                return
+            now = time.monotonic()
+            crashes = [t for t in crashes if now - t < 120.0] + [now]
+            if len(crashes) >= 4:                 # crash-looping → a fresh process is cleaner
+                print("[otto] backend crash-looping — exiting for a clean relaunch (launchd)",
+                      file=sys.stderr, flush=True)
+                os._exit(1)
+            backoff = min(10.0, 2.0 ** len(crashes))
+            print(f"[otto] restarting backend in {backoff:.0f}s…", file=sys.stderr, flush=True)
+            self.orch.state = "restarting"
+            time.sleep(backoff)
+            # Clear any STT workers the crashed backend orphaned, then rebuild a fresh
+            # orchestrator so we don't inherit half-dead state or colliding recorders.
+            try:
+                _sweep_orphan_workers()
+            except Exception:
+                pass
+            try:
+                self.orch = Orchestrator(self.settings, self.bus)
+                self.orch._external_ptt = True
+            except Exception as e:
+                print(f"[otto] could not rebuild orchestrator: {e!r}", file=sys.stderr, flush=True)
+                os._exit(1)
 
     async def _backend_main(self) -> None:
         await self.orch.start()
@@ -364,6 +509,7 @@ class OttoApp(rumps.App):
     def restart(self, _) -> None:
         # Exit cleanly; launchd (KeepAlive) relaunches a fresh process that rebuilds the
         # menu bar. os.execv re-execs in place and leaves the menu bar item blank.
+        self._shutting_down = True
         if self._server is not None:
             self._server.should_exit = True
         os._exit(0)
@@ -374,6 +520,7 @@ class OttoApp(rumps.App):
         # immediately relaunched. To truly quit we must unload the job with `launchctl bootout`;
         # that also terminates this process. In a dev run (no launchd job) bootout is a no-op and
         # we fall back to a normal quit.
+        self._shutting_down = True
         if self._server is not None:
             self._server.should_exit = True
         if self._loop is not None:
@@ -394,6 +541,10 @@ class OttoApp(rumps.App):
 
 def main() -> None:
     load_env()
+    # Refuse to run two Orrins at once (the recurring "stopped listening" mic collision), and
+    # clear any STT workers a prior crash left holding the mic.
+    _acquire_single_instance_lock_or_exit()
+    _sweep_orphan_workers()
     print("[otto] menu bar app starting…", file=sys.stderr, flush=True)
     OttoApp().run()
 

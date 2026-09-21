@@ -18,6 +18,22 @@ fi
 echo "==> Ensuring the menu bar dependency (rumps) is installed"
 "$ROOT/.venv/bin/pip" install -q -e "$ROOT[app]"
 
+# Prefer the STABLE-SIGNED packaged app (/Applications/Orrin.app) as the launchd target: its
+# code identity is constant, so macOS keeps its Microphone/Accessibility grants across reboots
+# and rebuilds. Source `python -m otto.menubar` under launchd works but its mic grant is
+# unstable (unsigned interpreter), so it's only the dev fallback.
+APP_BIN="/Applications/Orrin.app/Contents/MacOS/Orrin"
+if [ -x "$APP_BIN" ]; then
+  echo "==> Target: installed app (stable-signed) — $APP_BIN"
+  PROG_ARGS="        <string>$APP_BIN</string>"
+else
+  echo "==> Target: source (dev) — $PY -m otto.menubar"
+  echo "    (Build + install /Applications/Orrin.app for a stable-signed service with persistent mic.)"
+  PROG_ARGS="        <string>$PY</string>
+        <string>-m</string>
+        <string>otto.menubar</string>"
+fi
+
 echo "==> Writing LaunchAgent → $PLIST"
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST
@@ -30,9 +46,7 @@ cat > "$PLIST" <<PLIST
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$PY</string>
-        <string>-m</string>
-        <string>otto.menubar</string>
+$PROG_ARGS
     </array>
     <key>WorkingDirectory</key>
     <string>$ROOT</string>
@@ -49,6 +63,8 @@ cat > "$PLIST" <<PLIST
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
