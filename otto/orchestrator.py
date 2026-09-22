@@ -605,7 +605,6 @@ class Orchestrator:
         # only when enabled AND a voiceprint exists (enroll first). Fail-open until ready.
         if getattr(v.stt, "speaker_verify", False):
             try:
-                from .config import OTTO_HOME
                 from .voice.speaker import SpeakerVerifier
                 vp = v.stt.speaker_voiceprint or str(OTTO_HOME / "voiceprint.npy")
                 sv = SpeakerVerifier(model_id=v.stt.speaker_model, voiceprint_path=vp)
