@@ -157,15 +157,32 @@ class Ears:
         self._max_record_s = float(
             getattr(settings.voice.stt, "max_recording_seconds", 0) or 15.0)
         self._watchdog: threading.Timer | None = None
+        # Speaker-verification audio tap: when enabled, accumulate the current utterance's raw PCM
+        # (via on_recorded_chunk, between recording-start and -stop) so the orchestrator can match
+        # it against the enrolled voiceprint. Off = zero overhead (no chunk callback wired).
+        self._capture_audio = bool(getattr(settings.voice.stt, "speaker_verify", False))
+        self.sample_rate = 16000
+        self.last_audio: bytes | None = None      # PCM of the most recent finalized utterance
+        self._utt_chunks: list[bytes] = []
+        self._recording = False
 
     def _post(self, fn, *args) -> None:
         """Bounce a callback from the recorder thread onto the asyncio loop."""
         self._loop.call_soon_threadsafe(fn, *args)
 
     # -- recording watchdog (force-finalize an over-long capture) --------------
+    def _on_chunk(self, chunk: bytes) -> None:
+        """RealtimeSTT hands us each mic chunk. While a recording is active, buffer it so the
+        finalized utterance's audio is available for speaker verification. Best-effort, cheap."""
+        if self._recording and chunk:
+            self._utt_chunks.append(bytes(chunk))
+
     def _rec_started(self) -> None:
         """RealtimeSTT began a recording. Notify the orchestrator and arm the max-duration
         watchdog so a never-ending capture (continuous ambient/media audio) still finalizes."""
+        if self._capture_audio:
+            self._recording = True
+            self._utt_chunks = []
         self._post(self._on_speech_start)
         self._cancel_watchdog()
         if self._max_record_s > 0:
@@ -175,6 +192,9 @@ class Ears:
 
     def _rec_stopped(self) -> None:
         """Recording ended (naturally or forced) — disarm the watchdog and notify."""
+        if self._capture_audio and self._recording:
+            self._recording = False
+            self.last_audio = b"".join(self._utt_chunks) if self._utt_chunks else None
         self._cancel_watchdog()
         self._last_record_stop = time.monotonic()   # transcript should follow shortly
         if self._on_recording_stop is not None:
@@ -277,6 +297,8 @@ class Ears:
         if prompt:
             params["initial_prompt"] = prompt
         params["on_recording_stop"] = self._rec_stopped
+        if self._capture_audio:                     # tap raw PCM for speaker verification
+            params["on_recorded_chunk"] = self._on_chunk
 
         # Live captions: stream partial words as you speak, so the dashboard visibly reacts to
         # your voice (transcribed by a small fast model). Optional; off saves CPU on always-on.

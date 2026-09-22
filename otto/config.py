@@ -215,6 +215,29 @@ class STTConfig(BaseModel):
     # would let a rare false-positive run an action unconfirmed.
     smart_gate: bool = False
     smart_gate_threshold: float = 0.55
+    # During a follow-up window (right after Orrin replied) you're likely still talking to it, so
+    # the smart-gate uses this LOWER bar — it only drops clearly-ambient speech, keeping genuine
+    # conversational follow-ups. Outside the window the stricter smart_gate_threshold applies.
+    follow_up_threshold: float = 0.30
+    # Local command-verify: when the smart-gate is unavailable, use laya (not a cloud model) to
+    # reject grammatical-but-nonsensical STT hallucinations on the hands-free path. Offline, ~50ms.
+    # Preferred over the hands_free_verify cloud call when laya is present.
+    local_command_verify: bool = True
+
+    @property
+    def laya_needed(self) -> bool:
+        """Any feature that requires laya to be loaded (so start() can bring it up)."""
+        return bool(self.smart_gate or self.local_command_verify)
+
+    # Speaker verification ("is this MY voice?") — the one signal content can't give. Enroll your
+    # voice once (`python -m otto.voice.enroll_speaker`), then every hands-free utterance is matched
+    # against your voiceprint; speech that isn't yours (other people, TV, Orrin's own echo) is
+    # dropped regardless of what it says. OFF by default (needs a one-time enroll + model download);
+    # fail-open — if the model/voiceprint isn't ready the check is skipped, never locking you out.
+    speaker_verify: bool = False
+    speaker_threshold: float = 0.75          # cosine bar; the enroll tool recommends a value
+    speaker_model: str = "microsoft/wavlm-base-plus-sv"
+    speaker_voiceprint: str = ""             # path to the saved voiceprint; "" = OTTO_HOME/voiceprint.npy
 
 
 class TTSConfig(BaseModel):
@@ -306,6 +329,21 @@ class VoiceConfig(BaseModel):
     # briefing; fires at most once per calendar day.
     morning_brief: bool = True
     morning_brief_hour: int = 9               # local hour (0-23) the brief becomes eligible
+    # Parallel dispatch: when a turn is already running and you say "meanwhile / while that runs /
+    # at the same time, do X", run X concurrently in a dedicated background workspace on the same
+    # project (its own Claude + chat) instead of queuing it behind the in-flight turn. The parallel
+    # turn is silent (never spoken) and notifies on completion; the focused turn keeps speaking.
+    # Set False to always queue (old behavior).
+    parallel_dispatch: bool = True
+    # Auto-fresh context: before a focused command, use laya to check whether it CONTINUES the
+    # current chat's topic. If it's a clearly-unrelated new task, start a fresh chat first so a
+    # stale topic can't bleed into the answer (the disk-question-got-a-screensaver-answer bug).
+    # Durable memory (facts/summary) is re-injected, so only the transient conversation resets.
+    auto_fresh_context: bool = True
+    # Destructive-action guardrail: even under permission="bypass", use laya to flag a command
+    # that looks destructive/irreversible (delete/reset/force-push/drop) and ask you to confirm
+    # first — a cheap local safety net against a misheard command running unconfirmed.
+    destructive_guard: bool = True
 
 
 class MemoryConfig(BaseModel):

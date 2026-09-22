@@ -81,6 +81,10 @@ class Workspace:
                  read_only: bool = False) -> None:
         self.project = project
         self.name = Path(project).name or project
+        # Dashboard/window id for this workspace's transcript events. Defaults to the project path
+        # (one window per project). A parallel same-project workspace overrides this so its events
+        # land in their own lane instead of interleaving with the focused turn's chat.
+        self.tag = project
         self.read_only = read_only
         self.ctx = WorkspaceContext(orch, project)
         self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
@@ -89,6 +93,7 @@ class Workspace:
         self.lock = asyncio.Lock()          # serialize this workspace's own turns
         self.last_canvas: str | None = None  # last visual it rendered (shown when focused)
         self.last_reply = ""                # last spoken/summary line (for the done-notify)
+        self.last_command = ""              # last focused user command (topic hint for auto-fresh)
         self._last_preamble: str | None = None  # memory block last injected into this chat
 
     @property
