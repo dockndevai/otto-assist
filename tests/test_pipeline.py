@@ -2553,3 +2553,352 @@ def test_looks_like_question_and_command_gate_bypass():
         assert not looks_like_question(notq), notq
     # commands still detected (unchanged)
     assert looks_like_command("open the calculator") and looks_like_command("otto play music")
+
+
+# -- parallel "meanwhile" dispatch --------------------------------------------
+
+class _ParBrain:
+    """Minimal ClaudeBrain stand-in: yields tool_use events, then a reply, then a result.
+    An optional `gate` (asyncio.Event) holds the stream open — used to keep a turn 'running'
+    (and its workspace lock held) while another turn is expected to run concurrently."""
+    def __init__(self, reply="ok.", gate=None, tools=()):
+        self._reply, self._gate, self._tools = reply, gate, tools
+        self.session_id = "sess-parallel"
+    async def connect(self): ...
+    async def disconnect(self): ...
+    async def reconnect(self): ...
+    async def send(self, text):
+        for t in self._tools:
+            yield {"type": "tool_use", "name": t, "detail": ""}
+        if self._gate is not None:
+            await self._gate.wait()
+        for ch in self._reply:
+            yield {"type": "delta", "text": ch}
+        yield {"type": "result", "session_id": self.session_id, "is_error": False}
+
+
+class _ParWS:
+    def __init__(self, project, brain):
+        self.project, self.name, self.tag = project, "proj (parallel)", project + " ·parallel"
+        self.lock = asyncio.Lock()
+        self.state, self.last_reply, self._last_preamble = "idle", "", None
+        self.brain = brain
+    @property
+    def session_id(self): return self.brain.session_id
+
+
+def _neuter(orch, notes):
+    """Silence the orchestrator's side-effects so _run_turn can run offline & fast."""
+    async def _cap(*a, **k): ...
+    orch.memory.preamble = lambda p, query=None: ""
+    orch.memory.overview = lambda: ""
+    orch.memory.capture = _cap
+    orch.notify = lambda t, b="": notes.append((t, b))
+    for name in ("_voice_out", "_flush_speech", "_status", "_publish_workspaces",
+                 "_publish_session", "_persist_session", "_enter_awaiting_command",
+                 "_unduck_media", "_arm_idle_research", "_announce_tool"):
+        setattr(orch, name, lambda *a, **k: None)
+
+
+def test_split_meanwhile_detection():
+    """Parallel-intent leads are detected and the command is de-prefixed; normal sentences (incl.
+    ones that merely start with 'while …') are not misread as parallel."""
+    orch = Orchestrator(load_settings(), EventBus())
+    pos = {
+        "meanwhile, open Finder": "open Finder",
+        "meanwhile can you open Finder": "open Finder",
+        "in the meantime, please check the logs": "check the logs",
+        "at the same time run the tests": "run the tests",
+        "in parallel, build the docs": "build the docs",
+        "while that runs, open the dashboard": "open the dashboard",
+        "while the build runs can you open Finder": "open Finder",
+        "while it's compiling, show me the diff": "show me the diff",
+        "by the time this build is happening, can you open Finder": "open Finder",
+        "by the time the tests finish, also pull main": "pull main",
+    }
+    for text, cmd in pos.items():
+        ok, got = orch._split_meanwhile(text)
+        assert ok and got == cmd, (text, ok, got)
+    for neg in ("open Finder", "while loop keeps crashing", "check the auth project status",
+                "what should we do across my projects", "run the maven build",
+                "while you were out I fixed the bug"):
+        ok, _ = orch._split_meanwhile(neg)
+        assert not ok, neg
+
+
+def test_meanwhile_routes_parallel_only_when_busy():
+    """A 'meanwhile' command routes to the parallel path when a focused turn is running, but to a
+    normal (de-prefixed) turn when nothing is in flight."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        seen = {}
+        async def fake_par(cmd, original): seen["par"] = (cmd, original)
+        async def fake_handle(text, **k): seen["handle"] = text
+        orch._run_parallel_turn = fake_par
+        orch._handle_turn = fake_handle
+
+        # idle → runs normally, de-prefixed
+        orch.submit_user_input("meanwhile, open Finder")
+        await asyncio.sleep(0)
+        assert seen.get("handle") == "open Finder" and "par" not in seen
+
+        # busy (focused turn holds its lock) → runs in parallel
+        seen.clear()
+        await orch.focused_ws.lock.acquire()
+        try:
+            orch.submit_user_input("meanwhile, open Finder")
+            await asyncio.sleep(0)
+        finally:
+            orch.focused_ws.lock.release()
+        assert seen.get("par") == ("open Finder", "meanwhile, open Finder")
+        assert "handle" not in seen
+    asyncio.run(run())
+
+
+def test_parallel_turn_runs_concurrently_with_focused():
+    """The core guarantee: a parallel turn completes while the focused turn is still mid-flight
+    (its workspace lock held) — proving real concurrency, not queuing."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        notes: list = []
+        _neuter(orch, notes)
+
+        # Focused turn: a gated brain that holds the focused workspace lock open indefinitely.
+        gate = asyncio.Event()
+        fws = orch.focused_ws
+        fws.brain = _ParBrain(reply="building…", gate=gate)
+        t_focused = asyncio.create_task(orch._run_turn(fws, "run the build"))
+        for _ in range(50):                     # let the focused turn acquire its lock & block
+            await asyncio.sleep(0)
+            if fws.lock.locked():
+                break
+        assert fws.lock.locked() and not t_focused.done()   # focused is stuck on the gate
+
+        # Parallel turn on a separate same-project workspace — must finish without the gate.
+        par = _ParWS(orch.focused, _ParBrain(reply="Finder open."))
+        async def fake_open():
+            orch._parallel_ws = par
+            return par
+        orch._open_parallel_ws = fake_open
+        await asyncio.wait_for(
+            orch._run_parallel_turn("open finder", "meanwhile open finder"), timeout=2.0)
+
+        assert par.last_reply == "Finder open."          # parallel completed…
+        assert not t_focused.done()                      # …while focused is STILL running
+        assert any("parallel" in title.lower() for title, _ in notes)   # notified on done
+
+        gate.set()                                       # release the focused turn, clean up
+        await asyncio.wait_for(t_focused, timeout=2.0)
+    asyncio.run(run())
+
+
+# -- laya typed decisions: smart-gate, follow-up threshold, guards -------------
+
+class _FakeGate:
+    """Stand-in for SmartGate with canned typed-decision scores (no laya model needed)."""
+    def __init__(self, *, ready=True, score=1.0, real=1.0, destructive=0.0, continuation=1.0):
+        self.ready = ready
+        self._score, self._real, self._destructive, self._cont = (
+            score, real, destructive, continuation)
+        self.calls = []
+    def score(self, text): self.calls.append(("score", text)); return self._score
+    def is_real_command(self, text): self.calls.append(("real", text)); return self._real
+    def is_destructive(self, text): self.calls.append(("destr", text)); return self._destructive
+    def is_continuation(self, text, topic):
+        self.calls.append(("cont", text, topic)); return self._cont
+
+
+def test_smartgate_typed_decisions_parse_noul():
+    """is_destructive / is_real_command / is_continuation each ask laya the right typed question
+    and return its noul probability; continuation carries CURRENT TOPIC + NEW REQUEST in the body."""
+    from otto.voice.smartgate import SmartGate
+
+    class FakeRouter:
+        def __init__(self): self.seen = []
+        def predict(self, body, question):
+            self.seen.append((body, question))
+            key = next(iter(question))
+            return {"answers": {key: {"noul": 0.87}}}
+
+    g = SmartGate()
+    g._router = FakeRouter(); g._ready = True
+    assert abs(g.is_destructive("delete everything") - 0.87) < 1e-6
+    assert abs(g.is_real_command("open chrome") - 0.87) < 1e-6
+    assert abs(g.is_continuation("check disk", "screensaver settings") - 0.87) < 1e-6
+    body, q = g._router.seen[-1]
+    assert "CURRENT TOPIC: screensaver settings" in body["body"]
+    assert "NEW REQUEST: check disk" in body["body"] and "continuation" in q
+    assert SmartGate().is_destructive("x") is None      # not ready → None (skip check)
+
+
+def test_dispatch_followup_relaxes_gate_threshold():
+    """A follow-up window no longer bypasses the gate — it lowers the bar: the same ambient-ish
+    utterance is dropped outside the window (0.32<0.55) but passes inside it (0.32>=0.30)."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.smart_gate = _FakeGate(score=0.32)
+        st = orch.settings.voice.stt
+        st.smart_gate = True; st.smart_gate_threshold = 0.55; st.follow_up_threshold = 0.30
+        st.refine = False; orch._dictation = False
+        submitted = []
+        orch.submit_user_input = lambda t: submitted.append(t)
+        orch._ack = lambda intent: None
+        await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=False)
+        assert submitted == []                          # stricter bar → dropped
+        await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=True)
+        assert submitted == ["ambient chatter"]         # relaxed bar → passes
+    asyncio.run(run())
+
+
+def test_dispatch_local_verify_drops_garbled_stt():
+    """When the addressing gate is off, the LOCAL laya command-verify drops clearly-garbled STT
+    (p<0.30) but lets a real command through — no cloud call."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.refine = False; orch._dictation = False
+        orch._ack = lambda intent: None
+        submitted = []
+        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.smart_gate = _FakeGate(real=0.1)
+        await orch._dispatch_async("the the uh xcode xcode", gate=True, local_verify=True)
+        assert submitted == []
+        orch.smart_gate = _FakeGate(real=0.9)
+        await orch._dispatch_async("open chrome", gate=True, local_verify=True)
+        assert submitted == ["open chrome"]
+    asyncio.run(run())
+
+
+def test_destructive_guard_confirms_and_can_cancel():
+    """Under permission='bypass', a destructive-looking command asks to confirm; 'no' cancels the
+    turn, 'yes' runs it."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.smart_gate = _FakeGate(destructive=0.9)
+        orch.settings.voice.destructive_guard = True
+        orch.settings.voice.auto_fresh_context = False
+        orch.settings.brain.permission = "bypass"
+        orch._voice_out = lambda s: None
+        ran = []
+        async def fake_run_turn(ws, text, **k): ran.append(text)
+        orch._run_turn = fake_run_turn
+
+        async def deny(action): return False
+        orch.confirm = deny
+        await orch._handle_turn("delete all my branches")
+        assert ran == []                                # declined → nothing ran
+
+        async def allow(action): return True
+        orch.confirm = allow
+        await orch._handle_turn("delete all my branches")
+        assert ran == ["delete all my branches"]        # confirmed → ran
+    asyncio.run(run())
+
+
+def test_auto_fresh_context_rebinds_on_topic_change():
+    """A clearly-unrelated command (laya continuation low) rebinds to a fresh chat before running;
+    a related follow-up does not."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.auto_fresh_context = True
+        orch.settings.voice.destructive_guard = False
+        ws = orch.focused_ws
+        ws.last_command = "set the screensaver idle time"
+        ws.brain.session_id = "sess1"
+        rebinds = []
+        async def fake_rebind(settings, *, resume=None, new_chat=False): rebinds.append(new_chat)
+        ws.rebind = fake_rebind
+        ran = []
+        async def fake_run_turn(w, text, **k): ran.append(text)
+        orch._run_turn = fake_run_turn
+
+        orch.smart_gate = _FakeGate(continuation=0.1)   # unrelated topic
+        await orch._handle_turn("check if my disk has 100 gigs free")
+        assert rebinds == [True] and ran == ["check if my disk has 100 gigs free"]
+
+        orch.smart_gate = _FakeGate(continuation=0.9)   # a related follow-up
+        rebinds.clear(); ran.clear()
+        ws.last_command = "check if my disk has 100 gigs free"; ws.brain.session_id = "sess1"
+        await orch._handle_turn("and how much is used")
+        assert rebinds == [] and ran == ["and how much is used"]
+    asyncio.run(run())
+
+
+# -- Phase 4: speaker verification --------------------------------------------
+
+def test_to_float32_mono():
+    import numpy as np
+    from otto.voice.speaker import to_float32_mono
+    b = np.array([0, 16384, -16384, 32767], dtype=np.int16).tobytes()
+    a = to_float32_mono(b)
+    assert a.shape == (4,) and a[0] == 0.0 and abs(a[1] - 0.5) < 0.01 and a[2] < 0
+    assert to_float32_mono(b"").shape == (0,)
+
+
+def test_speaker_enroll_verify_and_persist(tmp_path):
+    """Enroll averages per-clip embeddings into a saved voiceprint; verify() is high for the same
+    voice, low for a different one; and the voiceprint reloads from disk."""
+    import numpy as np
+    from otto.voice.speaker import SpeakerVerifier
+    vp = tmp_path / "vp.npy"
+
+    def fake_embed(audio, sr=16000):
+        return (np.array([1.0, 0.0, 0.0]) if float(np.mean(audio)) > 0
+                else np.array([0.0, 1.0, 0.0]))
+
+    sv = SpeakerVerifier(voiceprint_path=vp)
+    sv._ready = True; sv.embed = fake_embed
+    me = np.ones(16000, dtype=np.float32)
+    other = -np.ones(16000, dtype=np.float32)
+    assert sv.enroll([(me, 16000), (me, 16000)]) is not None
+    assert vp.exists() and sv.has_voiceprint
+    assert sv.verify(me, 16000) > 0.99
+    assert sv.verify(other, 16000) < 0.01
+    # reloads from disk in a fresh verifier
+    sv2 = SpeakerVerifier(voiceprint_path=vp)
+    sv2._ready = True; sv2.embed = fake_embed
+    assert sv2.has_voiceprint and sv2.verify(me, 16000) > 0.99
+    # no voiceprint / not ready → None (caller skips the check, fail-open)
+    assert SpeakerVerifier().verify(me, 16000) is None
+
+
+class _FakeSpeaker:
+    def __init__(self, sim): self._sim = sim; self.ready = True; self.has_voiceprint = True
+    def verify(self, audio, sr): return self._sim
+
+
+def test_speaker_gate_drops_other_voice():
+    """On the hands-free path, an utterance that doesn't match the voiceprint is dropped whatever it
+    says; a matching voice passes through to run."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.stt.refine = False; orch._dictation = False
+        orch.settings.voice.stt.speaker_threshold = 0.75
+        orch._ack = lambda intent: None
+        submitted = []
+        orch.submit_user_input = lambda t: submitted.append(t)
+
+        class _Ears: pass
+        ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000; ears.sample_rate = 16000
+        orch.ears = ears
+
+        orch.speaker = _FakeSpeaker(0.40)      # not your voice
+        await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
+        assert submitted == []
+
+        orch.speaker = _FakeSpeaker(0.92)      # your voice
+        await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
+        assert submitted == ["open chrome"]
+
+        # fail-open: no audio captured → check skipped, command still runs
+        submitted.clear(); ears.last_audio = None
+        orch.speaker = _FakeSpeaker(0.10)
+        await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
+        assert submitted == ["open chrome"]
+    asyncio.run(run())
