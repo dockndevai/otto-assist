@@ -3025,6 +3025,43 @@ def test_is_auth_error_detection():
         assert not _is_auth_error(t), t
 
 
+def test_in_app_voice_enrollment_builds_voiceprint():
+    """In-app enrollment captures N utterances' audio into the speaker verifier and enrolls once."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch._voice_out = lambda s: None
+        orch._status = lambda *a, **k: None
+
+        class _FakeSp:
+            def __init__(self): self.ready = True; self.has_voiceprint = False; self.enrolled = None
+            def enroll(self, clips):
+                self.enrolled = clips; self.has_voiceprint = True; return object()
+        orch.speaker = _FakeSp()
+
+        class _Ears: pass
+        ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000   # ~0.5s int16 @16k
+        orch.ears = ears
+
+        orch._enrolling = True; orch._enroll_clips = []; orch._enroll_target = 3
+        for _ in range(3):
+            orch._enroll_capture("a full sentence")
+        assert orch._enrolling is False                       # collected enough → finalizing
+        for _ in range(40):
+            if orch.speaker.has_voiceprint:
+                break
+            await asyncio.sleep(0.05)
+        assert orch.speaker.has_voiceprint is True
+        assert orch.speaker.enrolled is not None and len(orch.speaker.enrolled) == 3
+
+        # too-short audio is not counted as a sample
+        orch.speaker = _FakeSp(); orch._enrolling = True; orch._enroll_clips = []
+        ears.last_audio = (b"\x10\x00") * 100                  # ~6ms — too short
+        orch._enroll_capture("hmm")
+        assert orch._enroll_clips == [] and orch._enrolling is True
+    asyncio.run(run())
+
+
 def test_character_pack_name_sanitizer():
     """The /characters/<pack>/<file> route only accepts safe single segments (no traversal)."""
     from otto.server.app import _SAFE_NAME
