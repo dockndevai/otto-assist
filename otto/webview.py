@@ -124,6 +124,8 @@ class FloatingCharacter:
         self.window = None
         self.webview = None
         self.corner = "br"      # br|bl|tr|tl
+        self._roam_countdown = 6.0     # seconds until the next autonomous wander
+        self._last_state = None        # last visual state pushed to the page
 
     def toggle(self) -> None:
         if self.window is not None and self.window.isVisible():
@@ -179,6 +181,75 @@ class FloatingCharacter:
             self.window.orderFrontRegardless()
         except Exception:
             pass
+
+    # -- autonomy: react to state + wander the screen ---------------------
+    def set_state(self, s: str) -> None:
+        """Push a visual state to the character page (idle/listening/thinking/speaking/sleeping)."""
+        if self.webview is None or s == self._last_state:
+            return
+        self._last_state = s
+        try:
+            self.webview.evaluateJavaScript_completionHandler_(
+                f"window.orrinSetState && window.orrinSetState({s!r})", None)
+        except Exception:
+            pass
+
+    def tick(self, dt: float, *, mode: str, char_state: str, roam: bool,
+             interval: float, speed: float) -> None:
+        """Called ~1x/sec by the menu bar. Drives the visual state and autonomous roaming.
+        mode: idle | busy | attending | sleeping."""
+        if self.window is None or not self.visible:
+            return
+        self.set_state(char_state)
+        # Wander only when idle or busy; settle while attending to you or napping.
+        if not roam or mode in ("attending", "sleeping"):
+            return
+        self._roam_countdown -= dt
+        if self._roam_countdown <= 0:
+            import random as _r
+            dur = self._roam(busy=(mode == "busy"), speed=speed)
+            base = interval * (0.5 if mode == "busy" else 1.0)
+            # next hop only after this glide finishes (+ a rest), so moves never overlap
+            self._roam_countdown = max(dur + 1.5, base * (0.7 + _r.random() * 0.6))
+
+    def _roam(self, *, busy: bool, speed: float) -> float:
+        """Glide the panel to a new random spot on screen (eased, native animation). Returns the
+        glide duration in seconds (0 if it couldn't move)."""
+        import random as _r
+
+        from Cocoa import NSAnimationContext, NSMakePoint, NSScreen
+        try:
+            vf = NSScreen.mainScreen().visibleFrame()
+        except Exception:
+            return 0.0
+        m = 12
+        x0 = vf.origin.x + m
+        x1 = vf.origin.x + vf.size.width - self.w - m
+        y0 = vf.origin.y + m
+        y1 = vf.origin.y + vf.size.height - self.h - m
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        cur = self.window.frame().origin
+        # Busy = bigger, snappier hops; idle = gentle drift near where it is.
+        if busy:
+            tx, ty = _r.uniform(x0, x1), _r.uniform(y0, y1)
+        else:
+            span_x, span_y = (x1 - x0) * 0.35, (y1 - y0) * 0.35
+            tx = min(x1, max(x0, cur.x + _r.uniform(-span_x, span_x)))
+            ty = min(y1, max(y0, cur.y + _r.uniform(-span_y, span_y)))
+        dist = ((tx - cur.x) ** 2 + (ty - cur.y) ** 2) ** 0.5
+        dur = max(1.2, min(6.0, dist / (180.0 * max(0.3, speed)))) * (0.7 if busy else 1.0)
+        try:
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.currentContext().setDuration_(dur)
+            self.window.animator().setFrameOrigin_(NSMakePoint(tx, ty))
+            NSAnimationContext.endGrouping()
+        except Exception:
+            try:
+                self.window.setFrameOrigin_(NSMakePoint(tx, ty))
+            except Exception:
+                pass
+        return dur
 
     def _build(self) -> None:
         from Cocoa import (
