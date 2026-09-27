@@ -53,25 +53,48 @@ def _resample(audio: np.ndarray, sr: int) -> np.ndarray:
         return np.interp(x, xp, audio).astype(np.float32)
 
 
+def _safe_name(name: str) -> str:
+    out = "".join(c for c in (name or "").strip().lower() if c.isalnum() or c in " -_")
+    return "-".join(out.split())[:40] or ""
+
+
 class SpeakerVerifier:
-    """Lazy, thread-safe x-vector speaker verifier. Enroll once → verify each utterance."""
+    """Lazy, thread-safe x-vector speaker verifier with MULTIPLE named voiceprints (for a shared /
+    family machine). Enroll each person once (name + a few clips); each utterance is matched to the
+    closest enrolled voice, and accepted only if that best match is above threshold AND in the
+    active set. Voiceprints live as <name>.npy under a directory."""
 
     def __init__(self, model_id: str = DEFAULT_MODEL,
-                 voiceprint_path: str | Path | None = None) -> None:
+                 voiceprints_dir: str | Path | None = None) -> None:
         self._model_id = model_id or DEFAULT_MODEL
         self._extractor = None
         self._model = None
         self._ready = False
         self._failed = False
         self._lock = threading.Lock()
-        self._voiceprint: np.ndarray | None = None
-        self._vp_path = Path(voiceprint_path).expanduser() if voiceprint_path else None
-        if self._vp_path and self._vp_path.exists():
-            try:
-                self._voiceprint = np.load(self._vp_path)
-            except Exception as e:
-                print(f"[otto] speaker: couldn't load voiceprint {self._vp_path}: {e!r}",
-                      file=sys.stderr, flush=True)
+        self._prints: dict[str, np.ndarray] = {}   # name -> L2-normalized voiceprint
+        self._dir = Path(voiceprints_dir).expanduser() if voiceprints_dir else None
+        self._load_prints()
+
+    def _load_prints(self) -> None:
+        self._prints = {}
+        if not self._dir:
+            return
+        try:
+            # Migrate a legacy single voiceprint.npy (sibling of the dir) → "me".
+            legacy = self._dir.parent / "voiceprint.npy"
+            if legacy.exists() and not (self._dir / "me.npy").exists():
+                self._dir.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy(str(legacy), str(self._dir / "me.npy"))
+            if self._dir.exists():
+                for f in sorted(self._dir.glob("*.npy")):
+                    try:
+                        self._prints[f.stem] = np.load(f)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[otto] speaker: couldn't load voiceprints: {e!r}", file=sys.stderr, flush=True)
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> None:
@@ -102,7 +125,11 @@ class SpeakerVerifier:
 
     @property
     def has_voiceprint(self) -> bool:
-        return self._voiceprint is not None
+        return bool(self._prints)
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._prints)
 
     # -- embedding / scoring ----------------------------------------------
     def embed(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray | None:
@@ -124,9 +151,9 @@ class SpeakerVerifier:
             print(f"[otto] speaker embed failed: {e!r}", file=sys.stderr, flush=True)
             return None
 
-    def enroll(self, clips: list[tuple[np.ndarray, int]]) -> np.ndarray | None:
-        """Build a voiceprint = mean of per-clip embeddings (then normalized). Saves it if a path
-        was configured. `clips` is [(audio_float32, sr), ...]."""
+    def enroll(self, clips: list[tuple[np.ndarray, int]], name: str = "me") -> str | None:
+        """Build a voiceprint (mean of per-clip embeddings, normalized) for `name` and save it as
+        <name>.npy. `clips` is [(audio_float32, sr), ...]. Returns the saved name, or None."""
         embs = []
         for audio, sr in clips:
             e = self.embed(audio, sr)
@@ -136,15 +163,16 @@ class SpeakerVerifier:
             return None
         vp = np.mean(np.stack(embs), axis=0)
         vp = vp / (np.linalg.norm(vp) + 1e-9)
-        self._voiceprint = vp.astype(np.float32)
-        if self._vp_path is not None:
+        name = _safe_name(name) or "me"
+        self._prints[name] = vp.astype(np.float32)
+        if self._dir is not None:
             try:
-                self._vp_path.parent.mkdir(parents=True, exist_ok=True)
-                np.save(self._vp_path, self._voiceprint)
+                self._dir.mkdir(parents=True, exist_ok=True)
+                np.save(self._dir / f"{name}.npy", self._prints[name])
             except Exception as e:
                 print(f"[otto] speaker: couldn't save voiceprint: {e!r}",
                       file=sys.stderr, flush=True)
-        return self._voiceprint
+        return name
 
     @staticmethod
     def cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -152,12 +180,17 @@ class SpeakerVerifier:
         b = b / (np.linalg.norm(b) + 1e-9)
         return float(np.dot(a, b))
 
-    def verify(self, audio: np.ndarray, sr: int = TARGET_SR) -> float | None:
-        """Cosine similarity of this clip to the enrolled voiceprint (higher = more likely you).
-        None if not ready, no voiceprint, or the clip is too short — caller then skips the check."""
-        if self._voiceprint is None:
+    def match(self, audio: np.ndarray, sr: int = TARGET_SR) -> tuple[str, float] | None:
+        """Best-matching enrolled voice for this clip: (name, cosine). None if not ready, no
+        voiceprints, or the clip is too short — caller then skips the check (fail-open)."""
+        if not self._prints:
             return None
         e = self.embed(audio, sr)
         if e is None:
             return None
-        return self.cosine(e, self._voiceprint)
+        best, best_s = None, -2.0
+        for name, vp in self._prints.items():
+            s = self.cosine(e, vp)
+            if s > best_s:
+                best, best_s = name, s
+        return (best, best_s) if best is not None else None

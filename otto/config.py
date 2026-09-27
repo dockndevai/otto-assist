@@ -238,15 +238,17 @@ class STTConfig(BaseModel):
         """Any feature that requires laya to be loaded (so start() can bring it up)."""
         return bool(self.smart_gate or self.local_command_verify)
 
-    # Speaker verification ("is this MY voice?") — the one signal content can't give. Enroll your
-    # voice once (`python -m otto.voice.enroll_speaker`), then every hands-free utterance is matched
-    # against your voiceprint; speech that isn't yours (other people, TV, Orrin's own echo) is
-    # dropped regardless of what it says. OFF by default (needs a one-time enroll + model download);
-    # fail-open — if the model/voiceprint isn't ready the check is skipped, never locking you out.
+    # Speaker verification ("whose voice is this?") — the one signal content can't give. Enroll one
+    # or MORE voices (menu → "Enroll a voice", or `python -m otto.voice.enroll_speaker`); each
+    # hands-free utterance is matched to the closest enrolled voice and accepted only if it clears
+    # the threshold AND is in the active set — so a shared/family machine responds to registered
+    # people and ignores everyone else (TV, guests, Orrin's echo). OFF by default; fail-open — if the
+    # model/voiceprints aren't ready the check is skipped, never locking you out.
     speaker_verify: bool = False
-    speaker_threshold: float = 0.75          # cosine bar; the enroll tool recommends a value
+    speaker_threshold: float = 0.55          # cosine bar for accepting a match
     speaker_model: str = "microsoft/wavlm-base-plus-sv"
-    speaker_voiceprint: str = ""             # path to the saved voiceprint; "" = OTTO_HOME/voiceprint.npy
+    speaker_voiceprints_dir: str = ""        # "" = OTTO_HOME/voiceprints (one <name>.npy per voice)
+    speaker_active: list[str] = Field(default_factory=list)  # names to listen to; [] = all enrolled
 
 
 class TTSConfig(BaseModel):

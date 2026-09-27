@@ -48,19 +48,19 @@ def _make_verifier():
     from ..config import OTTO_HOME, load_settings
     from .speaker import SpeakerVerifier
     s = load_settings()
-    vp = s.voice.stt.speaker_voiceprint or str(OTTO_HOME / "voiceprint.npy")
-    sv = SpeakerVerifier(model_id=s.voice.stt.speaker_model, voiceprint_path=vp)
+    d = s.voice.stt.speaker_voiceprints_dir or str(OTTO_HOME / "voiceprints")
+    sv = SpeakerVerifier(model_id=s.voice.stt.speaker_model, voiceprints_dir=d)
     print(f"Loading the speaker model ({s.voice.stt.speaker_model}) — first run downloads it…",
           flush=True)
     if not sv._load():
         print("Could not load the speaker model. Is `transformers`+`torch` installed?",
               file=sys.stderr)
         sys.exit(1)
-    return sv, vp
+    return sv, d
 
 
-def enroll(clips: int, seconds: float) -> None:
-    sv, vp = _make_verifier()
+def enroll(name: str, clips: int, seconds: float) -> None:
+    sv, d = _make_verifier()
     samples = []
     lines = ["Read this out naturally:  \"Otto, open my project and check the build.\"",
              "Now say:  \"What's on my calendar today, and remind me at five.\"",
@@ -70,57 +70,57 @@ def enroll(clips: int, seconds: float) -> None:
     for i in range(clips):
         audio = _record(seconds, f"[{i + 1}/{clips}] {lines[i % len(lines)]}")
         samples.append((audio, RATE))
-    print("\nBuilding your voiceprint…", flush=True)
-    if sv.enroll(samples) is None:
+    print(f"\nBuilding the voiceprint for '{name}'…", flush=True)
+    saved = sv.enroll(samples, name)
+    if not saved:
         print("Enrollment failed (clips too short/quiet). Try again in a quiet spot.",
               file=sys.stderr)
         sys.exit(1)
-    # Self-consistency: how similar each clip is to the averaged print (sanity check).
-    sims = [sv.cosine(sv.embed(a, RATE), sv._voiceprint) for a, _ in samples]
-    print(f"\nSaved voiceprint → {vp}")
+    vp = sv._prints[saved]
+    sims = [sv.cosine(sv.embed(a, RATE), vp) for a, _ in samples]
+    print(f"\nSaved voiceprint → {d}/{saved}.npy    (enrolled voices: {sv.names})")
     print(f"  self-similarity: min={min(sims):.2f} mean={np.mean(sims):.2f} "
-          f"(expect ~0.85+ for a clean enroll)")
-    print("\nNext: set  voice.stt.speaker_verify: true  in your config and restart Orrin.")
-    print("Tune with:  python -m otto.voice.enroll_speaker --check")
+          f"(expect ~0.7+ for a clean enroll)")
+    print("\nSet  voice.stt.speaker_verify: true  and restart Orrin. Enroll more people by "
+          "re-running with --name <other>.  Tune with --check.")
 
 
 def check(clips: int, seconds: float) -> None:
-    sv, vp = _make_verifier()
-    if sv._voiceprint is None:
-        print("No voiceprint yet — run enrollment first (no --check).", file=sys.stderr)
+    sv, d = _make_verifier()
+    if not sv.names:
+        print("No voices enrolled yet — run enrollment first (no --check).", file=sys.stderr)
         sys.exit(1)
-    print("\n== YOUR voice ==")
-    mine = [sv.verify(_record(seconds, f"[you {i + 1}/{clips}] say a command to Otto"), RATE)
+    print(f"Enrolled voices: {sv.names}")
+    print("\n== A registered voice ==")
+    mine = [sv.match(_record(seconds, f"[registered {i + 1}/{clips}] say a command"), RATE)
             for i in range(clips)]
-    print("\n== NOT you == (play a video, or have someone else talk)")
-    other = [sv.verify(_record(seconds, f"[other {i + 1}/{clips}] let a different voice speak"),
-                       RATE) for i in range(clips)]
-    mine = [m for m in mine if m is not None]
-    other = [o for o in other if o is not None]
-    print("\n--- results (cosine similarity to your voiceprint) ---")
-    print(f"  you   : {[round(m, 2) for m in mine]}  (min {min(mine):.2f})")
-    print(f"  others: {[round(o, 2) for o in other]}  (max {max(other):.2f})")
+    print("\n== NOT registered == (play a video, or an unenrolled person)")
+    other = [sv.match(_record(seconds, f"[other {i + 1}/{clips}] a different voice"), RATE)
+             for i in range(clips)]
+    mine = [m[1] for m in mine if m is not None]
+    other = [o[1] for o in other if o is not None]
     if mine and other:
         lo, hi = min(mine), max(other)
+        print(f"\n  registered: {[round(m, 2) for m in mine]}  (min {lo:.2f})")
+        print(f"  others    : {[round(o, 2) for o in other]}  (max {hi:.2f})")
+        rec = round((lo + hi) / 2, 2)
         if lo > hi:
-            rec = round((lo + hi) / 2, 2)
-            print(f"\n  clean separation ✓  recommended speaker_threshold ≈ {rec} "
-                  f"(you ≥ {lo:.2f}, others ≤ {hi:.2f})")
+            print(f"\n  clean separation ✓  recommended speaker_threshold ≈ {rec}")
         else:
-            print(f"\n  overlap ⚠  your min ({lo:.2f}) ≤ others' max ({hi:.2f}). Re-enroll in a "
-                  f"quiet room with more clips, or accept some error at threshold ≈ {round(hi, 2)}.")
+            print(f"\n  overlap ⚠  re-enroll in a quiet room; or set threshold ≈ {round(hi, 2)}.")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Enroll / test your voice for Orrin speaker verification.")
+    ap = argparse.ArgumentParser(description="Enroll / test voices for Orrin speaker verification.")
     ap.add_argument("--check", action="store_true", help="measure separation instead of enrolling")
+    ap.add_argument("--name", default="me", help="name for this voice (default 'me')")
     ap.add_argument("--clips", type=int, default=5, help="number of clips (default 5)")
     ap.add_argument("--seconds", type=float, default=4.0, help="seconds per clip (default 4)")
     args = ap.parse_args()
     if args.check:
         check(max(2, args.clips), args.seconds)
     else:
-        enroll(max(3, args.clips), args.seconds)
+        enroll(args.name, max(3, args.clips), args.seconds)
 
 
 if __name__ == "__main__":

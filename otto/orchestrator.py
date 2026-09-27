@@ -341,6 +341,7 @@ class Orchestrator:
         self._enrolling = False
         self._enroll_clips: list = []
         self._enroll_target = 5
+        self._enroll_name: str | None = None   # captured from the first utterance during enroll
         self._last_greet_ts = 0.0     # last time a greeting was spoken (to debounce repeats)
         # True while we've paused the user's media (music/video) during a wake->listen window,
         # so we know to resume it afterwards.
@@ -674,21 +675,20 @@ class Orchestrator:
                 self.smart_gate.start()
             except Exception as e:
                 print(f"[otto] smart-gate init failed: {e!r}", file=sys.stderr, flush=True)
-        # Speaker verification ("is this MY voice?") — loads the x-vector model in the background
-        # only when enabled AND a voiceprint exists (enroll first). Fail-open until ready.
+        # Speaker verification ("whose voice?") — loads the x-vector model in the background when
+        # enabled. Supports MULTIPLE enrolled voices (family/shared machine). Fail-open until ready.
         if getattr(v.stt, "speaker_verify", False):
             try:
                 from .voice.speaker import SpeakerVerifier
-                vp = v.stt.speaker_voiceprint or str(OTTO_HOME / "voiceprint.npy")
-                sv = SpeakerVerifier(model_id=v.stt.speaker_model, voiceprint_path=vp)
-                if sv.has_voiceprint:
-                    sv.start()
-                    self.speaker = sv
-                    print("[otto] speaker verification enabled", file=sys.stderr, flush=True)
-                else:
-                    print("[otto] speaker_verify on but no voiceprint — run "
-                          "`python -m otto.voice.enroll_speaker` (skipping voice-ID)",
+                d = v.stt.speaker_voiceprints_dir or str(OTTO_HOME / "voiceprints")
+                self.speaker = SpeakerVerifier(model_id=v.stt.speaker_model, voiceprints_dir=d)
+                self.speaker.start()
+                if self.speaker.has_voiceprint:
+                    print(f"[otto] speaker verification enabled; voices: {self.speaker.names}",
                           file=sys.stderr, flush=True)
+                else:
+                    print("[otto] speaker_verify on but no voices enrolled — menu → 'Enroll a "
+                          "voice' (skipping voice-ID until then)", file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[otto] speaker verifier init failed: {e!r}", file=sys.stderr, flush=True)
         # Startup sign-in check: warn right away if Claude's login has lapsed (in the background —
@@ -2156,30 +2156,41 @@ class Orchestrator:
 
     # -- in-app voice enrollment (speaker verification) --------------------
     def start_enrollment(self, target: int = 5) -> None:
-        """Enroll the user's voice through Orrin's own mic (no Terminal): capture the next few
-        utterances into a voiceprint, then turn speaker-ID on live. Menu-triggered."""
+        """Enroll a voice through Orrin's own mic (no Terminal): ask for the person's name, capture a
+        few utterances into a voiceprint under that name, then turn speaker-ID on live. Multiple
+        people can enroll (family/shared machine). Menu-triggered."""
         try:
             from .voice.speaker import SpeakerVerifier
             if self.speaker is None:
-                vp = (self.settings.voice.stt.speaker_voiceprint
-                      or str(OTTO_HOME / "voiceprint.npy"))
+                d = (self.settings.voice.stt.speaker_voiceprints_dir
+                     or str(OTTO_HOME / "voiceprints"))
                 self.speaker = SpeakerVerifier(model_id=self.settings.voice.stt.speaker_model,
-                                               voiceprint_path=vp)
+                                               voiceprints_dir=d)
                 self.speaker.start()
         except Exception as e:
             print(f"[otto] enrollment init failed: {e!r}", file=sys.stderr, flush=True)
             self._voice_out("I couldn't start voice setup right now.")
             return
         self._enroll_clips = []
+        self._enroll_name = None
         self._enroll_target = max(3, int(target))
         self._enrolling = True
-        self._status("listening", "Enrolling your voice…")
-        self._voice_out("Let's set up your voice so I only respond to you. "
-                        "Say a few full sentences naturally — I'll listen for a few.")
+        self._status("listening", "Enrolling a voice…")
+        self._voice_out("Let's set up a voice. First, tell me your name.")
 
     def _enroll_capture(self, text: str) -> None:
-        """Take the just-heard utterance's audio as one enrollment sample."""
-        from .voice.speaker import to_float32_mono
+        """During enrollment, the first utterance is the person's NAME; the rest are voice samples."""
+        from .voice.speaker import _safe_name, to_float32_mono
+        if self._enroll_name is None:                # first utterance = name
+            nm = _safe_name(text)
+            if not nm:
+                self._voice_out("Sorry, what's your name?")
+                return
+            self._enroll_name = nm
+            self.bus.transcript("assistant", f"Enrolling: {nm}", final=True)
+            self._voice_out(f"Thanks {nm}. Now say a few full sentences naturally — "
+                            f"I'll listen for {self._enroll_target}.")
+            return
         pcm = getattr(self.ears, "last_audio", None) if self.ears is not None else None
         audio = to_float32_mono(pcm) if pcm else None
         if audio is None or audio.size < 8000:      # < ~0.5s — too short to be useful
@@ -2193,7 +2204,7 @@ class Orchestrator:
             self._voice_out(f"Got it. {left} more.")
             return
         self._enrolling = False
-        self._status("thinking", "Saving your voiceprint…")
+        self._status("thinking", "Saving voiceprint…")
         if self._loop is not None:
             self._loop.create_task(self._finish_enrollment())
 
@@ -2203,14 +2214,19 @@ class Orchestrator:
                 break
             await asyncio.sleep(0.5)
         clips, self._enroll_clips = self._enroll_clips, []
-        vp = None
+        name = self._enroll_name or "me"
+        saved = None
         try:
             if self.speaker is not None and self._loop is not None:
-                vp = await self._loop.run_in_executor(None, self.speaker.enroll, clips)
+                saved = await self._loop.run_in_executor(
+                    None, self.speaker.enroll, clips, name)
         except Exception as e:
             print(f"[otto] enrollment failed: {e!r}", file=sys.stderr, flush=True)
-        if vp is not None:
-            self._voice_out("All set — I'll focus on your voice from now on.")
+        self._enroll_name = None
+        if saved:
+            print(f"[otto] enrolled voice '{saved}'; voices: {self.speaker.names}",
+                  file=sys.stderr, flush=True)
+            self._voice_out(f"All set, {saved}. I'll recognize your voice now.")
             self._status("idle", "Ready · voice enrolled")
         else:
             self._voice_out("That didn't take — let's try enrolling again later.")
@@ -2318,20 +2334,25 @@ class Orchestrator:
                               need_speaker: bool = False) -> None:
         if gate:
             stt = self.settings.voice.stt
-            # Speaker gate FIRST: if it isn't your voice, drop it whatever it says.
+            # Speaker gate FIRST: match to the closest enrolled voice; accept only a registered
+            # (and active) person above threshold. Logs every decision so it's tunable.
             if need_speaker and self.speaker is not None:
                 audio, sr = self._utterance_audio()
                 if audio is not None:
                     try:
-                        sim = await self._loop.run_in_executor(
-                            None, self.speaker.verify, audio, sr)
+                        m = await self._loop.run_in_executor(None, self.speaker.match, audio, sr)
                     except Exception:
-                        sim = None
-                    thr = float(getattr(stt, "speaker_threshold", 0.75))
-                    if sim is not None and sim < thr:
-                        print(f"[otto] speaker mismatch (sim={sim:.2f}<{thr:.2f}) — not your "
-                              f"voice: {text!r}", file=sys.stderr, flush=True)
-                        return
+                        m = None
+                    if m is not None:
+                        name, sim = m
+                        thr = float(getattr(stt, "speaker_threshold", 0.55))
+                        active = [n.lower() for n in getattr(stt, "speaker_active", []) or []]
+                        ok = sim >= thr and (not active or name.lower() in active)
+                        print(f"[otto] speaker: best={name} sim={sim:.2f} thr={thr:.2f} "
+                              f"active={active or 'all'} -> {'accept' if ok else 'DROP'}: {text!r}",
+                              file=sys.stderr, flush=True)
+                        if not ok:
+                            return
             if use_laya and self.smart_gate is not None:
                 try:
                     score = await self._loop.run_in_executor(None, self.smart_gate.score, text)
