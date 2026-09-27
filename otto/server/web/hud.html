@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orrin</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    -webkit-user-select: none; user-select: none; font: 13px -apple-system, system-ui, sans-serif; }
+  #pill { position: fixed; inset: 6px; display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px 8px 8px; border-radius: 16px; cursor: grab;
+    background: rgba(18,20,26,.82); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border: 1px solid rgba(255,255,255,.10); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  #pill:active { cursor: grabbing; }
+  #avatarWrap { position: relative; width: 40px; height: 40px; flex: 0 0 auto; }
+  #ring { position: absolute; inset: -2px; border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--ring, #38bdf8), 0 0 10px var(--ring, #38bdf8); opacity: .9;
+    transition: box-shadow .3s; }
+  #ring.pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .55 } 50% { opacity: 1 } }
+  #avatar { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%;
+    object-fit: cover; object-position: 50% 22%; background: rgba(255,255,255,.06); }
+  #txt { flex: 1 1 auto; min-width: 0; color: #e8eaf0; }
+  #label { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; opacity: .6; }
+  #line { font-size: 13.5px; line-height: 1.25; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; color: #f4f6fb; margin-top: 1px; }
+  #line.dim { opacity: .5; font-style: italic; }
+  @media (prefers-reduced-motion: reduce) { #ring.pulse { animation: none } }
+</style>
+</head>
+<body>
+  <div id="pill">
+    <div id="avatarWrap"><div id="ring"></div><img id="avatar" alt=""></div>
+    <div id="txt"><div id="label">Orrin</div><div id="line" class="dim">Starting…</div></div>
+  </div>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const pack = params.get("pack") || "orrin";
+  const ring = document.getElementById("ring");
+  const avatar = document.getElementById("avatar");
+  const labelEl = document.getElementById("label");
+  const lineEl = document.getElementById("line");
+  const pill = document.getElementById("pill");
+
+  const RING = { idle:"#38bdf8", listening:"#22c55e", thinking:"#f59e0b", working:"#f59e0b",
+                 speaking:"#a78bfa", signed_out:"#ef4444", sleeping:"#64748b" };
+  const LABEL = { idle:"Ready", listening:"Listening", thinking:"Thinking", working:"Working",
+                  speaking:"Speaking", signed_out:"Signed out", sleeping:"Sleeping" };
+  let manifest = null, state = "idle", revert = null;
+
+  function setAvatar(s) {
+    if (!manifest) return;
+    const f = (manifest.states && (manifest.states[s] || manifest.states.idle));
+    if (f) avatar.src = `characters/${pack}/${f}`;
+  }
+  function setState(s) {
+    s = (s || "idle"); if (s.startsWith("error")) s = "signed_out";
+    state = s;
+    ring.style.setProperty("--ring", RING[s] || RING.idle);
+    ring.classList.toggle("pulse", s === "listening" || s === "speaking" || s === "thinking");
+    labelEl.textContent = LABEL[s] || "Orrin";
+    setAvatar(s);
+    if (!revert) showLine(defaultLine(), true);
+  }
+  function defaultLine() {
+    return ({ listening:"Listening…", thinking:"Working on it…", speaking:"…",
+              sleeping:"Napping — say “Otto”", signed_out:"Sign in to Claude",
+              idle:"Say something…" })[state] || "Say something…";
+  }
+  function showLine(text, dim) {
+    lineEl.textContent = text || "";
+    lineEl.classList.toggle("dim", !!dim);
+  }
+  function heard(text, partial) {           // what Orrin is hearing from you
+    if (!text) return;
+    showLine("“" + text + "”", false);
+    if (revert) clearTimeout(revert);
+    if (!partial) revert = setTimeout(() => { revert = null; showLine(defaultLine(), true); }, 4000);
+    else revert = null;
+  }
+
+  async function boot() {
+    try {
+      manifest = await fetch(`characters/${pack}/character.json`, { cache: "no-store" })
+        .then(r => r.json());
+    } catch { manifest = { states: { idle: "idle.png" } }; }
+    setState("idle");
+    // Drag the whole pill to move the native window (handled natively via the message handler).
+    pill.addEventListener("pointerdown", () => {
+      try { window.webkit.messageHandlers.drag.postMessage(1); } catch {}
+    });
+    connect();
+  }
+  function connect() {
+    let ws; try { ws = new WebSocket(`ws://${location.host}/ws`); } catch { return; }
+    ws.onmessage = (e) => {
+      let ev; try { ev = JSON.parse(e.data); } catch { return; }
+      if (ev.type === "status") setState(ev.state);
+      else if (ev.type === "auth" && ev.signed_out) setState("signed_out");
+      else if (ev.type === "transcript_partial" && ev.role === "user") heard(ev.text, true);
+      else if (ev.type === "transcript_final" && ev.role === "user") heard(ev.text, false);
+    };
+    ws.onclose = () => setTimeout(connect, 2000);
+  }
+  boot();
+})();
+</script>
+</body>
+</html>
