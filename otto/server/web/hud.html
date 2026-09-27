@@ -8,103 +8,116 @@
   :root { color-scheme: light dark; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
     -webkit-user-select: none; user-select: none; font: 13px -apple-system, system-ui, sans-serif; }
-  #pill { position: fixed; inset: 6px; display: flex; align-items: center; gap: 10px;
-    padding: 8px 12px 8px 8px; border-radius: 16px; cursor: grab;
-    background: rgba(18,20,26,.82); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
-    border: 1px solid rgba(255,255,255,.10); box-shadow: 0 8px 24px rgba(0,0,0,.35); }
-  #pill:active { cursor: grabbing; }
-  #avatarWrap { position: relative; width: 40px; height: 40px; flex: 0 0 auto; }
-  #ring { position: absolute; inset: -2px; border-radius: 50%;
-    box-shadow: 0 0 0 2px var(--ring, #38bdf8), 0 0 10px var(--ring, #38bdf8); opacity: .9;
-    transition: box-shadow .3s; }
-  #ring.pulse { animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: .55 } 50% { opacity: 1 } }
-  #avatar { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%;
-    object-fit: cover; object-position: 50% 22%; background: rgba(255,255,255,.06); }
-  #txt { flex: 1 1 auto; min-width: 0; color: #e8eaf0; }
-  #label { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; opacity: .6; }
-  #line { font-size: 13.5px; line-height: 1.25; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; color: #f4f6fb; margin-top: 1px; }
-  #line.dim { opacity: .5; font-style: italic; }
-  @media (prefers-reduced-motion: reduce) { #ring.pulse { animation: none } }
+  #bar { position: fixed; inset: 6px; display: flex; align-items: center; gap: 11px;
+    padding: 0 14px; border-radius: 14px; cursor: grab;
+    background: rgba(17,19,24,.85); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,.09); box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+  #bar:active { cursor: grabbing; }
+
+  /* Equalizer visualizer (procedural, per-state) */
+  .eq { display: flex; align-items: center; gap: 3px; height: 26px; flex: 0 0 auto; }
+  .eq i { width: 3px; height: 100%; border-radius: 2px; background: var(--c, #38bdf8);
+    transform: scaleY(.22); transform-origin: center; box-shadow: 0 0 6px var(--c, #38bdf8); }
+  .eq.on i { animation: eq var(--spd, .95s) ease-in-out infinite alternate; }
+  .eq i:nth-child(1){animation-delay:-.0s} .eq i:nth-child(2){animation-delay:-.28s}
+  .eq i:nth-child(3){animation-delay:-.56s} .eq i:nth-child(4){animation-delay:-.14s}
+  .eq i:nth-child(5){animation-delay:-.42s} .eq i:nth-child(6){animation-delay:-.7s}
+  .eq i:nth-child(7){animation-delay:-.35s}
+  @keyframes eq { from { transform: scaleY(.22) } to { transform: scaleY(1) } }
+  @media (prefers-reduced-motion: reduce) { .eq.on i { animation: none; transform: scaleY(.5) } }
+
+  #txt { flex: 1 1 auto; min-width: 0; }
+  #top { display: flex; align-items: center; gap: 6px; font-size: 10.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: #aeb4c2; }
+  #dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c, #64748b);
+    box-shadow: 0 0 7px var(--c, #64748b); }
+  #line { font-size: 13.5px; line-height: 1.3; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; color: #f2f4f9; margin-top: 2px; }
+  #line.dim { opacity: .5; }
+  #line .who { opacity: .5; }
 </style>
 </head>
 <body>
-  <div id="pill">
-    <div id="avatarWrap"><div id="ring"></div><img id="avatar" alt=""></div>
-    <div id="txt"><div id="label">Orrin</div><div id="line" class="dim">Starting…</div></div>
+  <div id="bar">
+    <div class="eq" id="eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div id="txt">
+      <div id="top"><span id="dot"></span><span id="label">Ready</span></div>
+      <div id="line" class="dim">Say something…</div>
+    </div>
   </div>
 <script>
 (() => {
-  const params = new URLSearchParams(location.search);
-  const pack = params.get("pack") || "orrin";
-  const ring = document.getElementById("ring");
-  const avatar = document.getElementById("avatar");
-  const labelEl = document.getElementById("label");
+  const bar = document.getElementById("bar"), eq = document.getElementById("eq");
+  const dot = document.getElementById("dot"), labelEl = document.getElementById("label");
   const lineEl = document.getElementById("line");
-  const pill = document.getElementById("pill");
 
-  const RING = { idle:"#38bdf8", listening:"#22c55e", thinking:"#f59e0b", working:"#f59e0b",
-                 speaking:"#a78bfa", signed_out:"#ef4444", sleeping:"#64748b" };
-  const LABEL = { idle:"Ready", listening:"Listening", thinking:"Thinking", working:"Working",
-                  speaking:"Speaking", signed_out:"Signed out", sleeping:"Sleeping" };
-  let manifest = null, state = "idle", revert = null;
+  // color + eq behavior + label per state
+  const S = {
+    idle:      { c: "#64748b", on: false, spd: "1.1s", label: "Ready" },
+    listening: { c: "#22c55e", on: true,  spd: ".55s", label: "Listening" },
+    thinking:  { c: "#f59e0b", on: true,  spd: ".9s",  label: "Thinking" },
+    working:   { c: "#f59e0b", on: true,  spd: ".9s",  label: "Working" },
+    speaking:  { c: "#a78bfa", on: true,  spd: ".5s",  label: "Speaking" },
+    sleeping:  { c: "#475569", on: false, spd: "2s",   label: "Sleeping" },
+    signed_out:{ c: "#ef4444", on: false, spd: "1s",   label: "Signed out" },
+  };
+  let state = "idle", hold = null;
 
-  function setAvatar(s) {
-    if (!manifest) return;
-    const f = (manifest.states && (manifest.states[s] || manifest.states.idle));
-    if (f) avatar.src = `characters/${pack}/${f}`;
-  }
-  function setState(s) {
+  function applyState(s) {
     s = (s || "idle"); if (s.startsWith("error")) s = "signed_out";
+    if (!S[s]) s = "idle";
     state = s;
-    ring.style.setProperty("--ring", RING[s] || RING.idle);
-    ring.classList.toggle("pulse", s === "listening" || s === "speaking" || s === "thinking");
-    labelEl.textContent = LABEL[s] || "Orrin";
-    setAvatar(s);
-    if (!revert) showLine(defaultLine(), true);
+    const cfg = S[s];
+    bar.style.setProperty("--c", cfg.c);
+    eq.style.setProperty("--c", cfg.c);
+    eq.style.setProperty("--spd", cfg.spd);
+    eq.classList.toggle("on", cfg.on);
+    labelEl.textContent = cfg.label;
+    if (!hold) setLine(defaultLine(), true);
   }
   function defaultLine() {
-    return ({ listening:"Listening…", thinking:"Working on it…", speaking:"…",
-              sleeping:"Napping — say “Otto”", signed_out:"Sign in to Claude",
-              idle:"Say something…" })[state] || "Say something…";
+    return ({ listening: "Listening…", thinking: "Working on it…", working: "Working…",
+              speaking: "Speaking…", sleeping: "Napping — say “Otto”",
+              signed_out: "Run claude, then /login", idle: "Say something…" })[state] || "";
   }
-  function showLine(text, dim) {
-    lineEl.textContent = text || "";
-    lineEl.classList.toggle("dim", !!dim);
-  }
-  function heard(text, partial) {           // what Orrin is hearing from you
-    if (!text) return;
-    showLine("“" + text + "”", false);
-    if (revert) clearTimeout(revert);
-    if (!partial) revert = setTimeout(() => { revert = null; showLine(defaultLine(), true); }, 4000);
-    else revert = null;
+  function setLine(html, dim) { lineEl.innerHTML = html; lineEl.classList.toggle("dim", !!dim); }
+  function esc(t) { const d = document.createElement("div"); d.textContent = t || ""; return d.innerHTML; }
+  function activity(html, holdMs) {          // transient "what's going on" line
+    if (hold) clearTimeout(hold);
+    setLine(html, false);
+    hold = holdMs ? setTimeout(() => { hold = null; setLine(defaultLine(), true); }, holdMs) : null;
   }
 
-  async function boot() {
-    try {
-      manifest = await fetch(`characters/${pack}/character.json`, { cache: "no-store" })
-        .then(r => r.json());
-    } catch { manifest = { states: { idle: "idle.png" } }; }
-    setState("idle");
-    // Drag the whole pill to move the native window (handled natively via the message handler).
-    pill.addEventListener("pointerdown", () => {
-      try { window.webkit.messageHandlers.drag.postMessage(1); } catch {}
-    });
-    connect();
+  function onEvent(ev) {
+    switch (ev.type) {
+      case "status": applyState(ev.state); break;
+      case "auth": if (ev.signed_out) applyState("signed_out"); break;
+      case "transcript_partial":
+        if (ev.role === "user") activity('<span class="who">you</span> ' + esc(ev.text), 0); break;
+      case "transcript_final":
+        if (ev.role === "user") activity('<span class="who">you</span> ' + esc(ev.text), 5000);
+        else activity(esc(ev.text), 6000); break;
+      case "assistant_delta":
+        if (ev.text) { const cur = lineEl.textContent || ""; activity(esc((cur + ev.text).slice(-140)), 0); } break;
+      case "tool_use":
+        activity('<span class="who">→</span> ' + esc(ev.detail ? ev.name + " · " + ev.detail : ev.name), 0); break;
+      case "research":
+        if (ev.active) activity('<span class="who">researching</span> ' + esc(ev.name || ""), 0);
+        else if (!hold) setLine(defaultLine(), true);
+        break;
+    }
   }
+
+  bar.addEventListener("pointerdown", () => {
+    try { window.webkit.messageHandlers.drag.postMessage(1); } catch {}
+  });
   function connect() {
     let ws; try { ws = new WebSocket(`ws://${location.host}/ws`); } catch { return; }
-    ws.onmessage = (e) => {
-      let ev; try { ev = JSON.parse(e.data); } catch { return; }
-      if (ev.type === "status") setState(ev.state);
-      else if (ev.type === "auth" && ev.signed_out) setState("signed_out");
-      else if (ev.type === "transcript_partial" && ev.role === "user") heard(ev.text, true);
-      else if (ev.type === "transcript_final" && ev.role === "user") heard(ev.text, false);
-    };
+    ws.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch { return; } onEvent(ev); };
     ws.onclose = () => setTimeout(connect, 2000);
   }
-  boot();
+  applyState("idle");
+  connect();
 })();
 </script>
 </body>
