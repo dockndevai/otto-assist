@@ -37,3 +37,6 @@ rec/
 
 # built mobile APK deliverables
 /Orrin-mobile-*.apk
+
+# Playwright MCP runtime dir (browser tooling)
+.playwright-mcp/
