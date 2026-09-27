@@ -343,6 +343,11 @@ class VoiceConfig(BaseModel):
     # briefing; fires at most once per calendar day.
     morning_brief: bool = True
     morning_brief_hour: int = 9               # local hour (0-23) the brief becomes eligible
+    # Floating on-screen character: show Orrin as a small always-on-top character panel on the
+    # desktop that reacts to voice state (idle/listening/thinking/speaking). Off by default; toggle
+    # from the menu bar. The character is a swappable pack (voice.character) — see CHARACTERS.md.
+    floating_character: bool = False
+    character: str = "orrin"          # character pack name (bundled, or OTTO_HOME/characters/<name>)
     # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
     # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
     auth_preflight: bool = True

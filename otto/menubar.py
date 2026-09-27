@@ -191,6 +191,8 @@ class OttoApp(rumps.App):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
         self._dash = None       # in-app dashboard window (lazy)
+        self._float = None      # floating on-screen character panel (lazy)
+        self._char_shown = False   # whether we've auto-shown the character this launch
         self._shutting_down = False   # set on intentional Quit/Restart so the supervisor stops
 
         self.status_item = rumps.MenuItem("Starting…")
@@ -204,6 +206,7 @@ class OttoApp(rumps.App):
             self.status_item,
             None,
             rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
+            rumps.MenuItem("Show Orrin (floating)", callback=self.toggle_character),
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -421,6 +424,12 @@ class OttoApp(rumps.App):
         except Exception:
             if not self._has_icon:
                 self.title = "Orrin"
+        # Auto-show the floating character once the server is up (if enabled). One-shot per launch;
+        # the panel can still be toggled from the menu regardless of this default.
+        if (not self._char_shown and self._server is not None
+                and getattr(self.settings.voice, "floating_character", False)):
+            self._char_shown = True
+            self._show_character()
         # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
         # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
         # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
@@ -506,6 +515,25 @@ class OttoApp(rumps.App):
             print(f"[otto] in-app dashboard unavailable, using browser: {e}",
                   file=sys.stderr, flush=True)
         webbrowser.open(self.url + ("/" + suffix if suffix else ""))
+
+    def toggle_character(self, _) -> None:
+        self._show_character(toggle=True)
+
+    def _show_character(self, toggle: bool = False) -> None:
+        """Show/hide the floating on-screen Orrin character panel (WKWebView)."""
+        try:
+            from .webview import FloatingCharacter, available
+            if not available():
+                return
+            if self._float is None:
+                pack = getattr(self.settings.voice, "character", "orrin") or "orrin"
+                self._float = FloatingCharacter(f"{self.url}/character?pack={pack}")
+            if toggle:
+                self._float.toggle()
+            else:
+                self._float.show()
+        except Exception as e:
+            print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted
