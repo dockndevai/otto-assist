@@ -3025,6 +3025,48 @@ def test_is_auth_error_detection():
         assert not _is_auth_error(t), t
 
 
+def test_parse_auth_status():
+    from otto.orchestrator import _parse_auth_status
+    assert _parse_auth_status('{"loggedIn": true, "email": "x"}', "") is True
+    assert _parse_auth_status('{"loggedIn": false}', "") is False
+    assert _parse_auth_status("", "Not logged in · Please run /login") is False
+    assert _parse_auth_status("total garbage", "") is None
+
+
+def test_auth_preflight_warns_only_when_signed_out(monkeypatch):
+    """#68: at startup warn if signed out; stay silent when signed in or the check is inconclusive."""
+    import otto.orchestrator as orch_mod
+
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.settings.voice.auth_preflight = True
+        warned = []
+        orch._warn_signed_out = lambda: warned.append(True)
+        orch._status = lambda *a, **k: None
+
+        monkeypatch.setattr(orch_mod, "_claude_logged_in", lambda: False)
+        await orch._auth_preflight()
+        assert warned == [True]                      # signed out → warned
+
+        warned.clear()
+        monkeypatch.setattr(orch_mod, "_claude_logged_in", lambda: True)
+        await orch._auth_preflight()
+        assert warned == []                          # signed in → silent
+
+        monkeypatch.setattr(orch_mod, "_claude_logged_in", lambda: None)
+        await orch._auth_preflight()
+        assert warned == []                          # inconclusive → silent
+
+        # disabled → never checks
+        warned.clear()
+        orch.settings.voice.auth_preflight = False
+        monkeypatch.setattr(orch_mod, "_claude_logged_in", lambda: False)
+        await orch._auth_preflight()
+        assert warned == []
+    asyncio.run(run())
+
+
 # -- #67: headless dashboard smoke test (opt-in — needs chromium; keeps the fast suite fast) ---
 
 def test_dashboard_smoke_optional():
