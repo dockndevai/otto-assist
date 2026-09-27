@@ -64,7 +64,7 @@ def test_voice_tools_build():
 
 def test_defers_to_claude_config():
     # ClaudeBrain injects only voice manners; no custom persona/subagents/connectors.
-    assert "Claude Code" in VOICE_WRAPPER and "text-to-speech" in VOICE_WRAPPER
+    assert "Claude Code" in VOICE_WRAPPER and "spoken reply" in VOICE_WRAPPER
     # Coding work should stay in the chat, not be forced into a narrated canvas.
     assert "render_canvas is OPTIONAL" in VOICE_WRAPPER
     import otto.brain as pkg
@@ -2378,7 +2378,7 @@ def test_voice_wrapper_is_astra_style():
     assert "proactive" in low and "decisive" in low          # Astra-style manners
     assert "lead with the answer" in low
     assert "render_canvas is OPTIONAL" in VOICE_WRAPPER       # required invariants kept
-    assert "text-to-speech" in VOICE_WRAPPER
+    assert "spoken reply" in VOICE_WRAPPER
 
 
 def test_augment_path_prepends_tool_dirs(monkeypatch, tmp_path):
