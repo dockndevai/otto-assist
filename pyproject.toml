@@ -44,6 +44,11 @@ neural-voice = [
     "kokoro-onnx>=0.4",              # Kokoro TTS on onnxruntime (bundled espeak-ng)
     "soundfile>=0.12",               # write synthesized audio to a WAV for afplay
 ]
+# Faster transcription on Apple Silicon (voice.stt.transcriber: "mlx"). Falls back to
+# faster-whisper automatically when absent, so this extra is optional and macOS/arm64 only.
+mlx-stt = [
+    "mlx-whisper>=0.4",              # Whisper on the Apple-Silicon GPU (MLX) — ~5-7x faster
+]
 
 [project.scripts]
 otto = "run:main"

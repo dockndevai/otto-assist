@@ -2902,3 +2902,39 @@ def test_speaker_gate_drops_other_voice():
         await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
         assert submitted == ["open chrome"]
     asyncio.run(run())
+
+
+# -- #63: MLX Whisper transcriber ---------------------------------------------
+
+def test_mlx_transcriber_wiring_and_transcribe():
+    """transcriber='mlx' enables the MLX path + the audio tap; _transcribe_mlx feeds the captured
+    PCM to mlx-whisper with the right model/language and returns the stripped text. faster-whisper
+    (default) leaves both off."""
+    import numpy as np
+    from otto.voice.stt import Ears
+    noop = lambda *a, **k: None
+
+    s = load_settings()
+    s.voice.stt.transcriber = "mlx"
+    ears = Ears(s, None, noop, noop, noop, noop)
+    assert ears._use_mlx is True and ears._capture_audio is True
+
+    class _FakeMLX:
+        def __init__(self): self.calls = []
+        def transcribe(self, audio, path_or_hf_repo=None, language=None):
+            self.calls.append((len(audio), path_or_hf_repo, language))
+            return {"text": "  open chrome  "}
+
+    ears._mlx = _FakeMLX(); ears._mlx_model = "mlx-community/whisper-small.en-mlx"
+    ears._mlx_lang = "en"
+    pcm = (np.ones(16000, dtype=np.int16) * 100).tobytes()
+    assert ears._transcribe_mlx(pcm) == "open chrome"
+    n, model, lang = ears._mlx.calls[0]
+    assert model == "mlx-community/whisper-small.en-mlx" and lang == "en" and n == 16000
+    # empty / too-short audio → no transcription attempt
+    assert ears._transcribe_mlx(b"") == ""
+    assert ears._transcribe_mlx((np.ones(100, dtype=np.int16)).tobytes()) == ""
+
+    # default (faster-whisper): MLX path and tap both off
+    ears2 = Ears(load_settings(), None, noop, noop, noop, noop)
+    assert ears2._use_mlx is False and ears2._capture_audio is False
