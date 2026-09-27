@@ -44,6 +44,15 @@ def _resolve_lang(voice, stt):
     return ml, v                                  # "hi", "ta", … a Whisper language code
 
 
+def pick_mlx_model(stt, voice_language) -> str:
+    """Choose the MLX Whisper model from the user's configured language (NOT the resolved whisper
+    code — Hinglish resolves to whisper-lang "en" but still needs the multilingual model). English
+    family → the small english model; everything else (hinglish/hi/ta/auto) → the multilingual turbo."""
+    vl = (voice_language or "en").lower()
+    is_en = vl in ("en", "", "en-in")
+    return stt.mlx_model if is_en else stt.mlx_multilingual_model
+
+
 class _PipeErrorWatch(logging.Handler):
     """Watches the root logger for RealtimeSTT's dead-pipe errors ("Error receiving data from
     connection" / EOFError). When the recorder's worker dies the parent floods these; counting
@@ -374,8 +383,9 @@ class Ears:
         try:
             import mlx_whisper
             self._mlx = mlx_whisper
-            is_en = (lang or "en").lower().startswith("en")
-            self._mlx_model = cfg.mlx_model if is_en else cfg.mlx_multilingual_model
+            # Model by CONFIGURED language (hinglish → multilingual turbo even though its whisper
+            # code is pinned "en"); transcribe language is the resolved whisper code.
+            self._mlx_model = pick_mlx_model(cfg, getattr(self.settings.voice, "language", "en"))
             self._mlx_lang = None if (not lang or lang == "auto") else lang
             self._mlx_fails = 0
             print(f"[otto] MLX transcriber enabled ({self._mlx_model}, lang={self._mlx_lang})",
