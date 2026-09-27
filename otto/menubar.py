@@ -552,8 +552,7 @@ class OttoApp(rumps.App):
             if not available():
                 return
             if self._float is None:
-                pack = getattr(self.settings.voice, "character", "orrin") or "orrin"
-                self._float = FloatingCharacter(f"{self.url}/hud?pack={pack}")
+                self._float = FloatingCharacter(f"{self.url}/hud")
             if toggle:
                 self._float.toggle()
             else:

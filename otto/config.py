@@ -346,14 +346,9 @@ class VoiceConfig(BaseModel):
     # Floating on-screen character: show Orrin as a small always-on-top character panel on the
     # desktop that reacts to voice state (idle/listening/thinking/speaking). Off by default; toggle
     # from the menu bar. The character is a swappable pack (voice.character) — see CHARACTERS.md.
+    # Floating HUD: a small draggable always-on-top pill (Wispr-Flow style) showing Orrin's state +
+    # a live one-line readout of what it's hearing/doing. Toggle from the menu bar.
     floating_character: bool = False
-    character: str = "orrin"          # character pack name (bundled, or OTTO_HOME/characters/<name>)
-    # Autonomy: let the character wander the screen on its own and react to what Orrin's doing
-    # (idle drift, busier movement while it thinks/researches, settling while it talks to you,
-    # napping in watch mode). Tunable so you control the movement.
-    character_roam: bool = True
-    character_roam_interval: float = 14.0   # ~seconds between wanders when idle (busier = sooner)
-    character_speed: float = 1.0            # glide speed multiplier (higher = faster moves)
     # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
     # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
     auth_preflight: bool = True

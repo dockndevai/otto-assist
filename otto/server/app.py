@@ -20,11 +20,6 @@ from ..sessions import list_sessions
 from .events import EventBus
 
 WEB_DIR = Path(__file__).parent / "web"
-
-# A single path segment for character pack/file names: starts alphanumeric (no leading dot, so no
-# ".."/traversal), then letters/digits/dot/dash/underscore. Combined with must-exist-under-base.
-import re as _re_names  # noqa: E402
-_SAFE_NAME = _re_names.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _log = logging.getLogger("otto.server")
 
 
@@ -221,27 +216,9 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def settings_page() -> FileResponse:
         return FileResponse(WEB_DIR / "settings.html")
 
-    @app.get("/character")
-    async def character_page() -> FileResponse:
-        return FileResponse(WEB_DIR / "character.html")
-
     @app.get("/hud")
     async def hud_page() -> FileResponse:
         return FileResponse(WEB_DIR / "hud.html")
-
-    @app.get("/characters/{pack}/{file}")
-    async def character_asset(pack: str, file: str):
-        # Serve a character pack's assets. User packs in OTTO_HOME/characters/<pack> override the
-        # bundled ones, so anyone can drop in their own character (see CHARACTERS.md). Names are
-        # sanitized (single path segment, no traversal).
-        from ..config import OTTO_HOME
-        if not (_SAFE_NAME.match(pack) and _SAFE_NAME.match(file)):
-            return JSONResponse({"error": "bad name"}, status_code=400)
-        for base in (OTTO_HOME / "characters", WEB_DIR / "characters"):
-            f = base / pack / file
-            if f.is_file():
-                return FileResponse(f)
-        return JSONResponse({"error": "not found"}, status_code=404)
 
     # -- mobile pairing ---------------------------------------------------
     # What the phone needs to connect: the token + reachable addresses. Only served to a

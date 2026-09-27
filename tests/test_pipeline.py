@@ -3062,15 +3062,6 @@ def test_in_app_voice_enrollment_builds_voiceprint():
     asyncio.run(run())
 
 
-def test_character_pack_name_sanitizer():
-    """The /characters/<pack>/<file> route only accepts safe single segments (no traversal)."""
-    from otto.server.app import _SAFE_NAME
-    for ok in ("orrin", "idle.png", "character.json", "my-avatar_2", "model.vrm"):
-        assert _SAFE_NAME.match(ok), ok
-    for bad in ("..", "../x", "a/b", "", ".hidden", "a b", "x/../y"):
-        assert not _SAFE_NAME.match(bad), bad
-
-
 def test_parse_auth_status():
     from otto.orchestrator import _parse_auth_status
     assert _parse_auth_status('{"loggedIn": true, "email": "x"}', "") is True
