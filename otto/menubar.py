@@ -43,6 +43,7 @@ _STATE_LABELS = {
     "thinking": "● Thinking…",
     "speaking": "● Speaking…",
     "working": "● Working…",
+    "sleeping": "☾ Sleeping — say “Otto”",
 }
 
 
@@ -58,6 +59,7 @@ def _icon(name: str) -> str | None:
 _STATE_ICON = {
     "starting": "idle", "idle": "idle", "listening": "listening",
     "thinking": "thinking", "working": "thinking", "speaking": "speaking",
+    "sleeping": "idle",
 }
 
 
@@ -202,11 +204,13 @@ class OttoApp(rumps.App):
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
+        self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
         self.menu = [
             self.status_item,
             None,
             rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
             rumps.MenuItem("Show Orrin (floating)", callback=self.toggle_character),
+            self.watch_item,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -430,6 +434,12 @@ class OttoApp(rumps.App):
                 and getattr(self.settings.voice, "floating_character", False)):
             self._char_shown = True
             self._show_character()
+        # Reflect watch-mode (nap) state in the menu label.
+        try:
+            self.watch_item.title = ("Wake Orrin" if getattr(self.orch, "_sleeping", False)
+                                     else "Watch mode (nap)")
+        except Exception:
+            pass
         # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
         # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
         # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
@@ -534,6 +544,17 @@ class OttoApp(rumps.App):
                 self._float.show()
         except Exception as e:
             print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
+
+    def toggle_watch(self, _) -> None:
+        """Watch mode: nap (ignore everything but the wake word) so a match/movie/call doesn't
+        trigger Orrin — and the character visibly sleeps. Toggle back to wake it."""
+        try:
+            if getattr(self.orch, "_sleeping", False):
+                self.orch.wake_now()
+            else:
+                self.orch.sleep_now()
+        except Exception as e:
+            print(f"[otto] watch-mode toggle failed: {e}", file=sys.stderr, flush=True)
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted

@@ -16,6 +16,16 @@
     animation: bob 4.2s ease-in-out infinite; transform-origin: 50% 100%; }
   #char.speaking { animation: bob 3s ease-in-out infinite; }
   #char.listening { animation: bob 2.4s ease-in-out infinite; }
+  #char.sleeping { animation: bob 6s ease-in-out infinite; }   /* slow, calm breathing */
+  /* "Zzz" while napping (watch mode) */
+  #zzz { position: absolute; top: 6%; left: 62%; font: 700 22px/1 -apple-system, system-ui, sans-serif;
+    color: #cbd5e1; opacity: 0; pointer-events: none; }
+  #zzz.on { opacity: 1; }
+  #zzz span { display: inline-block; opacity: 0; animation: zfloat 3s ease-in-out infinite; }
+  #zzz span:nth-child(2) { animation-delay: .6s; font-size: .8em; }
+  #zzz span:nth-child(3) { animation-delay: 1.2s; font-size: .64em; }
+  @keyframes zfloat { 0% { opacity: 0; transform: translate(0, 6px) } 30% { opacity: .9 }
+    100% { opacity: 0; transform: translate(10px, -22px) } }
   #char img { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
     height: 100%; width: auto; opacity: 0; transition: opacity .12s linear;
     image-rendering: -webkit-optimize-contrast; }
@@ -40,9 +50,11 @@
     <button data-s="listening">listening</button>
     <button data-s="thinking">thinking</button>
     <button data-s="speaking">speaking</button>
+    <button data-s="sleeping">sleeping</button>
     <button data-s="signed_out">signed_out</button>
   </div>
-  <div id="stage"><div id="char"><div id="halo"></div></div></div>
+  <div id="stage"><div id="char"><div id="halo"></div>
+    <div id="zzz"><span>z</span><span>z</span><span>z</span></div></div></div>
 <script>
 (() => {
   const params = new URLSearchParams(location.search);
@@ -50,7 +62,8 @@
   const charEl = document.getElementById("char");
   const haloEl = document.getElementById("halo");
   const GLOW = { idle:"#38bdf8", listening:"#22c55e", thinking:"#f59e0b",
-                 working:"#f59e0b", speaking:"#a78bfa", signed_out:"#ef4444" };
+                 working:"#f59e0b", speaking:"#a78bfa", signed_out:"#ef4444", sleeping:"#64748b" };
+  const zzzEl = document.getElementById("zzz");
 
   const imgs = {};                 // key -> <img>
   let manifest = null, state = "idle", blinkTimer = null, mouthTimer = null;
@@ -91,9 +104,10 @@
     if (!manifest.states[s]) s = (s === "starting") ? "idle" : (manifest.states[s] ? s : "idle");
     state = s;
     stopTimers();
-    charEl.className = (s === "speaking" || s === "listening") ? s : "";
+    charEl.className = ["speaking", "listening", "sleeping"].includes(s) ? s : "";
+    zzzEl.classList.toggle("on", s === "sleeping");
     haloEl.style.setProperty("--glow", GLOW[s] || GLOW.idle);
-    haloEl.style.opacity = s === "idle" ? ".4" : ".7";
+    haloEl.style.opacity = s === "idle" ? ".4" : (s === "sleeping" ? ".2" : ".7");
     if (s === "speaking" && manifest.mouth) {
       let open = false;
       show(manifest.mouth.closed);
@@ -103,13 +117,14 @@
       }, 150);
     } else {
       show(frameFor(s));
-      scheduleBlink();
+      if (s !== "sleeping") scheduleBlink();   // asleep = eyes already closed, no blink
     }
   }
   window.orrinSetState = setState;   // host/demo hook
 
   async function boot() {
-    manifest = await fetch(`characters/${pack}/character.json`).then(r => r.json());
+    manifest = await fetch(`characters/${pack}/character.json`,
+                           { cache: "no-store" }).then(r => r.json());
     // Preload every frame the manifest can show.
     const files = new Set(Object.values(manifest.states || {}));
     if (manifest.blink) files.add(manifest.blink);

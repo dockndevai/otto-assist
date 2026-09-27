@@ -2123,15 +2123,28 @@ class Orchestrator:
             return True
         return any(p in core for p in self._STRONG_SLEEP)
 
-    def _enter_sleep(self) -> None:
-        """Pause hands-free listening until the wake word. The mic stays on for the wake word."""
+    def _enter_sleep(self, *, speak: bool = True) -> None:
+        """Pause hands-free listening until the wake word. The mic stays on for the wake word.
+        Publishes the 'sleeping' state so the on-screen character visibly naps (watch mode)."""
         self._sleeping = True
         self._cancel_await()
         self._unduck_media()   # resume any media we paused before going quiet
         ack = "Okay, going quiet. Say the wake word when you need me."
         self.bus.transcript("assistant", ack, final=True)
-        self._status("idle", "Sleeping — say the wake word")
-        self._voice_out(ack)
+        self._status("sleeping", "Sleeping — say the wake word")
+        if speak:
+            self._voice_out(ack)
+
+    def sleep_now(self) -> None:
+        """Put Orrin to sleep (watch mode) from the menu bar — silent."""
+        if not self._sleeping:
+            self._enter_sleep(speak=False)
+
+    def wake_now(self) -> None:
+        """Wake Orrin from the menu bar — silent; back to hands-free listening."""
+        if self._sleeping:
+            self._sleeping = False
+            self._status("idle", "Ready")
 
     # -- voice command dispatch (refine + dictation) ----------------------
     def _dispatch_voice_command(self, text: str, deliberate: bool = False,
