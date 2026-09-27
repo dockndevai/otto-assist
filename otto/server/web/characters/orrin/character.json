@@ -9,7 +9,8 @@
     "thinking": "thinking.png",
     "working": "thinking.png",
     "speaking": "idle.png",
-    "signed_out": "thinking.png"
+    "signed_out": "thinking.png",
+    "sleeping": "sleeping.png"
   },
   "blink": "blink.png",
   "mouth": { "closed": "idle.png", "open": "talking.png" }
