@@ -2169,9 +2169,9 @@ def test_spoken_reply_is_capped():
     orch.mouth = M()
     orch._voice_out = lambda t: spoken.append(t)   # capture what would be spoken
     orch._spoken_chars = 0; orch._speak_done = False
-    orch._speak_capped("This first sentence is a concise answer.")
-    orch._speak_capped("Then a second, much longer sentence that would blow past the spoken cap entirely.")
-    orch._speak_capped("And a third that must never be spoken.")
+    orch._emit_speech("This first sentence is a concise answer.")
+    orch._emit_speech("Then a second, much longer sentence that would blow past the spoken cap entirely.")
+    orch._emit_speech("And a third that must never be spoken.")
     joined = " ".join(spoken)
     assert "concise answer" in joined
     assert "on screen" not in joined.lower()          # no more filler closer
