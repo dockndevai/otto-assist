@@ -10,6 +10,8 @@ Falls back gracefully: if WebKit/PyObjC isn't available, the caller opens a brow
 
 from __future__ import annotations
 
+import sys
+
 
 def available() -> bool:
     try:
@@ -126,6 +128,9 @@ class FloatingCharacter:
         self.corner = "br"      # br|bl|tr|tl
         self._roam_countdown = 6.0     # seconds until the next autonomous wander
         self._last_state = None        # last visual state pushed to the page
+        self._anim_timer = None        # step-glide timer
+        self._glide_from = self._glide_to = None
+        self._glide_i = self._glide_steps = 0
 
     def toggle(self) -> None:
         if self.window is not None and self.window.isVisible():
@@ -183,16 +188,20 @@ class FloatingCharacter:
             pass
 
     # -- autonomy: react to state + wander the screen ---------------------
-    def set_state(self, s: str) -> None:
-        """Push a visual state to the character page (idle/listening/thinking/speaking/sleeping)."""
-        if self.webview is None or s == self._last_state:
+    def _eval(self, js: str) -> None:
+        if self.webview is None:
             return
-        self._last_state = s
         try:
-            self.webview.evaluateJavaScript_completionHandler_(
-                f"window.orrinSetState && window.orrinSetState({s!r})", None)
+            self.webview.evaluateJavaScript_completionHandler_(js, None)
         except Exception:
             pass
+
+    def set_state(self, s: str) -> None:
+        """Push a visual state to the character page (idle/listening/thinking/speaking/sleeping)."""
+        if s == self._last_state:
+            return
+        self._last_state = s
+        self._eval(f"window.orrinSetState && window.orrinSetState({s!r})")
 
     def tick(self, dt: float, *, mode: str, char_state: str, roam: bool,
              interval: float, speed: float) -> None:
@@ -217,7 +226,7 @@ class FloatingCharacter:
         glide duration in seconds (0 if it couldn't move)."""
         import random as _r
 
-        from Cocoa import NSAnimationContext, NSMakePoint, NSScreen
+        from Cocoa import NSScreen
         try:
             vf = NSScreen.mainScreen().visibleFrame()
         except Exception:
@@ -230,26 +239,62 @@ class FloatingCharacter:
         if x1 <= x0 or y1 <= y0:
             return 0.0
         cur = self.window.frame().origin
-        # Busy = bigger, snappier hops; idle = gentle drift near where it is.
-        if busy:
-            tx, ty = _r.uniform(x0, x1), _r.uniform(y0, y1)
-        else:
-            span_x, span_y = (x1 - x0) * 0.35, (y1 - y0) * 0.35
-            tx = min(x1, max(x0, cur.x + _r.uniform(-span_x, span_x)))
-            ty = min(y1, max(y0, cur.y + _r.uniform(-span_y, span_y)))
+        # Pick a target a real distance away (in a random direction) so the move is clearly visible,
+        # clamped on-screen. Busy = farther hops.
+        import math
+        lo, hi = (300, 900) if busy else (170, 520)
+        ang = _r.uniform(0, 2 * math.pi)
+        d = _r.uniform(lo, hi)
+        tx = min(x1, max(x0, cur.x + math.cos(ang) * d))
+        ty = min(y1, max(y0, cur.y + math.sin(ang) * d))
         dist = ((tx - cur.x) ** 2 + (ty - cur.y) ** 2) ** 0.5
-        dur = max(1.2, min(6.0, dist / (180.0 * max(0.3, speed)))) * (0.7 if busy else 1.0)
+        dur = max(0.8, min(5.0, dist / (260.0 * max(0.3, speed)))) * (0.7 if busy else 1.0)
+        self._start_glide(cur.x, cur.y, tx, ty, dur)
+        return dur
+
+    def _start_glide(self, fx, fy, tx, ty, dur) -> None:
+        """Glide the panel from (fx,fy) to (tx,ty) over `dur` by stepping setFrameOrigin ~33x/sec —
+        reliable for a borderless click-through panel (the NSWindow animator doesn't move it)."""
+        from Cocoa import NSTimer
+        self._glide_from = (fx, fy)
+        self._glide_to = (tx, ty)
+        self._glide_steps = max(6, int(dur / 0.03))
+        self._glide_i = 0
+        self._eval(f"window.orrinWalk && window.orrinWalk({1 if tx >= fx else -1})")  # waddle
+        if self._anim_timer is not None:
+            try:
+                self._anim_timer.invalidate()
+            except Exception:
+                pass
         try:
-            NSAnimationContext.beginGrouping()
-            NSAnimationContext.currentContext().setDuration_(dur)
-            self.window.animator().setFrameOrigin_(NSMakePoint(tx, ty))
-            NSAnimationContext.endGrouping()
+            self._anim_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                0.03, True, lambda _t: self._glide_step())
         except Exception:
+            # Fallback: jump directly if block timers aren't available.
+            from Cocoa import NSMakePoint
             try:
                 self.window.setFrameOrigin_(NSMakePoint(tx, ty))
             except Exception:
                 pass
-        return dur
+
+    def _glide_step(self) -> None:
+        from Cocoa import NSMakePoint
+        self._glide_i += 1
+        p = min(1.0, self._glide_i / max(1, self._glide_steps))
+        e = p * p * (3 - 2 * p)                          # smoothstep ease
+        fx, fy = self._glide_from
+        tx, ty = self._glide_to
+        try:
+            self.window.setFrameOrigin_(NSMakePoint(fx + (tx - fx) * e, fy + (ty - fy) * e))
+        except Exception:
+            pass
+        if p >= 1.0 and self._anim_timer is not None:
+            try:
+                self._anim_timer.invalidate()
+            except Exception:
+                pass
+            self._anim_timer = None
+            self._eval("window.orrinWalk && window.orrinWalk(0)")   # stop waddling
 
     def _build(self) -> None:
         from Cocoa import (

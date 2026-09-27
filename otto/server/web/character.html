@@ -17,6 +17,13 @@
   #char.speaking { animation: bob 3s ease-in-out infinite; }
   #char.listening { animation: bob 2.4s ease-in-out infinite; }
   #char.sleeping { animation: bob 6s ease-in-out infinite; }   /* slow, calm breathing */
+  /* Walking waddle while roaming — reads as walking for a front-facing character (no leg frames). */
+  #char.walking { animation: waddle .36s ease-in-out infinite !important; }
+  @keyframes waddle {
+    0%   { transform: translateY(0)     rotate(-3.5deg) scaleX(var(--face,1)); }
+    50%  { transform: translateY(-6%)   rotate(3.5deg)  scaleX(var(--face,1)); }
+    100% { transform: translateY(0)     rotate(-3.5deg) scaleX(var(--face,1)); }
+  }
   /* "Zzz" while napping (watch mode) */
   #zzz { position: absolute; top: 6%; left: 62%; font: 700 22px/1 -apple-system, system-ui, sans-serif;
     color: #cbd5e1; opacity: 0; pointer-events: none; }
@@ -104,6 +111,11 @@
     show(frameFor(s));
   }
   window.orrinSetState = setState;   // host/demo hook
+  // Walking waddle while the native panel glides. dir: -1 left, 1 right, 0 stop.
+  window.orrinWalk = (dir) => {
+    if (dir) charEl.style.setProperty("--face", dir < 0 ? "-1" : "1");
+    charEl.classList.toggle("walking", !!dir);
+  };
 
   async function boot() {
     manifest = await fetch(`characters/${pack}/character.json`,
