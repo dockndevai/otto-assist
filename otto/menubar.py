@@ -128,6 +128,16 @@ _OTTO_PROC_MARKERS = ("personal-assist/.venv", "Orrin.app/Contents/MacOS",
                       "Application Support/Otto/venv", "otto-assist")
 
 
+def _is_otto_worker(cmd: str) -> bool:
+    """True if this process command line is one of OUR RealtimeSTT multiprocessing workers.
+    The EXECUTABLE (argv[0]) must be the otto python / Orrin binary, so a shell/editor/grep that
+    merely mentions the path isn't matched."""
+    if "multiprocessing" not in cmd:
+        return False
+    exe = cmd.split(" ", 1)[0]
+    return any(m in exe for m in _OTTO_PROC_MARKERS)
+
+
 def _sweep_orphan_workers() -> int:
     """Kill leftover RealtimeSTT multiprocessing workers from a prior crashed/duplicate run.
     Safe to call before we spawn our own recorder — every match is an orphan by then. Returns
@@ -148,12 +158,7 @@ def _sweep_orphan_workers() -> int:
             pid = int(pid_s)
         except ValueError:
             continue
-        if pid == me or "multiprocessing" not in cmd:
-            continue
-        # Only OUR STT workers: the EXECUTABLE (argv[0]) must be the otto python / Orrin binary,
-        # so a shell/editor/grep that merely mentions the path isn't matched.
-        exe = cmd.split(" ", 1)[0]
-        if not any(m in exe for m in _OTTO_PROC_MARKERS):
+        if pid == me or not _is_otto_worker(cmd):
             continue
         try:
             os.kill(pid, signal.SIGKILL)
@@ -161,8 +166,7 @@ def _sweep_orphan_workers() -> int:
         except Exception:
             pass
     if killed:
-        print(f"[otto] swept {killed} orphan STT worker(s) before start",
-              file=sys.stderr, flush=True)
+        print(f"[otto] swept {killed} orphan STT worker(s)", file=sys.stderr, flush=True)
     return killed
 
 
@@ -353,8 +357,15 @@ class OttoApp(rumps.App):
             now = time.monotonic()
             crashes = [t for t in crashes if now - t < 120.0] + [now]
             if len(crashes) >= 4:                 # crash-looping → a fresh process is cleaner
-                print("[otto] backend crash-looping — exiting for a clean relaunch (launchd)",
-                      file=sys.stderr, flush=True)
+                # Kill our STT worker children FIRST — otherwise they reparent to launchd and the
+                # NEXT launch collides with them on the mic (the recurring "not listening" flood).
+                try:
+                    _sweep_orphan_workers()
+                except Exception:
+                    pass
+                print("[otto] backend crash-looping — exiting for a clean relaunch. If Orrin was "
+                      "started from the source launcher (not launchd), relaunch it "
+                      "(~/Launch Orrin.command).", file=sys.stderr, flush=True)
                 os._exit(1)
             backoff = min(10.0, 2.0 ** len(crashes))
             print(f"[otto] restarting backend in {backoff:.0f}s…", file=sys.stderr, flush=True)
@@ -371,6 +382,10 @@ class OttoApp(rumps.App):
                 self.orch._external_ptt = True
             except Exception as e:
                 print(f"[otto] could not rebuild orchestrator: {e!r}", file=sys.stderr, flush=True)
+                try:
+                    _sweep_orphan_workers()
+                except Exception:
+                    pass
                 os._exit(1)
 
     async def _backend_main(self) -> None:

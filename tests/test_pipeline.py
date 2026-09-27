@@ -2995,3 +2995,18 @@ def test_streaming_tts_speaks_first_sentence_then_rest():
     assert out == []                                            # nothing spoken until flush
     orch2._flush_speech()
     assert [x.strip() for x in out] == ["Checking. You've got 76 GB free."]
+
+
+# -- #66: orphan-worker sweep matcher -----------------------------------------
+
+def test_is_otto_worker_matches_only_our_workers():
+    """The orphan sweep must kill OUR reparented STT workers but never an unrelated python, the
+    menubar main itself, or a shell/grep that merely mentions the path."""
+    from otto.menubar import _is_otto_worker
+    venv = "/Users/x/Documents/projects/personal-assist/.venv/bin/python"
+    assert _is_otto_worker(f"{venv} -c from multiprocessing.spawn import spawn_main; ...")
+    assert _is_otto_worker("/Applications/Orrin.app/Contents/MacOS/Orrin -c "
+                           "from multiprocessing.resource_tracker import main")
+    assert not _is_otto_worker(f"{venv} -m otto.menubar")           # the main, not a worker
+    assert not _is_otto_worker("/usr/bin/python3 -c from multiprocessing.spawn import spawn_main")
+    assert not _is_otto_worker("/bin/zsh -c grep personal-assist/.venv multiprocessing")
