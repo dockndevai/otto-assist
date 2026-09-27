@@ -1,0 +1,16 @@
+{
+  "name": "Orrin",
+  "type": "sprite2d",
+  "description": "Default Orrin — a cute anthropomorphic red panda assistant.",
+  "credits": "Generated for Orrin, 2026-09 (red panda).",
+  "states": {
+    "idle": "idle.png",
+    "listening": "listening.png",
+    "thinking": "thinking.png",
+    "working": "thinking.png",
+    "speaking": "idle.png",
+    "signed_out": "thinking.png"
+  },
+  "blink": "blink.png",
+  "mouth": { "closed": "idle.png", "open": "talking.png" }
+}
