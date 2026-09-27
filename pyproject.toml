@@ -49,6 +49,11 @@ neural-voice = [
 mlx-stt = [
     "mlx-whisper>=0.4",              # Whisper on the Apple-Silicon GPU (MLX) — ~5-7x faster
 ]
+# Headless dashboard smoke test (scripts/dashboard_smoke.py). After install, fetch the browser
+# with `python -m playwright install chromium`. Opt-in in the suite via OTTO_DASHBOARD_SMOKE=1.
+dashboard-test = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 otto = "run:main"
