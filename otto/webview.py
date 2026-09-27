@@ -106,3 +106,106 @@ class DashboardWindow:
             self.window.orderFrontRegardless()
         except Exception:
             pass
+
+
+class FloatingCharacter:
+    """The on-screen Orrin character: a small borderless, transparent, always-on-top panel that
+    hosts the /character page and floats over everything (incl. full-screen apps) without stealing
+    focus. Draggable by its body. Reactive to voice state via the page's own /ws subscription.
+
+    Main-thread only (rumps callbacks are). Falls back silently if WebKit/PyObjC isn't available."""
+
+    def __init__(self, url: str, width: int = 300, height: int = 340) -> None:
+        self.url = url          # http://127.0.0.1:PORT/character
+        self.w = width
+        self.h = height
+        self.window = None
+        self.webview = None
+
+    def toggle(self) -> None:
+        if self.window is not None and self.window.isVisible():
+            self.hide()
+        else:
+            self.show()
+
+    def show(self) -> None:
+        if self.window is None:
+            self._build()
+        try:
+            self.window.orderFrontRegardless()
+        except Exception:
+            pass
+
+    def hide(self) -> None:
+        if self.window is not None:
+            try:
+                self.window.orderOut_(None)
+            except Exception:
+                pass
+
+    @property
+    def visible(self) -> bool:
+        return bool(self.window is not None and self.window.isVisible())
+
+    def _build(self) -> None:
+        from Cocoa import (
+            NSBackingStoreBuffered, NSColor, NSMakeRect, NSScreen, NSStatusWindowLevel, NSURL,
+            NSURLRequest, NSViewHeightSizable, NSViewWidthSizable, NSPanel,
+            NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
+            NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless,
+            NSWindowStyleMaskNonactivatingPanel,
+        )
+        from WebKit import WKWebView, WKWebViewConfiguration
+
+        # Bottom-right of the main screen's visible area (above the Dock), a small margin in.
+        try:
+            vf = NSScreen.mainScreen().visibleFrame()
+            x = vf.origin.x + vf.size.width - self.w - 24
+            y = vf.origin.y + 24
+        except Exception:
+            x, y = 900, 60
+        win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, self.w, self.h),
+            NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            NSBackingStoreBuffered, False)
+        win.setReleasedWhenClosed_(False)
+        win.setOpaque_(False)
+        win.setBackgroundColor_(NSColor.clearColor())
+        win.setHasShadow_(False)
+        win.setLevel_(NSStatusWindowLevel)            # always on top
+        win.setMovableByWindowBackground_(True)       # drag Orrin to reposition
+        win.setFloatingPanel_(True)
+        win.setBecomesKeyOnlyIfNeeded_(True)          # don't steal focus from the front app
+        win.setHidesOnDeactivate_(False)
+        try:
+            win.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+                | NSWindowCollectionBehaviorStationary)   # float over all Spaces + full-screen apps
+        except Exception:
+            pass
+
+        cfg = WKWebViewConfiguration.alloc().init()
+        wv = WKWebView.alloc().initWithFrame_configuration_(
+            NSMakeRect(0, 0, self.w, self.h), cfg)
+        wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        for key in ("drawsBackground", "_drawsBackground"):   # make the webview itself transparent
+            try:
+                wv.setValue_forKey_(False, key)
+                break
+            except Exception:
+                continue
+        try:
+            wv.setUnderPageBackgroundColor_(NSColor.clearColor())
+        except Exception:
+            pass
+        wv.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(self.url)))
+        win.setContentView_(wv)
+        win.orderFrontRegardless()
+        self.window = win
+        self.webview = wv
+        # First load can race the server coming up — reload shortly after so the character fills in.
+        try:
+            wv.performSelector_withObject_afterDelay_("reload", None, 2.5)
+        except Exception:
+            pass
