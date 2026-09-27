@@ -206,11 +206,17 @@ class OttoApp(rumps.App):
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
         self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
         self.enroll_item = rumps.MenuItem("Enroll my voice", callback=self.enroll_voice)
+        self.move_menu = rumps.MenuItem("Move Orrin")
+        for _label, _c in (("Bottom-right", "br"), ("Bottom-left", "bl"),
+                           ("Top-right", "tr"), ("Top-left", "tl")):
+            self.move_menu.add(rumps.MenuItem(
+                _label, callback=(lambda cc: (lambda _s: self._move_character(cc)))(_c)))
         self.menu = [
             self.status_item,
             None,
             rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
             rumps.MenuItem("Show Orrin (floating)", callback=self.toggle_character),
+            self.move_menu,
             self.watch_item,
             self.enroll_item,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
@@ -530,6 +536,14 @@ class OttoApp(rumps.App):
 
     def toggle_character(self, _) -> None:
         self._show_character(toggle=True)
+
+    def _move_character(self, corner: str) -> None:
+        self._show_character()
+        if self._float is not None:
+            try:
+                self._float.move_to(corner)
+            except Exception as e:
+                print(f"[otto] move character failed: {e}", file=sys.stderr, flush=True)
 
     def _show_character(self, toggle: bool = False) -> None:
         """Show/hide the floating on-screen Orrin character panel (WKWebView)."""

@@ -109,18 +109,21 @@ class DashboardWindow:
 
 
 class FloatingCharacter:
-    """The on-screen Orrin character: a small borderless, transparent, always-on-top panel that
+    """The on-screen Orrin character: a small borderless, TRANSPARENT, always-on-top panel that
     hosts the /character page and floats over everything (incl. full-screen apps) without stealing
-    focus. Draggable by its body. Reactive to voice state via the page's own /ws subscription.
+    focus. It is CLICK-THROUGH — the panel never intercepts a click, so buttons/apps behind it stay
+    usable; the character is purely visual and reacts to voice state via the page's own /ws feed.
+    Reposition it from the menu (corners), since a click-through window can't be dragged.
 
     Main-thread only (rumps callbacks are). Falls back silently if WebKit/PyObjC isn't available."""
 
-    def __init__(self, url: str, width: int = 300, height: int = 340) -> None:
+    def __init__(self, url: str, width: int = 190, height: int = 230) -> None:
         self.url = url          # http://127.0.0.1:PORT/character
         self.w = width
         self.h = height
         self.window = None
         self.webview = None
+        self.corner = "br"      # br|bl|tr|tl
 
     def toggle(self) -> None:
         if self.window is not None and self.window.isVisible():
@@ -147,9 +150,39 @@ class FloatingCharacter:
     def visible(self) -> bool:
         return bool(self.window is not None and self.window.isVisible())
 
+    def _corner_origin(self, corner: str):
+        from Cocoa import NSScreen
+        m = 20
+        try:
+            vf = NSScreen.mainScreen().visibleFrame()
+        except Exception:
+            return (900, 60)
+        right = vf.origin.x + vf.size.width - self.w - m
+        left = vf.origin.x + m
+        bottom = vf.origin.y + m
+        top = vf.origin.y + vf.size.height - self.h - m
+        return {
+            "br": (right, bottom), "bl": (left, bottom),
+            "tr": (right, top), "tl": (left, top),
+        }.get(corner, (right, bottom))
+
+    def move_to(self, corner: str) -> None:
+        """Reposition to a screen corner (br/bl/tr/tl)."""
+        self.corner = corner
+        if self.window is None:
+            self.show()
+            return
+        try:
+            from Cocoa import NSMakePoint
+            x, y = self._corner_origin(corner)
+            self.window.setFrameOrigin_(NSMakePoint(x, y))
+            self.window.orderFrontRegardless()
+        except Exception:
+            pass
+
     def _build(self) -> None:
         from Cocoa import (
-            NSBackingStoreBuffered, NSColor, NSMakeRect, NSScreen, NSStatusWindowLevel, NSURL,
+            NSBackingStoreBuffered, NSColor, NSMakeRect, NSStatusWindowLevel, NSURL,
             NSURLRequest, NSViewHeightSizable, NSViewWidthSizable, NSPanel,
             NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
             NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless,
@@ -157,13 +190,7 @@ class FloatingCharacter:
         )
         from WebKit import WKWebView, WKWebViewConfiguration
 
-        # Bottom-right of the main screen's visible area (above the Dock), a small margin in.
-        try:
-            vf = NSScreen.mainScreen().visibleFrame()
-            x = vf.origin.x + vf.size.width - self.w - 24
-            y = vf.origin.y + 24
-        except Exception:
-            x, y = 900, 60
+        x, y = self._corner_origin(self.corner)
         win = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, self.w, self.h),
             NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
@@ -173,10 +200,10 @@ class FloatingCharacter:
         win.setBackgroundColor_(NSColor.clearColor())
         win.setHasShadow_(False)
         win.setLevel_(NSStatusWindowLevel)            # always on top
-        win.setMovableByWindowBackground_(True)       # drag Orrin to reposition
         win.setFloatingPanel_(True)
         win.setBecomesKeyOnlyIfNeeded_(True)          # don't steal focus from the front app
         win.setHidesOnDeactivate_(False)
+        win.setIgnoresMouseEvents_(True)              # CLICK-THROUGH — never block what's behind it
         try:
             win.setCollectionBehavior_(
                 NSWindowCollectionBehaviorCanJoinAllSpaces
@@ -189,10 +216,14 @@ class FloatingCharacter:
         wv = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, self.w, self.h), cfg)
         wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
-        for key in ("drawsBackground", "_drawsBackground"):   # make the webview itself transparent
+        wv.setOpaque_(False)                           # transparent webview (so the panel shows through)
+        try:
+            wv.setBackgroundColor_(NSColor.clearColor())
+        except Exception:
+            pass
+        for key in ("drawsBackground", "_drawsBackground"):   # KVC transparency (private but stable)
             try:
                 wv.setValue_forKey_(False, key)
-                break
             except Exception:
                 continue
         try:
