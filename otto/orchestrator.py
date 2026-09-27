@@ -337,6 +337,10 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        # In-app voice enrollment (build a speaker voiceprint from the user's next few utterances).
+        self._enrolling = False
+        self._enroll_clips: list = []
+        self._enroll_target = 5
         self._last_greet_ts = 0.0     # last time a greeting was spoken (to debounce repeats)
         # True while we've paused the user's media (music/video) during a wake->listen window,
         # so we know to resume it afterwards.
@@ -2012,6 +2016,10 @@ class Orchestrator:
             print(f"[otto] ignoring self-echo (recent reply): {text!r}",
                   file=sys.stderr, flush=True)
             return
+        # Voice enrollment in progress: this utterance is a voice SAMPLE, not a command.
+        if self._enrolling:
+            self._enroll_capture(text)
+            return
         # Asleep (paused by "stop listening"): ignore everything EXCEPT the wake word, which
         # wakes Otto back into fully hands-free listening. If a command trails the wake word
         # ("otto, what's the weather"), run it immediately.
@@ -2144,6 +2152,68 @@ class Orchestrator:
         """Wake Orrin from the menu bar — silent; back to hands-free listening."""
         if self._sleeping:
             self._sleeping = False
+            self._status("idle", "Ready")
+
+    # -- in-app voice enrollment (speaker verification) --------------------
+    def start_enrollment(self, target: int = 5) -> None:
+        """Enroll the user's voice through Orrin's own mic (no Terminal): capture the next few
+        utterances into a voiceprint, then turn speaker-ID on live. Menu-triggered."""
+        try:
+            from .voice.speaker import SpeakerVerifier
+            if self.speaker is None:
+                vp = (self.settings.voice.stt.speaker_voiceprint
+                      or str(OTTO_HOME / "voiceprint.npy"))
+                self.speaker = SpeakerVerifier(model_id=self.settings.voice.stt.speaker_model,
+                                               voiceprint_path=vp)
+                self.speaker.start()
+        except Exception as e:
+            print(f"[otto] enrollment init failed: {e!r}", file=sys.stderr, flush=True)
+            self._voice_out("I couldn't start voice setup right now.")
+            return
+        self._enroll_clips = []
+        self._enroll_target = max(3, int(target))
+        self._enrolling = True
+        self._status("listening", "Enrolling your voice…")
+        self._voice_out("Let's set up your voice so I only respond to you. "
+                        "Say a few full sentences naturally — I'll listen for a few.")
+
+    def _enroll_capture(self, text: str) -> None:
+        """Take the just-heard utterance's audio as one enrollment sample."""
+        from .voice.speaker import to_float32_mono
+        pcm = getattr(self.ears, "last_audio", None) if self.ears is not None else None
+        audio = to_float32_mono(pcm) if pcm else None
+        if audio is None or audio.size < 8000:      # < ~0.5s — too short to be useful
+            self._voice_out("A bit more — say a full sentence.")
+            return
+        self._enroll_clips.append((audio, 16000))
+        n = len(self._enroll_clips)
+        left = self._enroll_target - n
+        self.bus.transcript("assistant", f"Enrollment: {n}/{self._enroll_target}", final=True)
+        if left > 0:
+            self._voice_out(f"Got it. {left} more.")
+            return
+        self._enrolling = False
+        self._status("thinking", "Saving your voiceprint…")
+        if self._loop is not None:
+            self._loop.create_task(self._finish_enrollment())
+
+    async def _finish_enrollment(self) -> None:
+        for _ in range(60):                          # the model's first load can take ~20s
+            if self.speaker is not None and self.speaker.ready:
+                break
+            await asyncio.sleep(0.5)
+        clips, self._enroll_clips = self._enroll_clips, []
+        vp = None
+        try:
+            if self.speaker is not None and self._loop is not None:
+                vp = await self._loop.run_in_executor(None, self.speaker.enroll, clips)
+        except Exception as e:
+            print(f"[otto] enrollment failed: {e!r}", file=sys.stderr, flush=True)
+        if vp is not None:
+            self._voice_out("All set — I'll focus on your voice from now on.")
+            self._status("idle", "Ready · voice enrolled")
+        else:
+            self._voice_out("That didn't take — let's try enrolling again later.")
             self._status("idle", "Ready")
 
     # -- voice command dispatch (refine + dictation) ----------------------

@@ -205,12 +205,14 @@ class OttoApp(rumps.App):
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
         self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
+        self.enroll_item = rumps.MenuItem("Enroll my voice", callback=self.enroll_voice)
         self.menu = [
             self.status_item,
             None,
             rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
             rumps.MenuItem("Show Orrin (floating)", callback=self.toggle_character),
             self.watch_item,
+            self.enroll_item,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -544,6 +546,14 @@ class OttoApp(rumps.App):
                 self._float.show()
         except Exception as e:
             print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
+
+    def enroll_voice(self, _) -> None:
+        """Kick off in-app voice enrollment (speak a few sentences; Orrin builds your voiceprint)."""
+        try:
+            if self.orch._loop is not None:
+                self.orch._loop.call_soon_threadsafe(self.orch.start_enrollment)
+        except Exception as e:
+            print(f"[otto] enroll trigger failed: {e}", file=sys.stderr, flush=True)
 
     def toggle_watch(self, _) -> None:
         """Watch mode: nap (ignore everything but the wake word) so a match/movie/call doesn't
