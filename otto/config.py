@@ -298,6 +298,9 @@ class HotkeyConfig(BaseModel):
     # Talk button and the wake word cover push-to-talk without it.
     enabled: bool = False
     push_to_talk: str = "<cmd>+<shift>+j"
+    # Global hotkey to toggle sleep/watch-mode instantly (no voice) — the reliable way to silence
+    # Orrin in a loud room (a match/TV), and wake it back. Needs the same Input Monitoring grant.
+    sleep_toggle: str = "<cmd>+<shift>+o"
 
 
 class VoiceConfig(BaseModel):

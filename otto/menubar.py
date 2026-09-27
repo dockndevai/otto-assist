@@ -504,7 +504,10 @@ class OttoApp(rumps.App):
             def release():   # arm-next-utterance model: VAD ends the turn, nothing on release
                 pass
 
-            self._hotkey = MacHotkey(self.settings, self._loop, press, release)
+            def toggle_sleep():   # reliable no-voice silence in a loud room
+                self.toggle_watch(None)
+
+            self._hotkey = MacHotkey(self.settings, self._loop, press, release, toggle_sleep)
             self._hotkey.start()
         except Exception as e:
             print(f"[otto] hotkey install error: {e}", file=sys.stderr, flush=True)
