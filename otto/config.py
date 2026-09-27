@@ -117,6 +117,15 @@ class STTConfig(BaseModel):
     # Multilingual Whisper model used when voice.language is non-English (Hinglish/Hindi/regional).
     # "small" is the CPU sweet spot; "medium" is more accurate but slow without a GPU.
     multilingual_model: str = "small"
+    # Transcription engine. "faster-whisper" (default) runs on CPU via RealtimeSTT. "mlx" uses
+    # Apple-Silicon GPU acceleration (mlx-whisper) for much faster transcription — RealtimeSTT still
+    # does recording/VAD/wake, but the captured audio is transcribed with MLX instead. Falls back to
+    # faster-whisper automatically if mlx-whisper or the model isn't available (never goes mute).
+    transcriber: Literal["faster-whisper", "mlx"] = "faster-whisper"
+    # MLX Whisper model ids (Hugging Face). English-only default is small; the multilingual/Hinglish
+    # path (voice.language non-English) uses the fast large-v3-turbo. Downloaded once on first use.
+    mlx_model: str = "mlx-community/whisper-small.en-mlx"
+    mlx_multilingual_model: str = "mlx-community/whisper-large-v3-turbo"
     # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
     # 1.0s keeps it responsive; the instant spoken ack covers the rest of the wait.
