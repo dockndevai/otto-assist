@@ -3010,3 +3010,23 @@ def test_is_otto_worker_matches_only_our_workers():
     assert not _is_otto_worker(f"{venv} -m otto.menubar")           # the main, not a worker
     assert not _is_otto_worker("/usr/bin/python3 -c from multiprocessing.spawn import spawn_main")
     assert not _is_otto_worker("/bin/zsh -c grep personal-assist/.venv multiprocessing")
+
+
+# -- #67: headless dashboard smoke test (opt-in — needs chromium; keeps the fast suite fast) ---
+
+def test_dashboard_smoke_optional():
+    """Runs scripts/dashboard_smoke.py (boots the server + headless Chromium, asserts panels render
+    with no console errors / failed requests). Opt-in via OTTO_DASHBOARD_SMOKE=1 so the default
+    offline suite stays fast and browser-free."""
+    import os
+    import subprocess
+    import sys
+
+    import pytest
+    if os.environ.get("OTTO_DASHBOARD_SMOKE") != "1":
+        pytest.skip("set OTTO_DASHBOARD_SMOKE=1 to run the headless dashboard smoke test")
+    r = subprocess.run([sys.executable, "scripts/dashboard_smoke.py"],
+                       cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=180)
+    if r.returncode == 2:
+        pytest.skip(f"dashboard smoke prerequisites missing: {r.stderr.strip()[:200]}")
+    assert r.returncode == 0, (r.stdout + r.stderr)
