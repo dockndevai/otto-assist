@@ -2840,46 +2840,54 @@ def test_to_float32_mono():
     assert to_float32_mono(b"").shape == (0,)
 
 
-def test_speaker_enroll_verify_and_persist(tmp_path):
-    """Enroll averages per-clip embeddings into a saved voiceprint; verify() is high for the same
-    voice, low for a different one; and the voiceprint reloads from disk."""
+def test_speaker_enroll_match_and_persist(tmp_path):
+    """Multi-voice: enroll saves <name>.npy; match() returns the closest enrolled voice + score;
+    voiceprints reload from disk."""
     import numpy as np
     from otto.voice.speaker import SpeakerVerifier
-    vp = tmp_path / "vp.npy"
+    d = tmp_path / "voiceprints"
 
     def fake_embed(audio, sr=16000):
         return (np.array([1.0, 0.0, 0.0]) if float(np.mean(audio)) > 0
                 else np.array([0.0, 1.0, 0.0]))
 
-    sv = SpeakerVerifier(voiceprint_path=vp)
+    sv = SpeakerVerifier(voiceprints_dir=d)
     sv._ready = True; sv.embed = fake_embed
     me = np.ones(16000, dtype=np.float32)
     other = -np.ones(16000, dtype=np.float32)
-    assert sv.enroll([(me, 16000), (me, 16000)]) is not None
-    assert vp.exists() and sv.has_voiceprint
-    assert sv.verify(me, 16000) > 0.99
-    assert sv.verify(other, 16000) < 0.01
-    # reloads from disk in a fresh verifier
-    sv2 = SpeakerVerifier(voiceprint_path=vp)
+    assert sv.enroll([(me, 16000), (me, 16000)], "ankit") == "ankit"
+    assert (d / "ankit.npy").exists() and sv.has_voiceprint and sv.names == ["ankit"]
+    name, sim = sv.match(me, 16000)
+    assert name == "ankit" and sim > 0.99
+    name2, sim2 = sv.match(other, 16000)
+    assert name2 == "ankit" and sim2 < 0.01          # closest is still ankit, but low score
+    # a second voice, and matching picks the nearer one
+    sv.enroll([(other, 16000)], "guest")
+    assert set(sv.names) == {"ankit", "guest"}
+    assert sv.match(other, 16000)[0] == "guest"
+    # reloads from disk
+    sv2 = SpeakerVerifier(voiceprints_dir=d)
     sv2._ready = True; sv2.embed = fake_embed
-    assert sv2.has_voiceprint and sv2.verify(me, 16000) > 0.99
-    # no voiceprint / not ready → None (caller skips the check, fail-open)
-    assert SpeakerVerifier().verify(me, 16000) is None
+    assert set(sv2.names) == {"ankit", "guest"}
+    # not ready / none → None (fail-open)
+    assert SpeakerVerifier(voiceprints_dir=tmp_path / "empty").match(me, 16000) is None
 
 
 class _FakeSpeaker:
-    def __init__(self, sim): self._sim = sim; self.ready = True; self.has_voiceprint = True
-    def verify(self, audio, sr): return self._sim
+    def __init__(self, sim, name="me"):
+        self._sim = sim; self._name = name; self.ready = True; self.has_voiceprint = True
+    def match(self, audio, sr): return (self._name, self._sim)
 
 
-def test_speaker_gate_drops_other_voice():
-    """On the hands-free path, an utterance that doesn't match the voiceprint is dropped whatever it
-    says; a matching voice passes through to run."""
+def test_speaker_gate_drops_unregistered_voice():
+    """On the hands-free path, a voice below threshold (or not in the active set) is dropped; a
+    registered voice above threshold passes."""
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.refine = False; orch._dictation = False
-        orch.settings.voice.stt.speaker_threshold = 0.75
+        orch.settings.voice.stt.speaker_threshold = 0.55
+        orch.settings.voice.stt.speaker_active = []
         orch._ack = lambda intent: None
         submitted = []
         orch.submit_user_input = lambda t: submitted.append(t)
@@ -2888,16 +2896,24 @@ def test_speaker_gate_drops_other_voice():
         ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000; ears.sample_rate = 16000
         orch.ears = ears
 
-        orch.speaker = _FakeSpeaker(0.40)      # not your voice
+        orch.speaker = _FakeSpeaker(0.40)      # below threshold → drop
         await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
         assert submitted == []
 
-        orch.speaker = _FakeSpeaker(0.92)      # your voice
+        orch.speaker = _FakeSpeaker(0.92, "ankit")   # registered, above threshold → run
         await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
         assert submitted == ["open chrome"]
 
+        # active set excludes this person → drop even though score is high
+        submitted.clear()
+        orch.settings.voice.stt.speaker_active = ["dad"]
+        orch.speaker = _FakeSpeaker(0.92, "ankit")
+        await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
+        assert submitted == []
+
         # fail-open: no audio captured → check skipped, command still runs
         submitted.clear(); ears.last_audio = None
+        orch.settings.voice.stt.speaker_active = []
         orch.speaker = _FakeSpeaker(0.10)
         await orch._dispatch_async("open chrome", gate=True, need_speaker=True)
         assert submitted == ["open chrome"]
@@ -3026,7 +3042,7 @@ def test_is_auth_error_detection():
 
 
 def test_in_app_voice_enrollment_builds_voiceprint():
-    """In-app enrollment captures N utterances' audio into the speaker verifier and enrolls once."""
+    """In-app enrollment: first utterance = name, then N clips → enroll(clips, name) once."""
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
@@ -3034,28 +3050,35 @@ def test_in_app_voice_enrollment_builds_voiceprint():
         orch._status = lambda *a, **k: None
 
         class _FakeSp:
-            def __init__(self): self.ready = True; self.has_voiceprint = False; self.enrolled = None
-            def enroll(self, clips):
-                self.enrolled = clips; self.has_voiceprint = True; return object()
+            def __init__(self):
+                self.ready = True; self.has_voiceprint = False
+                self.enrolled = None; self.enrolled_name = None; self.names = []
+            def enroll(self, clips, name="me"):
+                self.enrolled = clips; self.enrolled_name = name
+                self.has_voiceprint = True; self.names = [name]; return name
         orch.speaker = _FakeSp()
 
         class _Ears: pass
         ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000   # ~0.5s int16 @16k
         orch.ears = ears
 
-        orch._enrolling = True; orch._enroll_clips = []; orch._enroll_target = 3
-        for _ in range(3):
+        orch._enrolling = True; orch._enroll_clips = []; orch._enroll_name = None
+        orch._enroll_target = 3
+        orch._enroll_capture("Ankit")          # first utterance = name (no clip)
+        assert orch._enroll_name == "ankit" and orch._enroll_clips == []
+        for _ in range(3):                      # then the voice samples
             orch._enroll_capture("a full sentence")
-        assert orch._enrolling is False                       # collected enough → finalizing
+        assert orch._enrolling is False
         for _ in range(40):
             if orch.speaker.has_voiceprint:
                 break
             await asyncio.sleep(0.05)
         assert orch.speaker.has_voiceprint is True
-        assert orch.speaker.enrolled is not None and len(orch.speaker.enrolled) == 3
+        assert orch.speaker.enrolled_name == "ankit" and len(orch.speaker.enrolled) == 3
 
-        # too-short audio is not counted as a sample
-        orch.speaker = _FakeSp(); orch._enrolling = True; orch._enroll_clips = []
+        # too-short audio (after the name) is not counted as a sample
+        orch.speaker = _FakeSp()
+        orch._enrolling = True; orch._enroll_clips = []; orch._enroll_name = "ankit"
         ears.last_audio = (b"\x10\x00") * 100                  # ~6ms — too short
         orch._enroll_capture("hmm")
         assert orch._enroll_clips == [] and orch._enrolling is True

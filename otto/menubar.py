@@ -205,7 +205,7 @@ class OttoApp(rumps.App):
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
         self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
-        self.enroll_item = rumps.MenuItem("Enroll my voice", callback=self.enroll_voice)
+        self.enroll_item = rumps.MenuItem("Enroll a voice", callback=self.enroll_voice)
         self.move_menu = rumps.MenuItem("Move Orrin")
         for _label, _c in (("Bottom-right", "br"), ("Bottom-left", "bl"),
                            ("Top-right", "tr"), ("Top-left", "tl")):
