@@ -28,7 +28,7 @@
     100% { opacity: 0; transform: translate(10px, -22px) } }
   #char img { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
     max-height: 100%; max-width: 100%; width: auto; height: auto; opacity: 0;
-    transition: opacity .12s linear; image-rendering: -webkit-optimize-contrast; }
+    transition: opacity .35s ease; image-rendering: -webkit-optimize-contrast; }
   #char img.on { opacity: 1; }
   @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-2.2%) } }
   @media (prefers-reduced-motion: reduce) { #char { animation: none !important; } }
@@ -87,17 +87,6 @@
   }
   function frameFor(s) { return (manifest.states && manifest.states[s]) || manifest.states.idle; }
 
-  function scheduleBlink() {
-    const base = frameFor(state);
-    const blink = manifest.blink;
-    const next = 2200 + Math.random() * 3800;
-    blinkTimer = setTimeout(() => {
-      if (state === "speaking" || !blink) { scheduleBlink(); return; }
-      show(blink);
-      setTimeout(() => { if (state !== "speaking") show(base); scheduleBlink(); }, 130);
-    }, next);
-  }
-
   function setState(s) {
     s = (s || "idle");
     if (s.startsWith("error")) s = "signed_out";
@@ -108,17 +97,11 @@
     zzzEl.classList.toggle("on", s === "sleeping");
     haloEl.style.setProperty("--glow", GLOW[s] || GLOW.idle);
     haloEl.style.opacity = s === "idle" ? ".4" : (s === "sleeping" ? ".2" : ".7");
-    if (s === "speaking" && manifest.mouth) {
-      let open = false;
-      show(manifest.mouth.closed);
-      mouthTimer = setInterval(() => {   // lip flap (approx; replace with amplitude later)
-        open = !open;
-        show(open ? manifest.mouth.open : manifest.mouth.closed);
-      }, 150);
-    } else {
-      show(frameFor(s));
-      if (s !== "sleeping") scheduleBlink();   // asleep = eyes already closed, no blink
-    }
+    // One frame per state, cross-faded. We deliberately do NOT rapid-swap frames (blink loop /
+    // mouth flap): the generated frames aren't pixel-aligned, so swapping made the whole body
+    // jump ("flickering"). Liveliness comes from the smooth CSS bob (faster when speaking) + the
+    // glow. (Smooth blink/lip-sync needs pixel-aligned frames or a rigged model — a later step.)
+    show(frameFor(s));
   }
   window.orrinSetState = setState;   // host/demo hook
 
