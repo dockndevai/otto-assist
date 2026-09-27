@@ -2938,3 +2938,14 @@ def test_mlx_transcriber_wiring_and_transcribe():
     # default (faster-whisper): MLX path and tap both off
     ears2 = Ears(load_settings(), None, noop, noop, noop, noop)
     assert ears2._use_mlx is False and ears2._capture_audio is False
+
+
+def test_mlx_model_selection_by_language():
+    """#65: model is chosen from the CONFIGURED language, not the resolved whisper code — Hinglish
+    (whisper code pinned 'en') must still get the multilingual turbo, not the english model."""
+    from otto.voice.stt import pick_mlx_model
+    stt = load_settings().voice.stt
+    for vl in ("en", "", "en-in", "EN"):
+        assert pick_mlx_model(stt, vl) == stt.mlx_model, vl
+    for vl in ("hinglish", "hi", "ta", "auto"):
+        assert pick_mlx_model(stt, vl) == stt.mlx_multilingual_model, vl
