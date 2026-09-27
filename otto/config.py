@@ -311,6 +311,10 @@ class VoiceConfig(BaseModel):
     #   "hi"       — Hindi          |  "auto" — auto-detect  |  any Whisper code (e.g. "ta")
     # Non-English values switch STT to the multilingual model (heavier on CPU, no GPU here).
     language: str = "en"
+    # What language Orrin REPLIES in, decoupled from what it understands. "" = mirror the user
+    # (reply in whatever they spoke, incl. Hinglish). "en" = understand any language they speak but
+    # ALWAYS reply in clear English (never Hindi/Hinglish). Any Whisper/lang name also works.
+    reply_language: str = ""
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
