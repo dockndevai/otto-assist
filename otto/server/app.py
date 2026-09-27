@@ -225,6 +225,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def character_page() -> FileResponse:
         return FileResponse(WEB_DIR / "character.html")
 
+    @app.get("/hud")
+    async def hud_page() -> FileResponse:
+        return FileResponse(WEB_DIR / "hud.html")
+
     @app.get("/characters/{pack}/{file}")
     async def character_asset(pack: str, file: str):
         # Serve a character pack's assets. User packs in OTTO_HOME/characters/<pack> override the

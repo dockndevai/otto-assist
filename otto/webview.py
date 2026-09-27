@@ -108,27 +108,53 @@ class DashboardWindow:
             pass
 
 
+_DRAG_CLS = None
+
+
+def _drag_handler(win):
+    """A WKScriptMessageHandler that drags the window when the page posts a 'drag' message on
+    pointerdown. Defined lazily so this module imports without pyobjc present."""
+    global _DRAG_CLS
+    if _DRAG_CLS is None:
+        import objc
+        from Foundation import NSObject
+
+        class _DragHandler(NSObject):
+            def initWithWindow_(self, w):
+                self = objc.super(_DragHandler, self).init()
+                if self is None:
+                    return None
+                self._w = w
+                return self
+
+            def userContentController_didReceiveScriptMessage_(self, ucc, msg):
+                try:
+                    from Cocoa import NSApp
+                    self._w.performWindowDragWithEvent_(NSApp().currentEvent())
+                except Exception:
+                    pass
+
+        _DRAG_CLS = _DragHandler
+    return _DRAG_CLS.alloc().initWithWindow_(win)
+
+
 class FloatingCharacter:
-    """The on-screen Orrin character: a small borderless, TRANSPARENT, always-on-top panel that
-    hosts the /character page and floats over everything (incl. full-screen apps) without stealing
-    focus. It is CLICK-THROUGH — the panel never intercepts a click, so buttons/apps behind it stay
-    usable; the character is purely visual and reacts to voice state via the page's own /ws feed.
-    Reposition it from the menu (corners), since a click-through window can't be dragged.
+    """Orrin's on-screen HUD (Wispr-Flow style): a small, draggable, always-on-top glass pill in a
+    corner that shows a one-line live readout of what Orrin is hearing + its state, with a little
+    red-panda avatar. Floats over full-screen apps without stealing focus; drag it anywhere (native
+    window drag via a page message handler). Self-updates from the /ws feed; reposition presets in
+    the menu ("Move Orrin ▸ corners").
 
     Main-thread only (rumps callbacks are). Falls back silently if WebKit/PyObjC isn't available."""
 
-    def __init__(self, url: str, width: int = 190, height: int = 230) -> None:
-        self.url = url          # http://127.0.0.1:PORT/character
+    def __init__(self, url: str, width: int = 340, height: int = 72) -> None:
+        self.url = url          # http://127.0.0.1:PORT/hud
         self.w = width
         self.h = height
         self.window = None
         self.webview = None
         self.corner = "br"      # br|bl|tr|tl
-        self._roam_countdown = 6.0     # seconds until the next autonomous wander
-        self._last_state = None        # last visual state pushed to the page
-        self._anim_timer = None        # step-glide timer
-        self._glide_from = self._glide_to = None
-        self._glide_i = self._glide_steps = 0
+        self._drag = None       # native drag message handler (kept referenced)
 
     def toggle(self) -> None:
         if self.window is not None and self.window.isVisible():
@@ -185,115 +211,6 @@ class FloatingCharacter:
         except Exception:
             pass
 
-    # -- autonomy: react to state + wander the screen ---------------------
-    def _eval(self, js: str) -> None:
-        if self.webview is None:
-            return
-        try:
-            self.webview.evaluateJavaScript_completionHandler_(js, None)
-        except Exception:
-            pass
-
-    def set_state(self, s: str) -> None:
-        """Push a visual state to the character page (idle/listening/thinking/speaking/sleeping)."""
-        if s == self._last_state:
-            return
-        self._last_state = s
-        self._eval(f"window.orrinSetState && window.orrinSetState({s!r})")
-
-    def tick(self, dt: float, *, mode: str, char_state: str, roam: bool,
-             interval: float, speed: float) -> None:
-        """Called ~1x/sec by the menu bar. Drives the visual state and autonomous roaming.
-        mode: idle | busy | attending | sleeping."""
-        if self.window is None or not self.visible:
-            return
-        self.set_state(char_state)
-        # Wander only when idle or busy; settle while attending to you or napping.
-        if not roam or mode in ("attending", "sleeping"):
-            return
-        self._roam_countdown -= dt
-        if self._roam_countdown <= 0:
-            import random as _r
-            dur = self._roam(busy=(mode == "busy"), speed=speed)
-            base = interval * (0.5 if mode == "busy" else 1.0)
-            # next hop only after this glide finishes (+ a rest), so moves never overlap
-            self._roam_countdown = max(dur + 1.5, base * (0.7 + _r.random() * 0.6))
-
-    def _roam(self, *, busy: bool, speed: float) -> float:
-        """Glide the panel to a new random spot on screen (eased, native animation). Returns the
-        glide duration in seconds (0 if it couldn't move)."""
-        import random as _r
-
-        from Cocoa import NSScreen
-        try:
-            vf = NSScreen.mainScreen().visibleFrame()
-        except Exception:
-            return 0.0
-        m = 12
-        x0 = vf.origin.x + m
-        x1 = vf.origin.x + vf.size.width - self.w - m
-        y0 = vf.origin.y + m
-        y1 = vf.origin.y + vf.size.height - self.h - m
-        if x1 <= x0 or y1 <= y0:
-            return 0.0
-        cur = self.window.frame().origin
-        # Pick a target a real distance away (in a random direction) so the move is clearly visible,
-        # clamped on-screen. Busy = farther hops.
-        import math
-        lo, hi = (300, 900) if busy else (170, 520)
-        ang = _r.uniform(0, 2 * math.pi)
-        d = _r.uniform(lo, hi)
-        tx = min(x1, max(x0, cur.x + math.cos(ang) * d))
-        ty = min(y1, max(y0, cur.y + math.sin(ang) * d))
-        dist = ((tx - cur.x) ** 2 + (ty - cur.y) ** 2) ** 0.5
-        dur = max(0.8, min(5.0, dist / (260.0 * max(0.3, speed)))) * (0.7 if busy else 1.0)
-        self._start_glide(cur.x, cur.y, tx, ty, dur)
-        return dur
-
-    def _start_glide(self, fx, fy, tx, ty, dur) -> None:
-        """Glide the panel from (fx,fy) to (tx,ty) over `dur` by stepping setFrameOrigin ~33x/sec —
-        reliable for a borderless click-through panel (the NSWindow animator doesn't move it)."""
-        from Cocoa import NSTimer
-        self._glide_from = (fx, fy)
-        self._glide_to = (tx, ty)
-        self._glide_steps = max(6, int(dur / 0.03))
-        self._glide_i = 0
-        self._eval(f"window.orrinWalk && window.orrinWalk({1 if tx >= fx else -1})")  # waddle
-        if self._anim_timer is not None:
-            try:
-                self._anim_timer.invalidate()
-            except Exception:
-                pass
-        try:
-            self._anim_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-                0.03, True, lambda _t: self._glide_step())
-        except Exception:
-            # Fallback: jump directly if block timers aren't available.
-            from Cocoa import NSMakePoint
-            try:
-                self.window.setFrameOrigin_(NSMakePoint(tx, ty))
-            except Exception:
-                pass
-
-    def _glide_step(self) -> None:
-        from Cocoa import NSMakePoint
-        self._glide_i += 1
-        p = min(1.0, self._glide_i / max(1, self._glide_steps))
-        e = p * p * (3 - 2 * p)                          # smoothstep ease
-        fx, fy = self._glide_from
-        tx, ty = self._glide_to
-        try:
-            self.window.setFrameOrigin_(NSMakePoint(fx + (tx - fx) * e, fy + (ty - fy) * e))
-        except Exception:
-            pass
-        if p >= 1.0 and self._anim_timer is not None:
-            try:
-                self._anim_timer.invalidate()
-            except Exception:
-                pass
-            self._anim_timer = None
-            self._eval("window.orrinWalk && window.orrinWalk(0)")   # stop waddling
-
     def _build(self) -> None:
         from Cocoa import (
             NSBackingStoreBuffered, NSColor, NSMakeRect, NSStatusWindowLevel, NSURL,
@@ -317,7 +234,6 @@ class FloatingCharacter:
         win.setFloatingPanel_(True)
         win.setBecomesKeyOnlyIfNeeded_(True)          # don't steal focus from the front app
         win.setHidesOnDeactivate_(False)
-        win.setIgnoresMouseEvents_(True)              # CLICK-THROUGH — never block what's behind it
         try:
             win.setCollectionBehavior_(
                 NSWindowCollectionBehaviorCanJoinAllSpaces
@@ -326,7 +242,15 @@ class FloatingCharacter:
         except Exception:
             pass
 
+        # Native drag: the page posts "drag" on pointerdown and we drag the window with the event,
+        # so the small pill can be moved anywhere (a webview eats mouse events, so window-background
+        # dragging alone won't work).
         cfg = WKWebViewConfiguration.alloc().init()
+        try:
+            self._drag = _drag_handler(win)
+            cfg.userContentController().addScriptMessageHandler_name_(self._drag, "drag")
+        except Exception:
+            self._drag = None
         wv = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, self.w, self.h), cfg)
         wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)

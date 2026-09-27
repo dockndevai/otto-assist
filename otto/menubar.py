@@ -448,27 +448,6 @@ class OttoApp(rumps.App):
                                      else "Watch mode (nap)")
         except Exception:
             pass
-        # Drive the floating character's autonomy: react to Orrin's state + wander the screen.
-        if self._float is not None and self._float.visible:
-            try:
-                v = self.settings.voice
-                st = self.orch.state
-                if getattr(self.orch, "_sleeping", False):
-                    mode, cs = "sleeping", "sleeping"
-                elif st == "speaking":
-                    mode, cs = "attending", "speaking"
-                elif st == "listening":
-                    mode, cs = "attending", "listening"
-                elif st in ("thinking", "working") or getattr(self.orch, "_research_running", False):
-                    mode, cs = "busy", "thinking"     # incl. the 5-min idle background research
-                else:
-                    mode, cs = "idle", "idle"
-                self._float.tick(1.0, mode=mode, char_state=cs,
-                                 roam=getattr(v, "character_roam", True),
-                                 interval=float(getattr(v, "character_roam_interval", 14.0)),
-                                 speed=float(getattr(v, "character_speed", 1.0)))
-            except Exception:
-                pass
         # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
         # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
         # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
@@ -574,11 +553,13 @@ class OttoApp(rumps.App):
                 return
             if self._float is None:
                 pack = getattr(self.settings.voice, "character", "orrin") or "orrin"
-                self._float = FloatingCharacter(f"{self.url}/character?pack={pack}")
+                self._float = FloatingCharacter(f"{self.url}/hud?pack={pack}")
             if toggle:
                 self._float.toggle()
             else:
                 self._float.show()
+            print(f"[otto] floating character shown (visible={self._float.visible})",
+                  file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
 
