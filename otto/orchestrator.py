@@ -67,6 +67,40 @@ def _is_auth_error(text: str) -> bool:
     return bool(text) and bool(_AUTH_ERR.search(text))
 
 
+def _parse_auth_status(stdout: str, stderr: str) -> bool | None:
+    """Parse `claude auth status` → True (signed in) / False (signed out) / None (inconclusive)."""
+    import json
+    try:
+        return bool(json.loads(stdout).get("loggedIn"))
+    except Exception:
+        t = (stdout + " " + stderr).lower()
+        if "not logged in" in t:
+            return False
+        if "logged in" in t or "loggedin" in t:
+            return True
+        return None
+
+
+def _claude_logged_in() -> bool | None:
+    """Fast, free startup check of the user's Claude login (shares the SDK's credentials).
+    Returns None if the CLI can't be found/run, so an inconclusive check never false-warns."""
+    import shutil
+    import subprocess
+    exe = shutil.which("claude") or os.path.expanduser("~/.claude/local/claude")
+    if not os.path.exists(exe):
+        for c in ("/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+            if os.path.exists(c):
+                exe = c
+                break
+    if not os.path.exists(exe):
+        return None
+    try:
+        out = subprocess.run([exe, "auth", "status"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+    return _parse_auth_status(out.stdout, out.stderr)
+
+
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
 # Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
@@ -653,6 +687,9 @@ class Orchestrator:
                           file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[otto] speaker verifier init failed: {e!r}", file=sys.stderr, flush=True)
+        # Startup sign-in check: warn right away if Claude's login has lapsed (in the background —
+        # never blocks startup), so a signed-out state is obvious before the first command (#68).
+        self._loop.create_task(self._auth_preflight())
 
     async def _seed_registry(self) -> None:
         """Register every discoverable project in memory so the cross-project overview covers
@@ -2738,6 +2775,21 @@ class Orchestrator:
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."
                     self.notify(f"{ws.name} finished", summary)
                 self._publish_workspaces()
+
+    async def _auth_preflight(self) -> None:
+        """At startup, check whether Claude is signed in and warn immediately if not — so a lapsed
+        login surfaces before the first spoken command instead of failing mid-conversation. Runs in
+        the background (never blocks startup); inconclusive checks stay silent."""
+        if not getattr(self.settings.voice, "auth_preflight", True) or self._loop is None:
+            return
+        try:
+            logged_in = await self._loop.run_in_executor(None, _claude_logged_in)
+        except Exception:
+            return
+        if logged_in is False:
+            print("[otto] auth preflight: not signed in to Claude", file=sys.stderr, flush=True)
+            self._status("error: signed out of Claude", "Signed out of Claude")
+            self._warn_signed_out()
 
     def _warn_signed_out(self) -> None:
         """One clear, debounced 'sign in to Claude' message (spoken at most once a minute) + a

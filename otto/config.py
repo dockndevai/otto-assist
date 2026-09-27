@@ -343,6 +343,9 @@ class VoiceConfig(BaseModel):
     # briefing; fires at most once per calendar day.
     morning_brief: bool = True
     morning_brief_hour: int = 9               # local hour (0-23) the brief becomes eligible
+    # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
+    # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
+    auth_preflight: bool = True
     # Parallel dispatch: when a turn is already running and you say "meanwhile / while that runs /
     # at the same time, do X", run X concurrently in a dedicated background workspace on the same
     # project (its own Claude + chat) instead of queuing it behind the in-flight turn. The parallel
