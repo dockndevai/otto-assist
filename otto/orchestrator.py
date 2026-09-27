@@ -55,6 +55,18 @@ def _split_first_sentence(text: str, min_chars: int = 8) -> tuple[str, str]:
     return sent, rest.lstrip()
 
 
+# The brain (Claude Agent SDK) returns these when the user's Claude login has lapsed. We detect
+# them (only on an is_error result) so Orrin gives ONE clear "sign in" message instead of reciting
+# the raw error aloud every turn.
+_AUTH_ERR = re.compile(
+    r"not logged in|please run /login|oauth session expired|failed to authenticate|"
+    r"authentication[_ ]error|invalid api key|sign ?in to claude|/login", re.I)
+
+
+def _is_auth_error(text: str) -> bool:
+    return bool(text) and bool(_AUTH_ERR.search(text))
+
+
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
 # Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
@@ -243,6 +255,7 @@ class Orchestrator:
         self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
         self._speak_done = False     # cap reached → stop speaking the rest of this reply
         self._first_spoken = False   # first sentence already streamed out this turn (#64)
+        self._auth_warn_ts = 0.0     # debounce the spoken "signed out of Claude" guidance
         self._speaking = False
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
@@ -2565,6 +2578,7 @@ class Orchestrator:
             self._publish_workspaces()
             assistant_text = ""
             errored = False   # so a voice-only user hears that a turn failed (not just a toast)
+            auth_error = False   # brain login lapsed → give one "sign in" message, not the raw error
             # Prepend durable memory (facts + recent summary + relevant saved-note excerpts)
             # so Claude has cross-session context. The dashboard/transcript already showed the
             # user's *clean* text above; only what we send to the brain carries the
@@ -2598,7 +2612,11 @@ class Orchestrator:
                         chunk = ev["text"]
                         assistant_text += chunk
                         self.bus.assistant_delta(chunk, ws=tag)   # into this window
-                        if live:
+                        # A lapsed-login error arrives as a single (non-streamed) delta — don't
+                        # speak it; we surface a clear "sign in" message at end of turn instead.
+                        if _is_auth_error(assistant_text):
+                            auth_error = True
+                        elif live:
                             self._feed_speech(chunk)              # ...but only speak the focused
                             self._status("speaking", "Speaking…")
                         ws.state = "speaking"
@@ -2612,9 +2630,12 @@ class Orchestrator:
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
                             errored = True
-                            self.bus.notify(
-                                "Brain error",
-                                ev.get("error_text") or "The model returned an error.")
+                            if _is_auth_error(ev.get("error_text") or assistant_text):
+                                auth_error = True
+                            else:
+                                self.bus.notify(
+                                    "Brain error",
+                                    ev.get("error_text") or "The model returned an error.")
                         sid = ev.get("session_id")   # a new chat mints its id on turn 1
                         # Only persist when the chat id actually changed — it's stable after
                         # turn 1, so writing config.yaml every turn was needless disk + YAML
@@ -2649,8 +2670,24 @@ class Orchestrator:
                           file=sys.stderr, flush=True)
             finally:
                 reply = assistant_text.strip()
-                print(f"[otto] turn done ({ws.name}), reply len={len(reply)}",
-                      file=sys.stderr, flush=True)
+                print(f"[otto] turn done ({ws.name}), reply len={len(reply)}"
+                      f"{' [auth]' if auth_error else ''}", file=sys.stderr, flush=True)
+                # Login lapsed: don't recite the raw SDK error. Drop the buffered error text and,
+                # for a focused user turn, give ONE clear (debounced) "sign in" message + a
+                # dashboard signal. Applies to background/research turns too (silently — no speak).
+                if auth_error:
+                    self._speech_buf = ""
+                    self._speak_done = True
+                    reply = ("I'm signed out of Claude. In Terminal run `claude`, then `/login`, "
+                             "and restart me.")
+                    ws.state = "idle"
+                    ws.last_reply = ""
+                    self.bus.transcript("assistant", reply, final=True, ws=tag)
+                    if p == self.focused and not background and not research:
+                        self._warn_signed_out()
+                    self._status("error: signed out of Claude", "Signed out of Claude")
+                    self._publish_workspaces()
+                    return
                 # A voice-only user (screen not visible) must HEAR that a request failed —
                 # otherwise a crashed turn is pure silence. Speak a short apology when the
                 # focused, user-facing turn errored and produced no reply to speak.
@@ -2701,6 +2738,21 @@ class Orchestrator:
                     summary = reply.split("\n", 1)[0][:140] if reply else "Done."
                     self.notify(f"{ws.name} finished", summary)
                 self._publish_workspaces()
+
+    def _warn_signed_out(self) -> None:
+        """One clear, debounced 'sign in to Claude' message (spoken at most once a minute) + a
+        notification + a dashboard signal — instead of reciting the raw auth error every turn."""
+        self.bus.notify("Signed out of Claude",
+                        "Run `claude`, then /login in Terminal, then restart Orrin.")
+        self.bus.publish({"type": "auth", "signed_out": True})
+        now = time.monotonic()
+        if now - getattr(self, "_auth_warn_ts", 0.0) > 60.0:
+            self._auth_warn_ts = now
+            try:
+                self._voice_out("I'm signed out of Claude. Open Terminal, run claude, "
+                                "then type slash login, and restart me.")
+            except Exception:
+                pass
 
     def _feed_speech(self, chunk: str) -> None:
         """Accumulate the reply's deltas. With `stream_sentences` on (#64) we speak the FIRST

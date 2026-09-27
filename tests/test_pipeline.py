@@ -3012,6 +3012,19 @@ def test_is_otto_worker_matches_only_our_workers():
     assert not _is_otto_worker("/bin/zsh -c grep personal-assist/.venv multiprocessing")
 
 
+def test_is_auth_error_detection():
+    """A lapsed Claude login is detected so Orrin gives a 'sign in' message, not the raw error;
+    ordinary replies that merely mention 'login' are not misread."""
+    from otto.orchestrator import _is_auth_error
+    for t in ("Failed to authenticate: OAuth session expired",
+              "Not logged in · Please run /login",
+              "authentication_error", "Invalid API key", "Please sign in to Claude"):
+        assert _is_auth_error(t), t
+    for t in ("Opened the calculator.", "The build passed.", "",
+              "I fixed the login bug in your app."):
+        assert not _is_auth_error(t), t
+
+
 # -- #67: headless dashboard smoke test (opt-in — needs chromium; keeps the fast suite fast) ---
 
 def test_dashboard_smoke_optional():
