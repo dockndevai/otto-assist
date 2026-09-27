@@ -10,8 +10,6 @@ Falls back gracefully: if WebKit/PyObjC isn't available, the caller opens a brow
 
 from __future__ import annotations
 
-import sys
-
 
 def available() -> bool:
     try:
