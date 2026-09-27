@@ -3085,6 +3085,23 @@ def test_in_app_voice_enrollment_builds_voiceprint():
     asyncio.run(run())
 
 
+def test_reply_language_directive():
+    """reply_language decouples understanding (any language) from output (always the set language)."""
+    from otto.brain.agent import _language_directive
+
+    class _V:
+        def __init__(self, rl): self.reply_language = rl
+
+    class _S:
+        def __init__(self, rl): self.voice = _V(rl)
+
+    d_en = _language_directive(_S("en"))
+    assert "ANY language" in d_en and "English" in d_en and "never Hindi or Hinglish" in d_en
+    assert _language_directive(_S("")) == ""            # mirror (default) → no override
+    assert _language_directive(_S("mirror")) == ""
+    assert "Hindi" in _language_directive(_S("hi"))
+
+
 def test_parse_auth_status():
     from otto.orchestrator import _parse_auth_status
     assert _parse_auth_status('{"loggedIn": true, "email": "x"}', "") is True

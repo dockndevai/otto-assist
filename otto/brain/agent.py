@@ -28,6 +28,24 @@ from ..config import Settings
 from .tools import AssistantContext, build_server
 
 # Appended to Claude's own system prompt — voice manners only, no persona override.
+def _language_directive(settings) -> str:
+    """When voice.reply_language is set, override VOICE_WRAPPER's mirror-the-user rule: understand
+    any spoken language, but reply in the configured one (e.g. always English). "" = mirror (default)."""
+    rl = (getattr(settings.voice, "reply_language", "") or "").strip().lower()
+    if not rl or rl in ("match", "mirror"):
+        return ""
+    lang = {"en": "English", "en-in": "English", "hi": "Hindi",
+            "hinglish": "Hinglish"}.get(rl, rl)
+    if lang == "English":
+        rule = ("ALWAYS reply in clear, natural English — never Hindi or Hinglish — no matter what "
+                "language the user speaks.")
+    else:
+        rule = f"ALWAYS reply in {lang}, whatever language the user speaks."
+    return ("\n\nLANGUAGE (override the language rule above): Understand the user in ANY language "
+            "(English, Hindi, Hinglish, regional). But " + rule
+            + " Still write replies in ROMANIZED Latin script for the voice.")
+
+
 VOICE_WRAPPER = """You are the user's own Claude Code, with a voice and a screen added. The \
 user TALKS to you instead of typing, and HEARS a short spoken reply; the dashboard shows this \
 session's real chat — your tool calls, output, and code — exactly like a normal Claude Code \
@@ -291,7 +309,7 @@ class ClaudeBrain:
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": VOICE_WRAPPER,
+                "append": VOICE_WRAPPER + _language_directive(self.settings),
             },
             # Load the user's own Claude setup: MCP servers, subagents, skills, CLAUDE.md.
             setting_sources=(["user", "project", "local"] if b.use_claude_config else []),
