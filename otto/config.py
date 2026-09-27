@@ -348,6 +348,12 @@ class VoiceConfig(BaseModel):
     # from the menu bar. The character is a swappable pack (voice.character) — see CHARACTERS.md.
     floating_character: bool = False
     character: str = "orrin"          # character pack name (bundled, or OTTO_HOME/characters/<name>)
+    # Autonomy: let the character wander the screen on its own and react to what Orrin's doing
+    # (idle drift, busier movement while it thinks/researches, settling while it talks to you,
+    # napping in watch mode). Tunable so you control the movement.
+    character_roam: bool = True
+    character_roam_interval: float = 14.0   # ~seconds between wanders when idle (busier = sooner)
+    character_speed: float = 1.0            # glide speed multiplier (higher = faster moves)
     # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
     # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
     auth_preflight: bool = True
