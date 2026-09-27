@@ -268,6 +268,11 @@ class TTSConfig(BaseModel):
     # bite; keep it generous so a normal concise reply is spoken in full (not truncated). 0
     # disables the cap. Markdown/URLs/code are stripped from speech regardless.
     max_spoken_chars: int = 600
+    # Latency: speak the FIRST complete sentence as soon as the model emits it (while it's still
+    # generating the rest), then speak the remainder at end of turn — so audio starts sooner. One
+    # extra clip, not per-sentence (which synthesized choppy). Off = single clip at end (old way).
+    stream_sentences: bool = True
+    stream_min_chars: int = 8         # don't split off a first "sentence" shorter than this
     # When a phone (authenticated remote client) is connected, don't also speak the reply
     # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
     # driving it remotely. The dashboard on the Mac itself does NOT count as remote.

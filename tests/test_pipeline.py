@@ -2949,3 +2949,49 @@ def test_mlx_model_selection_by_language():
         assert pick_mlx_model(stt, vl) == stt.mlx_model, vl
     for vl in ("hinglish", "hi", "ta", "auto"):
         assert pick_mlx_model(stt, vl) == stt.mlx_multilingual_model, vl
+
+
+# -- #64: streaming first-sentence TTS ----------------------------------------
+
+def test_split_first_sentence():
+    from otto.orchestrator import _split_first_sentence
+    assert _split_first_sentence("Checking. You've got 76 GB free.") == (
+        "Checking.", "You've got 76 GB free.")
+    assert _split_first_sentence("Open the calculator") == ("", "Open the calculator")
+    assert _split_first_sentence("Done.") == ("", "Done.")            # boundary at end → wait
+    assert _split_first_sentence("Hi. There you go.", 8) == ("", "Hi. There you go.")  # too short
+    # a decimal is not a boundary
+    s, r = _split_first_sentence("It is 3.0 GB now and fine. More.")
+    assert s == "It is 3.0 GB now and fine." and r == "More."
+
+
+def test_streaming_tts_speaks_first_sentence_then_rest():
+    """First complete sentence is spoken during streaming; the remainder at flush; cap respected."""
+    orch = Orchestrator(load_settings(), EventBus())
+    t = orch.settings.voice.tts
+    t.stream_sentences = True; t.stream_min_chars = 8; t.max_spoken_chars = 600
+    orch.mouth = object(); orch.voice_muted = False
+    orch._speech_buf = ""; orch._spoken_chars = 0
+    orch._speak_done = False; orch._first_spoken = False
+    spoken = []
+    orch._voice_out = lambda s: spoken.append(s)
+    for ch in ["Che", "cking. ", "You've got 76 GB", " free."]:
+        orch._feed_speech(ch)
+    assert [x.strip() for x in spoken] == ["Checking."]        # streamed mid-generation
+    orch._flush_speech()
+    assert [x.strip() for x in spoken] == ["Checking.", "You've got 76 GB free."]
+    assert orch._speak_done is True
+
+    # streaming OFF → single clip at flush only
+    orch2 = Orchestrator(load_settings(), EventBus())
+    orch2.settings.voice.tts.stream_sentences = False
+    orch2.mouth = object(); orch2.voice_muted = False
+    orch2._speech_buf = ""; orch2._spoken_chars = 0
+    orch2._speak_done = False; orch2._first_spoken = False
+    out = []
+    orch2._voice_out = lambda s: out.append(s)
+    for ch in ["Checking. ", "You've got 76 GB free."]:
+        orch2._feed_speech(ch)
+    assert out == []                                            # nothing spoken until flush
+    orch2._flush_speech()
+    assert [x.strip() for x in out] == ["Checking. You've got 76 GB free."]

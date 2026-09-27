@@ -34,6 +34,27 @@ _log = logging.getLogger("otto")
 # (more may be coming, e.g. the "0" of "3.0") and spoken at _flush_speech when the turn ends.
 _SENTENCE_END = re.compile(r"(.*?(?:[.!?]+(?=\s)|\n))", re.S)
 
+# #64 streaming TTS: find the first sentence terminator that is followed by whitespace, so we can
+# speak sentence 1 while the model still generates the rest. A decimal ("3.0") isn't a boundary
+# (the "." isn't followed by whitespace).
+_FIRST_SENT = re.compile(r"[.!?](?=\s)")
+
+
+def _split_first_sentence(text: str, min_chars: int = 8) -> tuple[str, str]:
+    """(first_sentence, remainder) once there is real text after the first sentence boundary;
+    ("", text) if there's no boundary yet, nothing follows it yet, or the sentence is too short."""
+    m = _FIRST_SENT.search(text)
+    if not m:
+        return "", text
+    end = m.end()
+    sent, rest = text[:end], text[end:]
+    if not rest.strip():                 # boundary is at the very end — more may still come; wait
+        return "", text
+    if len(sent.strip()) < min_chars:
+        return "", text
+    return sent, rest.lstrip()
+
+
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
 # Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
@@ -221,6 +242,7 @@ class Orchestrator:
         self._speech_buf = ""
         self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
         self._speak_done = False     # cap reached → stop speaking the rest of this reply
+        self._first_spoken = False   # first sentence already streamed out this turn (#64)
         self._speaking = False
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
@@ -2538,6 +2560,7 @@ class Orchestrator:
                 self._speech_buf = ""
                 self._spoken_chars = 0
                 self._speak_done = False
+                self._first_spoken = False
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
@@ -2680,24 +2703,34 @@ class Orchestrator:
                 self._publish_workspaces()
 
     def _feed_speech(self, chunk: str) -> None:
-        """Accumulate the reply's deltas. We DON'T speak sentence-by-sentence anymore — a separate
-        Kokoro synth + afplay per sentence made speech choppy/robotic (gaps between sentences).
-        Instead the whole (short) reply is synthesized as ONE clip at _flush_speech, which Kokoro
-        renders with smooth cross-sentence prosody. The instant ack covers the small extra delay."""
+        """Accumulate the reply's deltas. With `stream_sentences` on (#64) we speak the FIRST
+        complete sentence as soon as it lands — so audio starts while the model is still
+        generating — then the remainder is spoken as ONE clip at _flush_speech (not per-sentence,
+        which synthesized choppy). Off = the old single-clip-at-end behavior."""
         if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
+        tts = self.settings.voice.tts
+        if (getattr(tts, "stream_sentences", True) and not self._first_spoken
+                and not self._speak_done):
+            sent, rest = _split_first_sentence(
+                self._speech_buf, int(getattr(tts, "stream_min_chars", 12)))
+            if sent:
+                self._speech_buf = rest
+                self._first_spoken = True
+                self._emit_speech(sent)
 
     def _flush_speech(self) -> None:
         buf = self._speech_buf
         self._speech_buf = ""
         if buf.strip():
-            self._speak_capped(buf)
+            self._emit_speech(buf)
+        self._speak_done = True                        # turn's speech is complete
 
-    def _speak_capped(self, raw: str) -> None:
-        """Speak the whole cleaned reply as one utterance (smooth), capped as a backstop against a
-        runaway verbose reply. The model already answers in a sentence or two WITH closure; if it
-        ever overruns the cap we trim at a word boundary and stop — no 'the rest is on screen'."""
+    def _emit_speech(self, raw: str) -> None:
+        """Speak one cleaned chunk (first sentence, or the remainder), respecting the TOTAL
+        spoken-length cap across the turn's clips. Skips a dead reply ('okay.'/'sure.') and, once
+        the cap is hit, trims at a word boundary and stops the rest."""
         if self._speak_done:
             return
         s = _speakable(raw)
@@ -2707,11 +2740,15 @@ class Orchestrator:
             print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
         cap = self.settings.voice.tts.max_spoken_chars or 0
-        if cap and len(s) > cap:                       # runaway reply — trim at a word boundary
-            s = s[:cap].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+        if cap:
+            remaining = cap - self._spoken_chars
+            if remaining <= 0:
+                return                                 # already spoke the cap's worth this turn
+            if len(s) > remaining:                     # runaway reply — trim at a word boundary
+                s = s[:remaining].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+                self._speak_done = True                # nothing more to speak after the trim
         self._voice_out(s)
         self._spoken_chars += len(s) + 1
-        self._speak_done = True                        # one clip per turn
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":
