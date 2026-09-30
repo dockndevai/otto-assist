@@ -418,7 +418,14 @@ class Ears:
         kw = {"path_or_hf_repo": self._mlx_model}
         if self._mlx_lang:
             kw["language"] = self._mlx_lang
-        return (self._mlx.transcribe(audio, **kw).get("text") or "").strip()
+        text = (self._mlx.transcribe(audio, **kw).get("text") or "").strip()
+        # Release MLX's Metal buffer cache so it doesn't accumulate across utterances.
+        try:
+            import mlx.core as mx
+            (getattr(mx, "clear_cache", None) or getattr(mx.metal, "clear_cache", lambda: None))()
+        except Exception:
+            pass
+        return text
 
     def _run(self) -> None:
         while self._running:
