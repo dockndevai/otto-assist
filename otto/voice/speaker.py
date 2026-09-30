@@ -98,7 +98,11 @@ class SpeakerVerifier:
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> None:
-        """Load the embedding model in the background (first load downloads ~weights once)."""
+        """Load the embedding model in the background (first load downloads ~weights once).
+        Idempotent — safe to call again (e.g. at first enrollment); won't reload."""
+        if self._ready or getattr(self, "_loading", False):
+            return
+        self._loading = True
         threading.Thread(target=self._load, daemon=True).start()
 
     def _load(self) -> bool:

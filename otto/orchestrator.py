@@ -682,13 +682,15 @@ class Orchestrator:
                 from .voice.speaker import SpeakerVerifier
                 d = v.stt.speaker_voiceprints_dir or str(OTTO_HOME / "voiceprints")
                 self.speaker = SpeakerVerifier(model_id=v.stt.speaker_model, voiceprints_dir=d)
-                self.speaker.start()
                 if self.speaker.has_voiceprint:
+                    self.speaker.start()        # load the ~0.8GB model only when there's a voice
                     print(f"[otto] speaker verification enabled; voices: {self.speaker.names}",
                           file=sys.stderr, flush=True)
                 else:
+                    # No voices enrolled → DON'T load the model (saves ~0.8GB). It loads on the
+                    # first enrollment (start_enrollment) instead.
                     print("[otto] speaker_verify on but no voices enrolled — menu → 'Enroll a "
-                          "voice' (skipping voice-ID until then)", file=sys.stderr, flush=True)
+                          "voice' (model not loaded until then)", file=sys.stderr, flush=True)
             except Exception as e:
                 print(f"[otto] speaker verifier init failed: {e!r}", file=sys.stderr, flush=True)
         # Startup sign-in check: warn right away if Claude's login has lapsed (in the background —
@@ -2166,7 +2168,7 @@ class Orchestrator:
                      or str(OTTO_HOME / "voiceprints"))
                 self.speaker = SpeakerVerifier(model_id=self.settings.voice.stt.speaker_model,
                                                voiceprints_dir=d)
-                self.speaker.start()
+            self.speaker.start()   # load the model now (idempotent; no-op if already loaded)
         except Exception as e:
             print(f"[otto] enrollment init failed: {e!r}", file=sys.stderr, flush=True)
             self._voice_out("I couldn't start voice setup right now.")
