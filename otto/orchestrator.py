@@ -317,6 +317,14 @@ class Orchestrator:
         self._git_ct_cache: dict[str, tuple[float, float]] = {}   # path -> (commit_time, cached_at)
         self._research_pass_i = 0     # counts research passes → rotates the objective (feature/risk)
         self._last_roadmap_day = ""   # "YYYY-MM-DD" of the last roadmap synthesis (once/day)
+        # Autonomous teammate (#71): reuses the research ws/running/cancelled slots above (only one
+        # idle background activity runs at a time). _autonomous_prs tracks PR timestamps for the
+        # daily budget; _autonomous_last is the last write-pass start (min-gap throttle).
+        self._autonomous_prs: list[float] = []
+        self._autonomous_last = 0.0
+        # System steward (#72): its own periodic health timer + last published health.
+        self._steward_handle = None
+        self._steward_health: dict = {}
         # Parallel "meanwhile" dispatch: a dedicated same-project background workspace (own brain +
         # lock) so a second command can run alongside the in-flight focused turn instead of queuing.
         self._parallel_ws: Workspace | None = None   # dedicated, kept OUT of self.workspaces
@@ -654,6 +662,7 @@ class Orchestrator:
         self._loop.create_task(self._seed_registry())
         self._arm_idle_research()
         self._arm_morning_brief()
+        self._arm_steward()
         # Proactive reminders/timers — load any persisted from a prior run and arm them.
         try:
             from .scheduler import Scheduler
@@ -1019,6 +1028,14 @@ class Orchestrator:
         if self._roadmap_due():
             await self._run_roadmap_synthesis()
             return                                  # re-arms in its own finally
+        # Autonomous teammate (#71): when enabled and within budget, prefer actually SHIPPING a
+        # scoped change (ready-for-review PR) over read-only research. Falls through to research
+        # when autonomy is off, out of budget, or nothing actionable is queued.
+        if self._autonomous_enabled() and self._autonomous_budget_ok():
+            task = self._pick_autonomous_task()
+            if task is not None:
+                await self._run_autonomous_work(*task)   # re-arms in its own finally
+                return
         path = self._next_research_project()
         if path is None:
             self._arm_idle_research()
@@ -1100,6 +1117,233 @@ class Orchestrator:
                 await ws.brain.disconnect()
             except Exception:
                 pass
+
+    # ── Autonomous teammate (#71): ship scoped ready-for-review PRs when idle ──────────────────
+    _AUTONOMY_PROMPT = (
+        "You are Orrin working AUTONOMOUSLY in the background as a careful engineering teammate. "
+        "The user is away. Do ONE small, well-scoped improvement in this project and open it as a "
+        "ready-for-review pull request for the user to merge. Work strictly as follows:\n"
+        "1. Create and switch to a NEW feature branch named exactly `{branch}` (never work on "
+        "{protected} — you are blocked from pushing/merging those anyway).\n"
+        "2. Make the SMALLEST change that accomplishes this task, nothing more:\n"
+        "   {task}\n"
+        "3. Run the project's own tests/lint/build and make sure they pass. If you cannot get them "
+        "green, DO NOT open a PR — revert your changes, stop, and say why.\n"
+        "4. Commit with a clear message, push the feature branch, and open a ready-for-review PR "
+        "with a concise summary of what and why. Never target or merge a protected branch.\n"
+        "5. If there is no git remote or `gh` is unavailable, stop after committing on the branch "
+        "and say so — do not force anything.\n"
+        "6. Then call `resolve_suggestion` with id {sid} (status 'done') if it fully addresses it, "
+        "and `remember` a one-line note of what you shipped.\n"
+        "Hard rules: nothing destructive (no rm/reset/force-push/history rewrite), no deploys or "
+        "releases, no changes outside this project, keep the diff small and focused. Be quiet — no "
+        "chit-chat, just do the work."
+    )
+
+    def _autonomous_enabled(self) -> bool:
+        return bool(getattr(self.settings.voice, "autonomous_work", False))
+
+    def _autonomous_budget_ok(self) -> bool:
+        """Within the daily write-pass cap AND past the min gap since the last pass."""
+        v = self.settings.voice
+        now = time.time()
+        day_ago = now - 86400.0
+        self._autonomous_prs = [t for t in self._autonomous_prs if t > day_ago]
+        if len(self._autonomous_prs) >= int(getattr(v, "autonomous_max_prs_per_day", 3)):
+            return False
+        return (now - self._autonomous_last) >= float(getattr(v, "autonomous_min_gap", 3600.0))
+
+    def _is_opted_out(self, path: str) -> bool:
+        from pathlib import Path
+        from .memory import project_slug
+        opt = [str(x) for x in (getattr(self.settings.voice, "autonomous_optout", []) or [])]
+        if not opt:
+            return False
+        full = str(Path(path).expanduser())
+        slug = project_slug(path)
+        return any(o == full or o == slug or o == path for o in opt)
+
+    def _pick_autonomous_task(self) -> tuple[str, dict] | None:
+        """Find a project (git-weighted, not opted-out, past the per-project gap) that has an open,
+        actionable suggestion to ship. Returns (project_path, suggestion) or None."""
+        from pathlib import Path
+        from .memory import project_slug
+        from .projects import list_projects
+        try:
+            cands = [p.path for p in list_projects(current=self.focused,
+                                                   pinned=self.settings.brain.projects)]
+        except Exception:
+            cands = []
+        reg = self.memory.registry()
+        now = time.time()
+        gap = float(getattr(self.settings.voice, "autonomous_min_gap", 3600.0))
+        git_weight = bool(getattr(self.settings.voice, "idle_research_git_weight", True))
+        ranked: list[tuple[float, str]] = []
+        home = str(Path.home())
+        for path in cands:
+            full = str(Path(path).expanduser())
+            if full in ("/", home) or len(full) < 4 or self._is_opted_out(path):
+                continue
+            last = (reg.get(project_slug(path), {}) or {}).get("last_autonomous") or 0.0
+            if last and (now - last) < gap:
+                continue
+            ranked.append((self._git_last_commit(full) if git_weight else 0.0, path))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        for _w, path in ranked:
+            try:
+                sugg = self.memory.list_suggestions(project_path=path, status="open", limit=5)
+            except Exception:
+                sugg = []
+            # Prefer concrete action items over pure risk notes.
+            actionable = [s for s in sugg if (s.get("kind") or "action") != "risk"] or sugg
+            if actionable:
+                return (path, actionable[0])
+        return None
+
+    def _autonomous_prompt(self, path: str, sugg: dict) -> str:
+        from pathlib import Path
+        v = self.settings.voice
+        prefix = str(getattr(v, "autonomous_branch_prefix", "orrin/"))
+        sid = str(sugg.get("id") or "")
+        slug = (Path(path).name or "work").lower().replace(" ", "-")[:24]
+        branch = f"{prefix}{slug}-{sid[:8] or 'task'}"
+        protected = ", ".join(str(b) for b in (getattr(v, "protected_branches", None)
+                                               or ["main", "master"]))
+        return self._AUTONOMY_PROMPT.format(
+            branch=branch, protected=protected, task=(sugg.get("text") or "").strip(), sid=sid)
+
+    async def _open_work_ws(self, path: str) -> Workspace | None:
+        """A dedicated WRITE-mode workspace (branch edits + safe git/test + PR-create), kept out of
+        self.workspaces so it never uses a user slot or pollutes the real chat."""
+        from pathlib import Path
+        p = str(Path(path).expanduser())
+        await self._close_research_ws()
+        try:
+            ws = Workspace(self, self.settings, p, new_chat=True, write_mode=True)
+            await ws.brain.connect()
+            self._research_ws = ws
+            return ws
+        except Exception as e:
+            print(f"[otto] work ws open failed: {e!r}", file=sys.stderr, flush=True)
+            return None
+
+    async def _run_autonomous_work(self, path: str, sugg: dict) -> None:
+        """Run one autonomous write pass: branch → scoped change → verify → ready PR. Reuses the
+        research running/cancel slots (only one idle activity runs at a time), so a spoken/typed
+        command interrupts it immediately via _cancel_idle_research."""
+        self._research_running = True
+        self._research_cancelled = False
+        self._autonomous_last = time.time()
+        name = ""
+        try:
+            self.memory.register_project(path)
+            ws = await self._open_work_ws(path)
+            if ws is None or self._research_cancelled:
+                return
+            name = ws.name
+            print(f"[otto] autonomous work -> {name} (write): {sugg.get('text','')!r}",
+                  file=sys.stderr, flush=True)
+            self.bus.publish({"type": "autonomous", "active": True, "name": name,
+                              "task": (sugg.get("text") or "")[:160]})
+            await self._run_turn(ws, self._autonomous_prompt(path, sugg),
+                                 echo_user=False, research=True)
+            if not self._research_cancelled:
+                self.memory.mark_autonomous(path)
+                self._autonomous_prs.append(time.time())    # consumed a write-pass slot
+                self.bus.notify("Orrin shipped work",
+                                f"Opened a PR for {name}: {(sugg.get('text') or '')[:80]}")
+        except Exception as e:
+            print(f"[otto] autonomous work failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self.bus.publish({"type": "autonomous", "active": False})
+            await self._close_research_ws()
+            self._research_running = False
+            self._arm_idle_research()
+
+    # ── System steward (#72): keep the Mac + Orrin's own footprint healthy ─────────────────────
+    def _steward_enabled(self) -> bool:
+        v = self.settings.voice
+        # autonomous_work is the master switch for ALL background autonomy (teammate + steward).
+        return bool(getattr(v, "autonomous_work", False)
+                    and getattr(v, "system_steward", False))
+
+    def _arm_steward(self) -> None:
+        if not self._steward_enabled() or self._loop is None:
+            return
+        if self._steward_handle is not None:
+            self._steward_handle.cancel()
+        delay = max(30.0, float(getattr(self.settings.voice, "steward_interval", 600.0)))
+        self._steward_handle = self._loop.call_later(
+            delay, lambda: self._loop.create_task(self._steward_tick()))
+
+    def _cancel_steward(self) -> None:
+        if self._steward_handle is not None:
+            self._steward_handle.cancel()
+            self._steward_handle = None
+
+    async def _steward_tick(self) -> None:
+        self._steward_handle = None
+        try:
+            if self._steward_enabled():
+                await self._run_steward_scan()
+        except Exception as e:
+            print(f"[otto] steward scan failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self._arm_steward()
+
+    def _release_orrin_caches(self) -> None:
+        """Nudge Python + MLX to hand memory back (Orrin-owned, always safe)."""
+        import gc
+        gc.collect()
+        try:
+            import mlx.core as mx
+            (getattr(mx, "clear_cache", None)
+             or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
+        except Exception:
+            pass
+
+    async def _run_steward_scan(self) -> None:
+        """One health pass: measure, auto-fix ONLY Orrin-owned cruft, edge-triggered alert on
+        non-Orrin problems (low disk/memory), publish a health snapshot to the dashboard."""
+        from . import steward as _steward
+        v = self.settings.voice
+        loop = self._loop
+        assert loop is not None
+        health = await loop.run_in_executor(None, _steward.scan)
+        fixed: list[str] = []
+        # --- Orrin-owned auto-fixes (no asking) ---
+        if health.get("orphan_workers"):
+            n = await loop.run_in_executor(None, _steward.sweep_orphans)
+            if n:
+                fixed.append(f"swept {n} orphaned worker(s)")
+        removed = await loop.run_in_executor(
+            None, _steward.clear_stale_lock, str(OTTO_HOME / "orrin.lock"), os.getpid())
+        if removed:
+            fixed.append("cleared a stale lock")
+        trimmed = await loop.run_in_executor(
+            None, _steward.trim_logs, str(OTTO_HOME / "logs"),
+            float(getattr(v, "steward_log_max_mb", 50.0)))
+        if trimmed:
+            fixed.append(f"trimmed {trimmed} oversized log(s)")
+        self._release_orrin_caches()
+        # --- Alerts for non-Orrin problems (edge-triggered: only when newly crossing a threshold) ---
+        issues: list[tuple[str, str]] = []
+        disk = health.get("disk_free_gb", 999.0)
+        if disk and disk < float(getattr(v, "steward_disk_min_gb", 5.0)):
+            issues.append(("disk", f"Low disk: {disk} GB free"))
+        mem = health.get("free_mem_gb", 999.0)
+        if 0 < mem < float(getattr(v, "steward_free_mem_min_gb", 1.5)):
+            issues.append(("mem", f"Low memory: {mem} GB free"))
+        prev = set((self._steward_health or {}).get("issue_keys", []))
+        for key, msg in issues:
+            if key not in prev:
+                self.bus.notify("System steward", msg)
+        health["issue_keys"] = [k for k, _ in issues]
+        health["fixed"] = fixed
+        self._steward_health = health
+        self.bus.publish({"type": "health", **health})
+        if fixed:
+            print(f"[otto] steward fixed: {', '.join(fixed)}", file=sys.stderr, flush=True)
 
     def on_mic_decision(self, granted: bool) -> None:
         """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
