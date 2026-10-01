@@ -2535,6 +2535,35 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
     asyncio.run(run())
 
 
+def test_echo_blocking_relaxes_cooldown_when_speaker_enrolled():
+    """The repeating fix: during the post-speech cooldown, barge-in is NOT blocked when a voiceprint
+    is enrolled (the speaker gate rejects echo instead) — but ACTUAL playback always blocks, and with
+    no voiceprint the old cooldown still applies."""
+    orch = Orchestrator(load_settings(), EventBus())
+    class FakeMouth:
+        playing = False
+        def recently_active(self, s): return self.playing
+    orch.mouth = FakeMouth()
+    orch._mute_input_until = time.monotonic() + 5     # in the cooldown window
+
+    # no voiceprint → cooldown still blocks (unchanged for non-enrolled users)
+    orch.settings.voice.stt.speaker_verify = False
+    orch.speaker = None
+    assert orch._echo_blocking() is True
+
+    # voiceprint enrolled + ready → cooldown is bypassed, your barge-in gets through
+    orch.settings.voice.stt.speaker_verify = True
+    class FakeSpeaker:
+        ready = True; has_voiceprint = True
+    orch.speaker = FakeSpeaker()
+    assert orch._speaker_echo_guard() is True
+    assert orch._echo_blocking() is False
+
+    # ...but while Orrin is ACTUALLY playing, always block (mixed audio is garbage)
+    orch.mouth.playing = True
+    assert orch._echo_blocking() is True
+
+
 def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
     """Regression: with speaker-ID ON but laya removed and hands_free_verify OFF, a recognized
     speaker's command must NOT be dropped by the (now-guarded) cloud 'is this a command?' verify."""
