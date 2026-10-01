@@ -2534,6 +2534,62 @@ class Orchestrator:
             self._status("idle", "Ready")
 
     # -- in-app voice enrollment (speaker verification) --------------------
+    # Phonetically-varied phrases for guided (dashboard) enrollment — the user reads these aloud
+    # one at a time; each finalized utterance becomes a voiceprint sample.
+    _ENROLL_PHRASES = [
+        "Hey Otto, open my projects and show me what changed today.",
+        "The quick brown fox jumps over the lazy dog by the river.",
+        "Please check the weather and remind me about the meeting at noon.",
+        "I usually start work around nine and take a short break by one.",
+        "Thanks Otto, that is all for now — talk to you later.",
+    ]
+
+    def _ensure_speaker(self) -> bool:
+        """Make sure the speaker-verifier exists and its model is loading. Returns False on failure."""
+        try:
+            from .voice.speaker import SpeakerVerifier
+            if self.speaker is None:
+                d = (self.settings.voice.stt.speaker_voiceprints_dir
+                     or str(OTTO_HOME / "voiceprints"))
+                self.speaker = SpeakerVerifier(model_id=self.settings.voice.stt.speaker_model,
+                                               voiceprints_dir=d)
+            self.speaker.start()   # idempotent
+            return True
+        except Exception as e:
+            print(f"[otto] enrollment init failed: {e!r}", file=sys.stderr, flush=True)
+            return False
+
+    def start_enrollment_named(self, name: str, count: int | None = None) -> None:
+        """Guided dashboard enrollment: the name is given up-front (typed on the /enroll page), then
+        the user reads the on-screen phrases aloud. Publishes `enroll` events so the page can show
+        the current phrase + progress. No voice 'what's your name?' step."""
+        from .voice.speaker import _safe_name
+        nm = _safe_name(name)
+        if not nm:
+            self.bus.publish({"type": "enroll", "state": "failed", "reason": "bad name"})
+            return
+        if not self._ensure_speaker():
+            self.bus.publish({"type": "enroll", "state": "failed", "reason": "model"})
+            return
+        phrases = list(self._ENROLL_PHRASES)
+        target = max(3, int(count)) if count else len(phrases)
+        self._enroll_clips = []
+        self._enroll_name = nm
+        self._enroll_target = target
+        self._enrolling = True
+        self._status("listening", f"Enrolling {nm}…")
+        self.bus.publish({"type": "enroll", "state": "started", "name": nm,
+                          "phrases": phrases, "target": target, "captured": 0})
+
+    def cancel_enrollment(self) -> None:
+        if not self._enrolling:
+            return
+        self._enrolling = False
+        self._enroll_clips = []
+        self._enroll_name = None
+        self._status("idle", "Ready")
+        self.bus.publish({"type": "enroll", "state": "cancelled"})
+
     def start_enrollment(self, target: int = 5) -> None:
         """Enroll a voice through Orrin's own mic (no Terminal): ask for the person's name, capture a
         few utterances into a voiceprint under that name, then turn speaker-ID on live. Multiple
@@ -2573,17 +2629,23 @@ class Orchestrator:
         pcm = getattr(self.ears, "last_audio", None) if self.ears is not None else None
         audio = to_float32_mono(pcm) if pcm else None
         if audio is None or audio.size < 8000:      # < ~0.5s — too short to be useful
+            self.bus.publish({"type": "enroll", "state": "too_short",
+                              "captured": len(self._enroll_clips), "target": self._enroll_target})
             self._voice_out("A bit more — say a full sentence.")
             return
         self._enroll_clips.append((audio, 16000))
         n = len(self._enroll_clips)
         left = self._enroll_target - n
         self.bus.transcript("assistant", f"Enrollment: {n}/{self._enroll_target}", final=True)
+        # Drive the guided dashboard page: it shows phrase #captured next.
+        self.bus.publish({"type": "enroll", "state": "captured",
+                          "captured": n, "target": self._enroll_target})
         if left > 0:
             self._voice_out(f"Got it. {left} more.")
             return
         self._enrolling = False
         self._status("thinking", "Saving voiceprint…")
+        self.bus.publish({"type": "enroll", "state": "saving"})
         if self._loop is not None:
             self._loop.create_task(self._finish_enrollment())
 
@@ -2605,9 +2667,12 @@ class Orchestrator:
         if saved:
             print(f"[otto] enrolled voice '{saved}'; voices: {self.speaker.names}",
                   file=sys.stderr, flush=True)
+            self.bus.publish({"type": "enroll", "state": "done", "name": saved,
+                              "voices": list(self.speaker.names)})
             self._voice_out(f"All set, {saved}. I'll recognize your voice now.")
             self._status("idle", "Ready · voice enrolled")
         else:
+            self.bus.publish({"type": "enroll", "state": "failed", "reason": "no clips"})
             self._voice_out("That didn't take — let's try enrolling again later.")
             self._status("idle", "Ready")
 

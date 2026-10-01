@@ -220,6 +220,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def hud_page() -> FileResponse:
         return FileResponse(WEB_DIR / "hud.html")
 
+    @app.get("/enroll")
+    async def enroll_page() -> FileResponse:
+        return FileResponse(WEB_DIR / "enroll.html")
+
     # -- mobile pairing ---------------------------------------------------
     # What the phone needs to connect: the token + reachable addresses. Only served to a
     # LOOPBACK caller (the local dashboard / menu bar) so a remote client can't fetch the
@@ -723,6 +727,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     orch.mic_muted = bool(data.get("value"))
                 elif data.get("type") == "mute_voice":
                     orch.voice_muted = bool(data.get("value"))
+                elif data.get("type") == "enroll_start":
+                    orch.start_enrollment_named(data.get("name", ""), data.get("count"))
+                elif data.get("type") == "enroll_cancel":
+                    orch.cancel_enrollment()
         except WebSocketDisconnect:
             pass
         finally:
