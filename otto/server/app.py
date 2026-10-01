@@ -133,6 +133,14 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                      "A remote client with the token can run anything as you. Consider "
                      "'guarded' or 'voice', and rotate server.auth_token if it may have leaked.",
                      orch.settings.brain.permission)
+        # destructive_guard is the only confirm left standing in this combination (see its
+        # docstring in config.py) — never let a config override silently drop it and leave a
+        # remote token-holder with zero confirmation on destructive commands.
+        if not orch.settings.voice.destructive_guard:
+            _log.warning("SECURITY: voice.destructive_guard was off — forcing it on, since it's "
+                         "the only confirm gate left while remote+%s is active.",
+                         orch.settings.brain.permission)
+            orch.settings.voice.destructive_guard = True
     if _srv.allow_remote and not _srv.auth_token:
         # First time remote is enabled with no token: mint a strong one and persist it, so the
         # user can read it (menu bar / GET /api/pairing) and paste it into the phone app — and
@@ -243,6 +251,14 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                      if not srv.allow_remote else
                      "Paste an address + this token into the Orrin phone app."),
         })
+
+    @app.get("/api/enrolled_voices")
+    async def get_enrolled_voices(request: Request) -> JSONResponse:
+        """Enrolled speaker voiceprint names, for the enrollment page's list. Loopback-only.
+        (Distinct from /api/voices, which lists TTS output voices.)"""
+        if not _peer_local(request):
+            return JSONResponse({"error": "local only"}, status_code=403)
+        return JSONResponse({"voices": orch.list_voices()})
 
     # -- config + projects API --------------------------------------------
     @app.get("/api/config")
@@ -731,6 +747,8 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
                     orch.start_enrollment_named(data.get("name", ""), data.get("count"))
                 elif data.get("type") == "enroll_cancel":
                     orch.cancel_enrollment()
+                elif data.get("type") == "remove_voice":
+                    orch.remove_voice(data.get("name", ""))
         except WebSocketDisconnect:
             pass
         finally:

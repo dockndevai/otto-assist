@@ -135,6 +135,18 @@ class SpeakerVerifier:
     def names(self) -> list[str]:
         return list(self._prints)
 
+    def remove(self, name: str) -> bool:
+        """Delete an enrolled voiceprint (both in-memory and on disk). Returns True if removed."""
+        nm = _safe_name(name)
+        existed = self._prints.pop(nm, None) is not None
+        if self._dir is not None:
+            try:
+                (self._dir / f"{nm}.npy").unlink(missing_ok=True)
+            except Exception as e:
+                print(f"[otto] speaker: couldn't delete voiceprint {nm}: {e!r}",
+                      file=sys.stderr, flush=True)
+        return existed
+
     # -- embedding / scoring ----------------------------------------------
     def embed(self, audio: np.ndarray, sr: int = TARGET_SR) -> np.ndarray | None:
         """L2-normalized x-vector for one clip, or None if not ready / audio too short."""
