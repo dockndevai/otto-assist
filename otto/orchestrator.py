@@ -322,6 +322,9 @@ class Orchestrator:
         # daily budget; _autonomous_last is the last write-pass start (min-gap throttle).
         self._autonomous_prs: list[float] = []
         self._autonomous_last = 0.0
+        # Recent autonomous activity (PRs shipped + steward fixes), for the daily digest + a spoken
+        # "what did you do?" — each: {ts, kind: 'pr'|'steward', project?, text}. Kept bounded.
+        self._autonomous_log: list[dict] = []
         # System steward (#72): its own periodic health timer + last published health.
         self._steward_handle = None
         self._steward_health: dict = {}
@@ -823,6 +826,10 @@ class Orchestrator:
             if roadmap:
                 pre = (pre + "\n\n[Today's prioritized roadmap — lead the brief with its top 1-2 "
                        "items:]\n" + roadmap).strip()
+            digest = self.autonomy_digest()
+            if digest:
+                pre = (pre + "\n\n[What you (Orrin) did autonomously overnight — mention this "
+                       "briefly so the user knows what's waiting for review:]\n" + digest).strip()
             prompt = (self._MORNING_BRIEF_PROMPT + "\n\n" + pre) if pre else self._MORNING_BRIEF_PROMPT
             await self._run_turn(self.focused_ws, prompt, echo_user=False)
         except Exception as e:
@@ -1250,6 +1257,7 @@ class Orchestrator:
             if not self._research_cancelled:
                 self.memory.mark_autonomous(path)
                 self._autonomous_prs.append(time.time())    # consumed a write-pass slot
+                self._record_autonomy("pr", (sugg.get("text") or "")[:120], project=name)
                 self.bus.notify("Orrin shipped work",
                                 f"Opened a PR for {name}: {(sugg.get('text') or '')[:80]}")
         except Exception as e:
@@ -1343,7 +1351,85 @@ class Orchestrator:
         self._steward_health = health
         self.bus.publish({"type": "health", **health})
         if fixed:
+            self._record_autonomy("steward", "; ".join(fixed))
             print(f"[otto] steward fixed: {', '.join(fixed)}", file=sys.stderr, flush=True)
+
+    # ── Transparency: activity ledger + digest + toggle (#71/#72 Phase 3) ──────────────────────
+    def _record_autonomy(self, kind: str, text: str, *, project: str = "") -> None:
+        """Append one background action to the ledger (bounded), for the digest + spoken recap."""
+        self._autonomous_log.append(
+            {"ts": time.time(), "kind": kind, "project": project, "text": text})
+        self._autonomous_log = self._autonomous_log[-50:]
+
+    def autonomy_digest(self, *, hours: float = 24.0) -> str:
+        """A short plain-English recap of what Orrin did on its own recently (PRs shipped + machine
+        upkeep) plus current health — empty string if nothing to report."""
+        cut = time.time() - hours * 3600.0
+        recent = [a for a in self._autonomous_log if a.get("ts", 0) >= cut]
+        prs = [a for a in recent if a.get("kind") == "pr"]
+        fixes = [a for a in recent if a.get("kind") == "steward"]
+        lines: list[str] = []
+        if prs:
+            lines.append(f"Opened {len(prs)} PR{'s' if len(prs) != 1 else ''} for review:")
+            lines += [f"  • {a.get('project') or 'a project'}: {a.get('text','').strip()}"
+                      for a in prs[-5:]]
+        if fixes:
+            lines.append(f"Machine upkeep ({len(fixes)} pass{'es' if len(fixes) != 1 else ''}): "
+                         + "; ".join(a.get("text", "") for a in fixes[-3:]))
+        h = self._steward_health or {}
+        if h:
+            parts = []
+            if h.get("free_mem_gb"):
+                parts.append(f"{h['free_mem_gb']} GB memory free")
+            if h.get("disk_free_gb"):
+                parts.append(f"{h['disk_free_gb']} GB disk free")
+            if parts:
+                lines.append("Machine health: " + ", ".join(parts)
+                             + ("." if not h.get("issue_keys") else " — needs attention."))
+        return "\n".join(lines).strip()
+
+    def set_autonomous(self, on: bool, *, speak: bool = True) -> None:
+        """Flip the background-autonomy master switch at runtime (menu or voice), persist it, and
+        arm/cancel the loops immediately. The steward follows the master switch (and its own flag)."""
+        v = self.settings.voice
+        v.autonomous_work = bool(on)
+        try:
+            save_config(self.settings.model_dump(mode="json"))
+        except Exception as e:
+            print(f"[otto] couldn't persist autonomy toggle: {e!r}", file=sys.stderr, flush=True)
+        if on:
+            self._arm_idle_research()
+            self._arm_steward()
+            msg = "Background work is on — I'll improve things and keep the machine tidy while you're away."
+        else:
+            self._cancel_idle_research()
+            self._cancel_steward()
+            msg = "Background work is off. I'll only act when you ask."
+        self.bus.publish({"type": "autonomy_state", "on": bool(on)})
+        print(f"[otto] autonomous_work -> {on}", file=sys.stderr, flush=True)
+        if speak:
+            self.bus.transcript("assistant", msg, final=True)
+            self._voice_out(msg)
+
+    # Voice phrases that toggle background autonomy. Returns True (enable), False (disable), or None.
+    _AUTONOMY_ON = ("work in the background", "start working in the background",
+                    "turn on autonomous", "enable autonomous", "enable background work",
+                    "start background work", "work on things yourself", "work on your own",
+                    "keep improving things", "be my teammate")
+    _AUTONOMY_OFF = ("stop working in the background", "stop background work",
+                     "turn off autonomous", "disable autonomous", "disable background work",
+                     "pause autonomous", "pause background work", "stop working on your own",
+                     "stop improving things")
+
+    def _autonomy_command(self, text: str) -> bool | None:
+        low = " ".join(_norm_words(text))
+        if not low:
+            return None
+        if any(p in low for p in self._AUTONOMY_OFF):
+            return False
+        if any(p in low for p in self._AUTONOMY_ON):
+            return True
+        return None
 
     def on_mic_decision(self, granted: bool) -> None:
         """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
@@ -2062,6 +2148,11 @@ class Orchestrator:
         if self._is_stop_command(text):   # typed/said "stop" — halt now
             self.interrupt_now("text")
             return
+        _auto = self._autonomy_command(text)   # "work in the background" / "stop background work"
+        if _auto is not None:
+            self.bus.transcript("user", text, final=True)
+            self.set_autonomous(_auto)
+            return
         # If the agent is waiting on an ask_user answer, this input is that answer.
         if self._pending_answer and not self._pending_answer.done():
             self.bus.transcript("user", text, final=True)
@@ -2202,6 +2293,13 @@ class Orchestrator:
         # Hands-free dictation toggle ("start/stop dictation") — whole-utterance match.
         if self._is_dictation_command(text):
             self.set_dictation(not self._dictation)
+            return
+        # Background-autonomy toggle ("start/stop working in the background") — caught early so it
+        # can't be dropped by the ambient gate.
+        _auto = self._autonomy_command(text)
+        if _auto is not None:
+            self.bus.transcript("user", text, final=True)
+            self.set_autonomous(_auto)
             return
         # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
