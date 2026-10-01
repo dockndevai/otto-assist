@@ -605,6 +605,35 @@ class Orchestrator:
                 pass
         return time.monotonic() < self._mute_input_until
 
+    def _speaker_echo_guard(self) -> bool:
+        """True when speaker verification can reliably tell YOUR voice from Orrin's own (synthetic)
+        TTS echo — i.e. speaker_verify is on, the model is ready, and a voiceprint is enrolled. When
+        so, the speaker gate itself rejects echo, so we don't need the blunt timing cooldown that was
+        swallowing genuine barge-in."""
+        stt = self.settings.voice.stt
+        return bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
+                    and self.speaker.ready and self.speaker.has_voiceprint)
+
+    def _echo_blocking(self) -> bool:
+        """Capture-time echo guard. During ACTUAL playback (or its 1.5s tail) the mic hears a mix of
+        Orrin + room, which is garbage — always drop. In the post-speech COOLDOWN, drop only when
+        speaker-ID can't otherwise reject echo; with a voiceprint, let your barge-in through and let
+        the speaker gate drop Orrin's own voice (fixes the 'it dropped me so I repeated' problem)."""
+        if self.mouth is None:
+            return False
+        try:
+            if self.mouth.recently_active(1.5):   # actively playing / just finished → mixed audio
+                return True
+        except Exception:
+            try:
+                if self.mouth.is_playing():
+                    return True
+            except Exception:
+                pass
+        if self._speaker_echo_guard():
+            return False                          # cooldown gap: trust the speaker gate instead
+        return time.monotonic() < self._mute_input_until
+
     # -- lifecycle ---------------------------------------------------------
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
@@ -2340,7 +2369,7 @@ class Orchestrator:
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
         if self._pending_answer is not None and not self._pending_answer.done():
-            if self._output_suppressing():        # mic tail of Orrin speaking the question
+            if self._echo_blocking():             # mic tail of Orrin speaking the question
                 print(f"[otto] ignoring echo while awaiting answer: {text!r}",
                       file=sys.stderr, flush=True)
                 return
@@ -2361,7 +2390,7 @@ class Orchestrator:
             # Never let Orrin's OWN voice become the "command"/"answer": drop a greeting-ack echo,
             # anything still overlapping its speech, or a line matching what it just said. This is
             # what stopped the startup greeting from answering its own question in a loop.
-            if (self._is_ack_echo(text) or self._output_suppressing()
+            if (self._is_ack_echo(text) or self._echo_blocking()
                     or self._is_self_echo(text)):
                 print(f"[otto] awaiting: ignoring self-echo: {text!r}",
                       file=sys.stderr, flush=True)
@@ -2385,7 +2414,7 @@ class Orchestrator:
         # Half-duplex echo guard: while Otto is speaking (and for a content-length-based
         # cooldown after), the mic hears Otto's own voice — drop it so Otto doesn't answer
         # itself in a loop. This is essential on a laptop speaker (no headphones).
-        if self._output_suppressing():
+        if self._echo_blocking():
             print(f"[otto] ignoring self-echo (speaking): {text!r}", file=sys.stderr, flush=True)
             return
         # Timing-independent echo guard: even after the mute window closes, the mic can catch
