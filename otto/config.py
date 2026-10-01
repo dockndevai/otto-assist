@@ -397,6 +397,17 @@ class VoiceConfig(BaseModel):
     # Branches the autonomous teammate must NEVER push to, merge, reset, or force-update. It works
     # only on its own feature branches and opens PRs against these.
     protected_branches: list = Field(default_factory=lambda: ["main", "master"])
+    # Budget for autonomous code work — bounds how much the teammate ships unattended.
+    autonomous_max_prs_per_day: int = 3       # across all projects, per calendar day
+    autonomous_min_gap: float = 3600.0        # ≥ this many seconds between write passes (1h)
+    # Prefix for the teammate's feature branches (so its work is easy to spot / clean up).
+    autonomous_branch_prefix: str = "orrin/"
+
+    # ── System steward (#72) cadence + alert thresholds ───────────────────────────────────────
+    steward_interval: float = 600.0           # health scan every N seconds (10 min)
+    steward_disk_min_gb: float = 5.0          # alert if free disk drops below this
+    steward_free_mem_min_gb: float = 1.5      # alert if free memory drops below this
+    steward_log_max_mb: float = 50.0          # trim Orrin's own logs above this size
 
 
 class MemoryConfig(BaseModel):

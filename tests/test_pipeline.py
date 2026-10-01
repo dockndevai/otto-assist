@@ -9,6 +9,8 @@ running the app; it needs a valid `claude` login and is not part of this offline
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from pathlib import Path
 
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
@@ -772,6 +774,120 @@ def test_autonomy_config_defaults_off():
     assert v.system_steward is False
     assert "main" in v.protected_branches and "master" in v.protected_branches
     assert v.autonomous_optout == []
+
+
+def test_steward_helpers(tmp_path, monkeypatch):
+    """The steward's pure helpers: Orrin-process classification, orphan detection, stale-lock
+    clearing, and log trimming — all without touching real processes."""
+    from otto import steward as S
+    # Orrin-worker classification: must be a multiprocessing worker whose EXE is our python.
+    assert S._is_otto_worker("/x/personal-assist/.venv/bin/python -c multiprocessing.spawn") is True
+    assert S._is_otto_worker("/usr/bin/python3 -c multiprocessing.spawn") is False   # not ours
+    assert S._is_otto_worker("vim /x/otto-assist/multiprocessing.py") is False        # editor
+    # Orphan detection: our worker reparented to launchd (ppid==1) is an orphan; a live child isn't.
+    rows = [(111, 1, 2048, "/x/personal-assist/.venv/bin/python -c multiprocessing.spawn"),
+            (222, 999, 4096, "/x/personal-assist/.venv/bin/python -c multiprocessing.spawn"),
+            (333, 1, 1024, "/usr/bin/python3 other")]
+    assert S.orphan_workers(rows) == [111]
+    assert S.orrin_rss_mb(rows) == round((2048 + 4096) / 1024.0, 1)
+    # Stale-lock clearing: a dead pid → removed; our own live pid → kept.
+    lock = tmp_path / "orrin.lock"
+    lock.write_text("999999")                       # almost certainly dead
+    assert S.clear_stale_lock(lock, live_pid=os.getpid()) is True and not lock.exists()
+    lock.write_text(str(os.getpid()))
+    assert S.clear_stale_lock(lock, live_pid=os.getpid()) is False and lock.exists()
+    # Log trimming: an oversized log is truncated (kept under the cap); a small one is left.
+    logs = tmp_path / "logs"; logs.mkdir()
+    big = logs / "orrin.log"; big.write_bytes(b"x" * (3 * 1024 * 1024))
+    small = logs / "tiny.log"; small.write_bytes(b"y" * 10)
+    assert S.trim_logs(logs, max_mb=1.0) == 1
+    assert big.stat().st_size < 3 * 1024 * 1024 and small.stat().st_size == 10
+    # scan() shape (synthetic ps)
+    monkeypatch.setattr(S, "_ps", lambda: rows)
+    monkeypatch.setattr(S, "free_mem_gb", lambda: 4.0)
+    monkeypatch.setattr(S, "disk_free_gb", lambda p="/": 42.0)
+    snap = S.scan()
+    assert snap["orphan_workers"] == [111] and snap["free_mem_gb"] == 4.0
+
+
+def test_autonomous_budget_and_pick(tmp_path, monkeypatch):
+    """Daily cap + min-gap budget gate, opt-out, and task picking from open suggestions."""
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    s = load_settings()
+    s.voice.autonomous_work = True
+    s.voice.autonomous_max_prs_per_day = 2
+    s.voice.autonomous_min_gap = 1000.0
+
+    class P:
+        def __init__(self, path): self.path = path; self.name = path.rsplit("/", 1)[-1]
+
+    async def run():
+        orch = Orchestrator(s, EventBus())
+        orch._loop = asyncio.get_running_loop()
+        assert orch._autonomous_enabled() is True
+        # budget: fresh → ok; last pass too recent → blocked; daily cap hit → blocked
+        assert orch._autonomous_budget_ok() is True
+        orch._autonomous_last = time.time()
+        assert orch._autonomous_budget_ok() is False
+        orch._autonomous_last = 0.0
+        orch._autonomous_prs = [time.time(), time.time()]
+        assert orch._autonomous_budget_ok() is False
+        orch._autonomous_prs = []
+        # picking: alpha has an open action; beta is opted out
+        monkeypatch.setattr("otto.projects.list_projects",
+                            lambda **k: [P(orch.focused), P("/x/alpha"), P("/x/beta")])
+        monkeypatch.setattr(orch, "_git_last_commit", lambda p: 0.0)
+        s.voice.autonomous_optout = ["/x/beta"]
+        assert orch._is_opted_out("/x/beta") is True
+        sugg = {"id": "abc123", "kind": "action", "text": "Add a --version flag", "status": "open"}
+        def fake_list(**kw):
+            return [sugg] if kw.get("project_path") == "/x/alpha" else []
+        monkeypatch.setattr(orch.memory, "list_suggestions", fake_list)
+        pick = orch._pick_autonomous_task()
+        assert pick is not None and pick[0] == "/x/alpha" and pick[1]["id"] == "abc123"
+        # the prompt embeds the branch name, task, protected branches, and suggestion id
+        prompt = orch._autonomous_prompt("/x/alpha", sugg)
+        assert "orrin/alpha-abc123" in prompt and "Add a --version flag" in prompt
+        assert "main" in prompt and "abc123" in prompt
+    asyncio.run(run())
+
+
+def test_idle_tick_prefers_autonomous_when_enabled(tmp_path, monkeypatch):
+    """When autonomy is on, in budget, and a task exists, the idle tick ships work instead of
+    running read-only research."""
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    s = load_settings(); s.voice.autonomous_work = True
+
+    async def run():
+        orch = Orchestrator(s, EventBus())
+        orch._loop = asyncio.get_running_loop()
+        calls = {"work": 0, "research": 0}
+        monkeypatch.setattr(orch, "_research_quiescent", lambda: True)
+        monkeypatch.setattr(orch, "_roadmap_due", lambda: False)
+        monkeypatch.setattr(orch, "_autonomous_budget_ok", lambda: True)
+        monkeypatch.setattr(orch, "_pick_autonomous_task", lambda: ("/x/alpha", {"id": "i", "text": "t"}))
+        async def fake_work(path, sugg): calls["work"] += 1
+        async def fake_research(path): calls["research"] += 1
+        monkeypatch.setattr(orch, "_run_autonomous_work", fake_work)
+        monkeypatch.setattr(orch, "_run_idle_research", fake_research)
+        monkeypatch.setattr(orch, "_arm_idle_research", lambda: None)
+        await orch._idle_research_tick()
+        assert calls == {"work": 1, "research": 0}
+    asyncio.run(run())
+
+
+def test_steward_requires_master_switch():
+    """The steward only runs when BOTH autonomous_work (master) and system_steward are on."""
+    s = load_settings()
+    orch = Orchestrator(s, EventBus())
+    assert orch._steward_enabled() is False                      # both default off
+    s.voice.system_steward = True
+    assert orch._steward_enabled() is False                      # master still off
+    s.voice.autonomous_work = True
+    assert orch._steward_enabled() is True
+    assert s.voice.steward_interval > 0 and s.voice.steward_disk_min_gb > 0
 
 
 def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):

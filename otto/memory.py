@@ -364,6 +364,22 @@ class Memory:
         except Exception:
             pass
 
+    def mark_autonomous(self, project_path: str) -> None:
+        """Stamp when the autonomous teammate (#71) last did WRITE work in this project, so the
+        picker can respect a per-project gap and rotate fairly."""
+        path = self.root / "index.json"
+        idx = self.registry()
+        slug = project_slug(project_path)
+        entry = idx.get(slug) or {"turns": 0,
+                                  "path": str(Path(project_path).expanduser()),
+                                  "name": str(project_path).rstrip("/").split("/")[-1]}
+        entry["last_autonomous"] = time.time()
+        idx[slug] = entry
+        try:
+            self._atomic_write(path, json.dumps(idx, indent=2))
+        except Exception:
+            pass
+
     def project_updated_at(self, project_path: str) -> float:
         """Freshness signal for the research queue: newest mtime of this project's memory files."""
         pdir = self.root / "projects" / project_slug(project_path)
