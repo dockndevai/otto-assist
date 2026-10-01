@@ -77,6 +77,25 @@ rm -rf build dist
 [ -d "$APP" ] || { echo "Build failed: $APP not produced"; exit 1; }
 echo "    Built $APP"
 
+# MLX smoke check (#73): if mlx is installed in the build venv, its native libs MUST be in the
+# bundle and COLOCATED (libmlx.dylib + mlx.metallib in the same dir), or the packaged app silently
+# falls back to the slower faster-whisper STT. Warn loudly (don't fail — an mlx-less build is allowed).
+if .venv/bin/python -c "import mlx.core" 2>/dev/null; then
+    # PyInstaller makes several copies of these files, so check for colocation DIRECTLY: is there
+    # any directory in the bundle holding BOTH libmlx.dylib and mlx.metallib? That's what MLX's
+    # dladdr-based metallib lookup needs at runtime.
+    COLO=""
+    while IFS= read -r d; do
+        [ -f "$d/mlx.metallib" ] && { COLO="$d"; break; }
+    done < <(find "$APP" -name libmlx.dylib -exec dirname {} \; | sort -u)
+    if [ -n "$COLO" ]; then
+        echo "    MLX native libs present and colocated ($COLO)"
+    else
+        echo "⚠️  WARNING: no bundle dir holds BOTH libmlx.dylib and mlx.metallib —"
+        echo "    MLX will fail to initialize its Metal backend and fall back to faster-whisper (#73)."
+    fi
+fi
+
 # Signing strategy:
 #   SIGN_ID set            -> real Developer ID (hardened runtime + timestamp, for notarization).
 #   LOCAL_SIGN_ID present   -> stable SELF-SIGNED identity. The whole point: an ad-hoc signature's
