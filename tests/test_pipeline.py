@@ -2827,10 +2827,11 @@ def _neuter(orch, notes):
 
 
 def test_split_meanwhile_detection():
-    """Parallel-intent leads are detected and the command is de-prefixed; normal sentences (incl.
-    ones that merely start with 'while …') are not misread as parallel."""
+    """Parallel-intent is detected into (foreground, background) clauses; the background clause is
+    de-prefixed. Normal sentences (incl. ones that merely start with 'while …') are not misread."""
     orch = Orchestrator(load_settings(), EventBus())
-    pos = {
+    # leading connector → no foreground, the clause is the background task
+    bg_only = {
         "meanwhile, open Finder": "open Finder",
         "meanwhile can you open Finder": "open Finder",
         "in the meantime, please check the logs": "check the logs",
@@ -2842,14 +2843,45 @@ def test_split_meanwhile_detection():
         "by the time this build is happening, can you open Finder": "open Finder",
         "by the time the tests finish, also pull main": "pull main",
     }
-    for text, cmd in pos.items():
-        ok, got = orch._split_meanwhile(text)
-        assert ok and got == cmd, (text, ok, got)
+    for text, bg in bg_only.items():
+        ok, fg, got_bg = orch._split_meanwhile(text)
+        assert ok and got_bg == bg and fg == "", (text, ok, fg, got_bg)
+    # foreground + background split (the real-world failure: a background read AND a next task)
+    fg_bg = {
+        "read this in the background and meanwhile let's open GitNexus":
+            ("open GitNexus", "read this"),
+        "ok do one thing, analyze the logs in the background and open the dashboard":
+            ("open the dashboard", "analyze the logs"),
+        "open finder, meanwhile read the management folder":
+            ("open finder", "read the management folder"),
+    }
+    for text, (want_fg, want_bg) in fg_bg.items():
+        ok, fg, bg = orch._split_meanwhile(text)
+        assert ok and fg == want_fg and bg == want_bg, (text, ok, fg, bg)
     for neg in ("open Finder", "while loop keeps crashing", "check the auth project status",
                 "what should we do across my projects", "run the maven build",
                 "while you were out I fixed the bug"):
-        ok, _ = orch._split_meanwhile(neg)
+        ok, _fg, _bg = orch._split_meanwhile(neg)
         assert not ok, neg
+
+
+def test_background_clause_runs_parallel_even_when_idle():
+    """The fix: 'read X in the background and open Y' spins up the background workspace concurrently
+    even with nothing else running, while the foreground clause runs focused — so the long read
+    never blocks the next command."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        seen = {}
+        async def fake_par(cmd, original): seen["par"] = cmd
+        async def fake_handle(text, **k): seen["handle"] = text
+        orch._run_parallel_turn = fake_par
+        orch._handle_turn = fake_handle
+        orch.submit_user_input("read this in the background and meanwhile let's open GitNexus")
+        await asyncio.sleep(0)
+        assert seen.get("par") == "read this"          # background read, concurrent
+        assert seen.get("handle") == "open GitNexus"   # foreground proceeds immediately
+    asyncio.run(run())
 
 
 def test_meanwhile_routes_parallel_only_when_busy():
@@ -2877,7 +2909,7 @@ def test_meanwhile_routes_parallel_only_when_busy():
             await asyncio.sleep(0)
         finally:
             orch.focused_ws.lock.release()
-        assert seen.get("par") == ("open Finder", "meanwhile, open Finder")
+        assert seen.get("par") == ("open Finder", "open Finder")
         assert "handle" not in seen
     asyncio.run(run())
 
