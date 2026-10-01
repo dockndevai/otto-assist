@@ -673,20 +673,11 @@ class Orchestrator:
             self.scheduler.start(self._loop)
         except Exception as e:
             print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
-        # Local typed-decision model (laya): powers the hands-free smart-gate, the local
-        # command-verify, and the auto-fresh-context / destructive-action guards. Loaded once in
-        # the background if ANY of those features is on. Transparent no-op until ready.
+        # laya (the local typed-decision model) has been removed: its ~2.2 GB model was the biggest
+        # memory hog and it dropped genuine conversational commands as "ambient". `self.smart_gate`
+        # stays None, so the (guarded) gate branches downstream are permanently inert — hands-free
+        # filtering now rests on speaker verification + the cheap noise heuristic.
         v = self.settings.voice
-        laya_wanted = (getattr(v.stt, "laya_needed", False)
-                       or getattr(v, "auto_fresh_context", False)
-                       or getattr(v, "destructive_guard", False))
-        if laya_wanted:
-            try:
-                from .voice.smartgate import SmartGate
-                self.smart_gate = SmartGate()
-                self.smart_gate.start()
-            except Exception as e:
-                print(f"[otto] smart-gate init failed: {e!r}", file=sys.stderr, flush=True)
         # Speaker verification ("whose voice?") — loads the x-vector model in the background when
         # enabled. Supports MULTIPLE enrolled voices (family/shared machine). Fail-open until ready.
         if getattr(v.stt, "speaker_verify", False):
