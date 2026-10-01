@@ -937,6 +937,28 @@ def test_autonomy_digest():
     assert "swept 2 orphaned" in d and "GB memory free" in d
 
 
+def test_dashboard_enrollment_flow(monkeypatch):
+    """Guided (dashboard) enrollment: start publishes the phrase script + target; cancel resets and
+    notifies — without loading the real speaker model."""
+    orch = Orchestrator(load_settings(), EventBus())
+    events = []
+    monkeypatch.setattr(orch.bus, "publish", lambda e: events.append(e))
+    monkeypatch.setattr(orch, "_ensure_speaker", lambda: True)
+    orch.start_enrollment_named("Ankit")
+    assert orch._enrolling is True and orch._enroll_name == "ankit"
+    started = [e for e in events if e.get("type") == "enroll" and e.get("state") == "started"]
+    assert started and len(started[0]["phrases"]) >= 3 and started[0]["target"] >= 3
+    assert started[0]["name"] == "ankit"
+    orch.cancel_enrollment()
+    assert orch._enrolling is False
+    assert any(e.get("type") == "enroll" and e.get("state") == "cancelled" for e in events)
+    # a blank name is rejected (failed event, not enrolling)
+    events.clear()
+    orch.start_enrollment_named("  ")
+    assert orch._enrolling is False
+    assert any(e.get("state") == "failed" for e in events if e.get("type") == "enroll")
+
+
 def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
     """The research queue skips the focused project + freshly-researched ones, least-recent first;
     quiescence gate reflects state."""
