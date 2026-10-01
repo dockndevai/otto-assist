@@ -193,6 +193,7 @@ class OttoApp(rumps.App):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
         self._dash = None       # in-app dashboard window (lazy)
+        self._enroll_win = None  # in-app voice-enrollment window (lazy)
         self._float = None      # floating on-screen character panel (lazy)
         self._char_shown = False   # whether we've auto-shown the character this launch
         self._shutting_down = False   # set on intentional Quit/Restart so the supervisor stops
@@ -569,11 +570,22 @@ class OttoApp(rumps.App):
             print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
 
     def enroll_voice(self, _) -> None:
-        """Open the guided voice-enrollment page (shows phrases to read; Orrin's mic captures each)."""
+        """Open the guided voice-enrollment flow INSIDE Orrin's own app window (WKWebView) — shows
+        phrases to read, Orrin's mic captures each. Falls back to the browser only if the in-app
+        window isn't available. A dedicated window whose base URL is /enroll, so reopen reloads the
+        enrollment page (not the dashboard)."""
         try:
-            webbrowser.open(self.url + "/enroll")
+            from .webview import DashboardWindow, available
+            if available():
+                if self._enroll_win is None:
+                    self._enroll_win = DashboardWindow(self.url.rstrip("/") + "/enroll",
+                                                       title="Enroll your voice")
+                self._enroll_win.show()
+                return
         except Exception as e:
-            print(f"[otto] enroll page open failed: {e}", file=sys.stderr, flush=True)
+            print(f"[otto] in-app enroll window unavailable, using browser: {e}",
+                  file=sys.stderr, flush=True)
+        webbrowser.open(self.url + "/enroll")
 
     def toggle_watch(self, _) -> None:
         """Watch mode: nap (ignore everything but the wake word) so a match/movie/call doesn't
