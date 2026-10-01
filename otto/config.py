@@ -377,6 +377,27 @@ class VoiceConfig(BaseModel):
     # first — a cheap local safety net against a misheard command running unconfirmed.
     destructive_guard: bool = True
 
+    # ── Autonomous work (the background "teammate", #71) ──────────────────────────────────────
+    # When ON, Orrin's idle background loop is allowed to WRITE: it branches, makes a scoped
+    # change, verifies it green, and opens a ready-for-review PR (never pushes/merges a protected
+    # branch, never does anything destructive — enforced by the write-gate in brain/agent.py).
+    # OFF by default: nothing autonomous runs until you flip this. This is also the global kill
+    # switch for both the code teammate and the system steward below.
+    autonomous_work: bool = False
+    # System steward (#72): a standing background role watching the Mac's health (memory/CPU/disk/
+    # thermals + Orrin's own worker fleet) and auto-fixing ONLY Orrin-owned cruft (sweep its
+    # orphaned STT workers, clear a stale lock, release its own caches, trim its logs). Anything
+    # touching other apps/system/non-Orrin processes stays alert+confirm. OFF by default; also
+    # gated by autonomous_work acting as the master switch.
+    system_steward: bool = False
+    # Per-project opt-OUT for autonomous work (project paths or memory slugs). Autonomous work is
+    # otherwise allowed in every active project once autonomous_work is on; list a repo here to keep
+    # it hands-off (read-only research only).
+    autonomous_optout: list = Field(default_factory=list)
+    # Branches the autonomous teammate must NEVER push to, merge, reset, or force-update. It works
+    # only on its own feature branches and opens PRs against these.
+    protected_branches: list = Field(default_factory=lambda: ["main", "master"])
+
 
 class MemoryConfig(BaseModel):
     """Orrin's persistent, cross-session memory (lives under OTTO_HOME/memory).
