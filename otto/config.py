@@ -230,12 +230,16 @@ class STTConfig(BaseModel):
     follow_up_threshold: float = 0.30
     # Local command-verify: when the smart-gate is unavailable, use laya (not a cloud model) to
     # reject grammatical-but-nonsensical STT hallucinations on the hands-free path. Offline, ~50ms.
-    # Preferred over the hands_free_verify cloud call when laya is present.
-    local_command_verify: bool = True
+    # OFF by default: laya's ~2.2 GB model was dropping genuine conversational commands as "ambient"
+    # and is the biggest memory hog — so the laya gates (this + smart_gate) ship disabled, and laya
+    # is never loaded unless you explicitly turn one on. Filtering then rests on speaker verification
+    # (whose voice is this?) plus the cheap junk/noise heuristic.
+    local_command_verify: bool = False
 
     @property
     def laya_needed(self) -> bool:
-        """Any feature that requires laya to be loaded (so start() can bring it up)."""
+        """Any feature that requires laya to be loaded (so start() can bring it up). Both default
+        OFF, so laya (the ~2.2 GB model) stays unloaded unless explicitly enabled."""
         return bool(self.smart_gate or self.local_command_verify)
 
     # Speaker verification ("whose voice is this?") — the one signal content can't give. Enroll one
