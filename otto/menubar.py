@@ -569,12 +569,11 @@ class OttoApp(rumps.App):
             print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
 
     def enroll_voice(self, _) -> None:
-        """Kick off in-app voice enrollment (speak a few sentences; Orrin builds your voiceprint)."""
+        """Open the guided voice-enrollment page (shows phrases to read; Orrin's mic captures each)."""
         try:
-            if self.orch._loop is not None:
-                self.orch._loop.call_soon_threadsafe(self.orch.start_enrollment)
+            webbrowser.open(self.url + "/enroll")
         except Exception as e:
-            print(f"[otto] enroll trigger failed: {e}", file=sys.stderr, flush=True)
+            print(f"[otto] enroll page open failed: {e}", file=sys.stderr, flush=True)
 
     def toggle_watch(self, _) -> None:
         """Watch mode: nap (ignore everything but the wake word) so a match/movie/call doesn't
