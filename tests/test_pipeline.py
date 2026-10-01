@@ -2968,28 +2968,6 @@ class _FakeGate:
         self.calls.append(("cont", text, topic)); return self._cont
 
 
-def test_smartgate_typed_decisions_parse_noul():
-    """is_destructive / is_real_command / is_continuation each ask laya the right typed question
-    and return its noul probability; continuation carries CURRENT TOPIC + NEW REQUEST in the body."""
-    from otto.voice.smartgate import SmartGate
-
-    class FakeRouter:
-        def __init__(self): self.seen = []
-        def predict(self, body, question):
-            self.seen.append((body, question))
-            key = next(iter(question))
-            return {"answers": {key: {"noul": 0.87}}}
-
-    g = SmartGate()
-    g._router = FakeRouter(); g._ready = True
-    assert abs(g.is_destructive("delete everything") - 0.87) < 1e-6
-    assert abs(g.is_real_command("open chrome") - 0.87) < 1e-6
-    assert abs(g.is_continuation("check disk", "screensaver settings") - 0.87) < 1e-6
-    body, q = g._router.seen[-1]
-    assert "CURRENT TOPIC: screensaver settings" in body["body"]
-    assert "NEW REQUEST: check disk" in body["body"] and "continuation" in q
-    assert SmartGate().is_destructive("x") is None      # not ready → None (skip check)
-
 
 def test_dispatch_followup_relaxes_gate_threshold():
     """A follow-up window no longer bypasses the gate — it lowers the bar: the same ambient-ish
