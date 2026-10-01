@@ -47,12 +47,16 @@ def parse_chord(spec: str) -> tuple[int, str]:
 
 class MacHotkey:
     def __init__(self, settings: Settings, loop, on_press: Callable[[], None],
-                 on_release: Callable[[], None]) -> None:
+                 on_release: Callable[[], None],
+                 on_toggle: Callable[[], None] | None = None) -> None:
         self.settings = settings
         self._loop = loop
         self._on_press = on_press
         self._on_release = on_release
+        self._on_toggle = on_toggle
         self._mask, self._key = parse_chord(settings.voice.hotkey.push_to_talk)
+        self._tmask, self._tkey = parse_chord(
+            getattr(settings.voice.hotkey, "sleep_toggle", "") or "")
         self._down = False
         self._global = None
         self._local = None
@@ -88,6 +92,12 @@ class MacHotkey:
             if etype not in (_KEYDOWN, _KEYUP):
                 return
             chars = (event.charactersIgnoringModifiers() or "").lower()
+            # Sleep/watch toggle chord (keydown only) — a reliable, no-voice silence.
+            if (etype == _KEYDOWN and self._on_toggle is not None and self._tkey
+                    and chars[:1] == self._tkey
+                    and (int(event.modifierFlags()) & _ALL_MODS) == self._tmask):
+                self._loop.call_soon_threadsafe(self._on_toggle)
+                return
             if chars[:1] != self._key:
                 return
             if etype == _KEYDOWN:

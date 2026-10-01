@@ -28,6 +28,24 @@ from ..config import Settings
 from .tools import AssistantContext, build_server
 
 # Appended to Claude's own system prompt — voice manners only, no persona override.
+def _language_directive(settings) -> str:
+    """When voice.reply_language is set, override VOICE_WRAPPER's mirror-the-user rule: understand
+    any spoken language, but reply in the configured one (e.g. always English). "" = mirror (default)."""
+    rl = (getattr(settings.voice, "reply_language", "") or "").strip().lower()
+    if not rl or rl in ("match", "mirror"):
+        return ""
+    lang = {"en": "English", "en-in": "English", "hi": "Hindi",
+            "hinglish": "Hinglish"}.get(rl, rl)
+    if lang == "English":
+        rule = ("ALWAYS reply in clear, natural English — never Hindi or Hinglish — no matter what "
+                "language the user speaks.")
+    else:
+        rule = f"ALWAYS reply in {lang}, whatever language the user speaks."
+    return ("\n\nLANGUAGE (override the language rule above): Understand the user in ANY language "
+            "(English, Hindi, Hinglish, regional). But " + rule
+            + " Still write replies in ROMANIZED Latin script for the voice.")
+
+
 VOICE_WRAPPER = """You are the user's own Claude Code, with a voice and a screen added. The \
 user TALKS to you instead of typing, and HEARS a short spoken reply; the dashboard shows this \
 session's real chat — your tool calls, output, and code — exactly like a normal Claude Code \
@@ -189,13 +207,20 @@ unchanged."""
 class ClaudeBrain:
     def __init__(self, ctx: AssistantContext, settings: Settings, *,
                  resume: str | None = None, new_chat: bool = False,
-                 cwd: str | None = None, read_only: bool = False) -> None:
+                 cwd: str | None = None, read_only: bool = False,
+                 write_mode: bool = False) -> None:
         self.ctx = ctx
         self.settings = settings
         self.client: ClaudeSDKClient | None = None
         # Read-only mode (idle background research): hard-block edits/writes regardless of the
         # user's permission setting — see connect() and _permission.
         self._read_only = read_only
+        # Autonomous write mode (the background "teammate", #71 / system steward #72): allow
+        # scoped edits + safe git/test + PR-create on a FEATURE branch, but still hard-block
+        # pushing/merging a protected branch, anything destructive, and driving the GUI — even
+        # though the user's normal setting is bypass. Enforced in _permission via the autonomy
+        # allowlist. Mutually exclusive with read_only.
+        self._write_mode = write_mode and not read_only
         # Per-workspace working directory (overrides the global settings.project_path so
         # several workspaces can run in different project dirs concurrently).
         self._cwd = cwd
@@ -283,6 +308,12 @@ class ClaudeBrain:
         if self._read_only:
             perm_mode = "default"
             disallowed = ["Write", "Edit", "MultiEdit", "NotebookEdit"]
+        elif self._write_mode:
+            # Autonomous teammate: force the SDK's own gating ON (so _permission runs and is NOT
+            # bypassed) but keep the editors available — the autonomy allowlist in _permission is
+            # what decides each call. Hard-block the GUI-automation servers at the SDK level too.
+            perm_mode = "default"
+            disallowed = []
         else:
             perm_mode = ("bypassPermissions"
                          if b.permission in ("bypass", "auto") else "default")
@@ -291,7 +322,7 @@ class ClaudeBrain:
             system_prompt={
                 "type": "preset",
                 "preset": "claude_code",
-                "append": VOICE_WRAPPER,
+                "append": VOICE_WRAPPER + _language_directive(self.settings),
             },
             # Load the user's own Claude setup: MCP servers, subagents, skills, CLAUDE.md.
             setting_sources=(["user", "project", "local"] if b.use_claude_config else []),
@@ -363,6 +394,18 @@ class ClaudeBrain:
             if tool_name == "Bash" and _bash_is_read_only(input_data.get("command", "")):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Read-only research mode: writes are blocked.")
+        # Autonomous write mode (#71/#72): allow reads, scoped editors, safe git/test, and
+        # PR-create on a feature branch — deny pushing/merging a protected branch, anything
+        # destructive, and GUI automation. Runs unattended, so it defaults to DENY for unknowns.
+        if self._write_mode:
+            protected = tuple(getattr(self.settings.voice, "protected_branches", None)
+                              or ("main", "master"))
+            if _tool_is_autonomy_safe(tool_name, input_data, protected):
+                return PermissionResultAllow()
+            return PermissionResultDeny(
+                message="Autonomous mode: only feature-branch edits, safe git/test, and PR-create "
+                        "are allowed (no push/merge to a protected branch, nothing destructive, "
+                        "no GUI automation).")
         mode = self.settings.brain.permission
         # Deny mode denies everything (except Orrin's own voice tools, handled above) — defence
         # in depth: it must NOT depend on the read-only heuristic classifying correctly, or a
@@ -508,6 +551,88 @@ def _bash_is_read_only(command: str) -> bool:
             continue
         return False
     return True
+
+
+# ── Autonomous write-mode gate (#71/#72) ──────────────────────────────────────────────────────
+# A SEPARATE, broader allowlist than read-only: the teammate may edit files and run safe git/test,
+# but these shell constructs are NEVER allowed even in autonomous mode — checked across the WHOLE
+# command string so they can't hide in a later pipe segment. This is the hard floor; the per-segment
+# allowlist below only ever ADDS the safe dev commands on top.
+_AUTONOMY_NEVER = re.compile(
+    r"(`|\$\(|[<>]|\brm\b|\bsudo\b|\bdd\b|\bmkfs\b|\bkill\b|\bpkill\b|\bkillall\b|\bchmod\b|"
+    r"\bchown\b|\bcurl\b|\bwget\b|\bnc\b|\bssh\b|\bscp\b|\bxargs\b|\beval\b|\bosascript\b|"
+    r"\blaunchctl\b|\bdiskutil\b|\btmutil\b|\bnvram\b|\bshutdown\b|\breboot\b|\bmv\b|\bcp\b|"
+    r"\bln\b|\btee\b|\bsystem\s*\(|\bENVIRON\b|"
+    r"\bgit\s+(reset|clean|rebase|restore|filter-branch|checkout\s+(?!-b\b))|"      # history/worktree surgery
+    r"\bgit\s+push\b[^|&;]*(--force|--force-with-lease|-f\b)|"                       # force-push, ever
+    r"\bgh\s+\w+\s+(merge|delete)|"                                                 # gh pr/issue merge|delete
+    r"\|\s*[\"']?\s*(sh|bash|zsh|/bin/|python|perl|ruby|node)\b)")                  # pipe to an interpreter
+# Safe exec leaders: test / lint / build / type-check / package tooling. These run the project's own
+# code (that's the point — verify a change green), but the NEVER floor above still strips any
+# destructive/exfil construct from the same line first.
+_AUTONOMY_EXEC_CMDS = {
+    "pytest", "python", "python3", "tox", "nox", "coverage", "mypy", "pyright", "flake8", "ruff",
+    "black", "isort", "pylint", "pre-commit", "uv", "pip", "pip3", "poetry", "hatch", "pdm",
+    "npm", "npx", "pnpm", "yarn", "node", "jest", "vitest", "eslint", "prettier", "tsc", "deno",
+    "bun", "cargo", "rustc", "go", "gofmt", "make", "cmake", "ctest", "bazel", "gradle", "mvn",
+    "dotnet", "swift", "xcodebuild", "rake", "bundle", "rspec", "phpunit", "composer",
+}
+# git subcommands the teammate may run (push is additionally gated to non-protected branches below;
+# destructive subcommands are already vetoed by _AUTONOMY_NEVER).
+_AUTONOMY_GIT_RE = re.compile(
+    r"^git\s+(status|log|diff|show|branch|add|commit|stash|fetch|switch|checkout|tag|describe|"
+    r"rev-parse|ls-files|remote|push)\b")
+# gh subcommands for opening/updating a PR for review — never merge/delete (vetoed above).
+_AUTONOMY_GH_RE = re.compile(
+    r"^gh\s+(pr\s+(create|ready|edit|view|list|status|comment|diff|checks)|"
+    r"issue\s+(create|list|view|comment|edit|status)|repo\s+view|run\s+(list|view|watch))\b")
+
+
+def _bash_is_autonomy_safe(command: str, protected: tuple[str, ...] = ("main", "master")) -> bool:
+    """Autonomous-teammate shell allowlist: edits happen through Edit/Write, and shell is limited to
+    reads, safe git (incl. commit + push to a FEATURE branch), PR-create, and test/build runners.
+    Stricter-by-segment like _bash_is_read_only; defaults to False for anything unrecognised."""
+    cmd = command.strip()
+    if not cmd or _AUTONOMY_NEVER.search(cmd):
+        return False
+    if any(ord(c) < 32 and c not in "\t\n\r" for c in cmd):
+        return False
+    # Never push/merge/update a protected branch — if any protected name appears anywhere in a
+    # push command, refuse (covers `git push origin main`, `git push origin HEAD:master`, …).
+    low = cmd.lower()
+    if re.search(r"\bgit\s+push\b", low):
+        for b in protected:
+            if b and re.search(rf"(^|[\s/:]){re.escape(b.lower())}(\s|$)", low):
+                return False
+    for seg in _BASH_SPLIT.split(cmd):
+        seg = seg.strip()
+        if not seg:
+            continue
+        first = seg.split()[0]
+        if first in _BASH_READ_CMDS or first in _AUTONOMY_EXEC_CMDS:
+            continue
+        if _AUTONOMY_GIT_RE.match(seg) or _AUTONOMY_GH_RE.match(seg):
+            continue
+        # read-only subcommands of common tools (same set read-only mode trusts)
+        if re.match(r"^(defaults\s+read|scutil\s+--get)\b", seg):
+            continue
+        return False
+    return True
+
+
+def _tool_is_autonomy_safe(tool_name: str, input_data: dict[str, Any],
+                           protected: tuple[str, ...] = ("main", "master")) -> bool:
+    """Whole-tool autonomy gate: Orrin's own tools, reads, the built-in editors, and autonomy-safe
+    Bash are allowed; GUI automation (computer-use/desktop/browser) and everything else are not."""
+    if tool_name.startswith("mcp__voice__"):
+        return True
+    if _is_read_only(tool_name):
+        return True
+    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        return True
+    if tool_name == "Bash":
+        return _bash_is_autonomy_safe(input_data.get("command", ""), protected)
+    return False
 
 
 # Leading-token verbs for MCP leaf names. Matched as WHOLE tokens at the START of the name only,

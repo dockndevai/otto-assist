@@ -43,6 +43,7 @@ _STATE_LABELS = {
     "thinking": "● Thinking…",
     "speaking": "● Speaking…",
     "working": "● Working…",
+    "sleeping": "☾ Sleeping — say “Otto”",
 }
 
 
@@ -58,6 +59,7 @@ def _icon(name: str) -> str | None:
 _STATE_ICON = {
     "starting": "idle", "idle": "idle", "listening": "listening",
     "thinking": "thinking", "working": "thinking", "speaking": "speaking",
+    "sleeping": "idle",
 }
 
 
@@ -128,6 +130,16 @@ _OTTO_PROC_MARKERS = ("personal-assist/.venv", "Orrin.app/Contents/MacOS",
                       "Application Support/Otto/venv", "otto-assist")
 
 
+def _is_otto_worker(cmd: str) -> bool:
+    """True if this process command line is one of OUR RealtimeSTT multiprocessing workers.
+    The EXECUTABLE (argv[0]) must be the otto python / Orrin binary, so a shell/editor/grep that
+    merely mentions the path isn't matched."""
+    if "multiprocessing" not in cmd:
+        return False
+    exe = cmd.split(" ", 1)[0]
+    return any(m in exe for m in _OTTO_PROC_MARKERS)
+
+
 def _sweep_orphan_workers() -> int:
     """Kill leftover RealtimeSTT multiprocessing workers from a prior crashed/duplicate run.
     Safe to call before we spawn our own recorder — every match is an orphan by then. Returns
@@ -148,12 +160,7 @@ def _sweep_orphan_workers() -> int:
             pid = int(pid_s)
         except ValueError:
             continue
-        if pid == me or "multiprocessing" not in cmd:
-            continue
-        # Only OUR STT workers: the EXECUTABLE (argv[0]) must be the otto python / Orrin binary,
-        # so a shell/editor/grep that merely mentions the path isn't matched.
-        exe = cmd.split(" ", 1)[0]
-        if not any(m in exe for m in _OTTO_PROC_MARKERS):
+        if pid == me or not _is_otto_worker(cmd):
             continue
         try:
             os.kill(pid, signal.SIGKILL)
@@ -161,8 +168,7 @@ def _sweep_orphan_workers() -> int:
         except Exception:
             pass
     if killed:
-        print(f"[otto] swept {killed} orphan STT worker(s) before start",
-              file=sys.stderr, flush=True)
+        print(f"[otto] swept {killed} orphan STT worker(s)", file=sys.stderr, flush=True)
     return killed
 
 
@@ -187,6 +193,8 @@ class OttoApp(rumps.App):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: uvicorn.Server | None = None
         self._dash = None       # in-app dashboard window (lazy)
+        self._float = None      # floating on-screen character panel (lazy)
+        self._char_shown = False   # whether we've auto-shown the character this launch
         self._shutting_down = False   # set on intentional Quit/Restart so the supervisor stops
 
         self.status_item = rumps.MenuItem("Starting…")
@@ -196,10 +204,24 @@ class OttoApp(rumps.App):
         self.mic_item = rumps.MenuItem("Mute microphone", callback=self.toggle_mic)
         self.voice_item = rumps.MenuItem("Mute voice", callback=self.toggle_voice)
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
+        self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
+        self.enroll_item = rumps.MenuItem("Enroll a voice", callback=self.enroll_voice)
+        self.autonomy_item = rumps.MenuItem("Autonomous teammate", callback=self.toggle_autonomy)
+        self.autonomy_item.state = 1 if getattr(self.settings.voice, "autonomous_work", False) else 0
+        self.move_menu = rumps.MenuItem("Move Orrin")
+        for _label, _c in (("Bottom-right", "br"), ("Bottom-left", "bl"),
+                           ("Top-right", "tr"), ("Top-left", "tl")):
+            self.move_menu.add(rumps.MenuItem(
+                _label, callback=(lambda cc: (lambda _s: self._move_character(cc)))(_c)))
         self.menu = [
             self.status_item,
             None,
             rumps.MenuItem("🎤 Talk to Orrin", callback=self.talk),
+            rumps.MenuItem("Show Orrin (floating)", callback=self.toggle_character),
+            self.move_menu,
+            self.watch_item,
+            self.enroll_item,
+            self.autonomy_item,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -353,8 +375,15 @@ class OttoApp(rumps.App):
             now = time.monotonic()
             crashes = [t for t in crashes if now - t < 120.0] + [now]
             if len(crashes) >= 4:                 # crash-looping → a fresh process is cleaner
-                print("[otto] backend crash-looping — exiting for a clean relaunch (launchd)",
-                      file=sys.stderr, flush=True)
+                # Kill our STT worker children FIRST — otherwise they reparent to launchd and the
+                # NEXT launch collides with them on the mic (the recurring "not listening" flood).
+                try:
+                    _sweep_orphan_workers()
+                except Exception:
+                    pass
+                print("[otto] backend crash-looping — exiting for a clean relaunch. If Orrin was "
+                      "started from the source launcher (not launchd), relaunch it "
+                      "(~/Launch Orrin.command).", file=sys.stderr, flush=True)
                 os._exit(1)
             backoff = min(10.0, 2.0 ** len(crashes))
             print(f"[otto] restarting backend in {backoff:.0f}s…", file=sys.stderr, flush=True)
@@ -371,6 +400,10 @@ class OttoApp(rumps.App):
                 self.orch._external_ptt = True
             except Exception as e:
                 print(f"[otto] could not rebuild orchestrator: {e!r}", file=sys.stderr, flush=True)
+                try:
+                    _sweep_orphan_workers()
+                except Exception:
+                    pass
                 os._exit(1)
 
     async def _backend_main(self) -> None:
@@ -406,6 +439,18 @@ class OttoApp(rumps.App):
         except Exception:
             if not self._has_icon:
                 self.title = "Orrin"
+        # Auto-show the floating character once the server is up (if enabled). One-shot per launch;
+        # the panel can still be toggled from the menu regardless of this default.
+        if (not self._char_shown and self._server is not None
+                and getattr(self.settings.voice, "floating_character", False)):
+            self._char_shown = True
+            self._show_character()
+        # Reflect watch-mode (nap) state in the menu label.
+        try:
+            self.watch_item.title = ("Wake Orrin" if getattr(self.orch, "_sleeping", False)
+                                     else "Watch mode (nap)")
+        except Exception:
+            pass
         # Request microphone access ONCE, on the main thread (this AppKit run loop) — the only
         # place a menu-bar agent's mic prompt actually renders and yields a real grant. The
         # recorder child (a re-exec of the signed binary) inherits the app's grant; it can't get
@@ -462,7 +507,10 @@ class OttoApp(rumps.App):
             def release():   # arm-next-utterance model: VAD ends the turn, nothing on release
                 pass
 
-            self._hotkey = MacHotkey(self.settings, self._loop, press, release)
+            def toggle_sleep():   # reliable no-voice silence in a loud room
+                self.toggle_watch(None)
+
+            self._hotkey = MacHotkey(self.settings, self._loop, press, release, toggle_sleep)
             self._hotkey.start()
         except Exception as e:
             print(f"[otto] hotkey install error: {e}", file=sys.stderr, flush=True)
@@ -491,6 +539,63 @@ class OttoApp(rumps.App):
             print(f"[otto] in-app dashboard unavailable, using browser: {e}",
                   file=sys.stderr, flush=True)
         webbrowser.open(self.url + ("/" + suffix if suffix else ""))
+
+    def toggle_character(self, _) -> None:
+        self._show_character(toggle=True)
+
+    def _move_character(self, corner: str) -> None:
+        self._show_character()
+        if self._float is not None:
+            try:
+                self._float.move_to(corner)
+            except Exception as e:
+                print(f"[otto] move character failed: {e}", file=sys.stderr, flush=True)
+
+    def _show_character(self, toggle: bool = False) -> None:
+        """Show/hide the floating on-screen Orrin character panel (WKWebView)."""
+        try:
+            from .webview import FloatingCharacter, available
+            if not available():
+                return
+            if self._float is None:
+                self._float = FloatingCharacter(f"{self.url}/hud")
+            if toggle:
+                self._float.toggle()
+            else:
+                self._float.show()
+            print(f"[otto] floating character shown (visible={self._float.visible})",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[otto] floating character unavailable: {e}", file=sys.stderr, flush=True)
+
+    def enroll_voice(self, _) -> None:
+        """Kick off in-app voice enrollment (speak a few sentences; Orrin builds your voiceprint)."""
+        try:
+            if self.orch._loop is not None:
+                self.orch._loop.call_soon_threadsafe(self.orch.start_enrollment)
+        except Exception as e:
+            print(f"[otto] enroll trigger failed: {e}", file=sys.stderr, flush=True)
+
+    def toggle_watch(self, _) -> None:
+        """Watch mode: nap (ignore everything but the wake word) so a match/movie/call doesn't
+        trigger Orrin — and the character visibly sleeps. Toggle back to wake it."""
+        try:
+            if getattr(self.orch, "_sleeping", False):
+                self.orch.wake_now()
+            else:
+                self.orch.sleep_now()
+        except Exception as e:
+            print(f"[otto] watch-mode toggle failed: {e}", file=sys.stderr, flush=True)
+
+    def toggle_autonomy(self, _) -> None:
+        """Flip the background-autonomy master switch (code teammate + system steward). Orrin works
+        on scoped improvements and keeps the machine tidy while you're away; off = only on request."""
+        try:
+            on = not getattr(self.settings.voice, "autonomous_work", False)
+            self.orch.set_autonomous(on, speak=False)
+            self.autonomy_item.state = 1 if on else 0
+        except Exception as e:
+            print(f"[otto] autonomy toggle failed: {e}", file=sys.stderr, flush=True)
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted

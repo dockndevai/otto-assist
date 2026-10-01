@@ -34,6 +34,73 @@ _log = logging.getLogger("otto")
 # (more may be coming, e.g. the "0" of "3.0") and spoken at _flush_speech when the turn ends.
 _SENTENCE_END = re.compile(r"(.*?(?:[.!?]+(?=\s)|\n))", re.S)
 
+# #64 streaming TTS: find the first sentence terminator that is followed by whitespace, so we can
+# speak sentence 1 while the model still generates the rest. A decimal ("3.0") isn't a boundary
+# (the "." isn't followed by whitespace).
+_FIRST_SENT = re.compile(r"[.!?](?=\s)")
+
+
+def _split_first_sentence(text: str, min_chars: int = 8) -> tuple[str, str]:
+    """(first_sentence, remainder) once there is real text after the first sentence boundary;
+    ("", text) if there's no boundary yet, nothing follows it yet, or the sentence is too short."""
+    m = _FIRST_SENT.search(text)
+    if not m:
+        return "", text
+    end = m.end()
+    sent, rest = text[:end], text[end:]
+    if not rest.strip():                 # boundary is at the very end — more may still come; wait
+        return "", text
+    if len(sent.strip()) < min_chars:
+        return "", text
+    return sent, rest.lstrip()
+
+
+# The brain (Claude Agent SDK) returns these when the user's Claude login has lapsed. We detect
+# them (only on an is_error result) so Orrin gives ONE clear "sign in" message instead of reciting
+# the raw error aloud every turn.
+_AUTH_ERR = re.compile(
+    r"not logged in|please run /login|oauth session expired|failed to authenticate|"
+    r"authentication[_ ]error|invalid api key|sign ?in to claude|/login", re.I)
+
+
+def _is_auth_error(text: str) -> bool:
+    return bool(text) and bool(_AUTH_ERR.search(text))
+
+
+def _parse_auth_status(stdout: str, stderr: str) -> bool | None:
+    """Parse `claude auth status` → True (signed in) / False (signed out) / None (inconclusive)."""
+    import json
+    try:
+        return bool(json.loads(stdout).get("loggedIn"))
+    except Exception:
+        t = (stdout + " " + stderr).lower()
+        if "not logged in" in t:
+            return False
+        if "logged in" in t or "loggedin" in t:
+            return True
+        return None
+
+
+def _claude_logged_in() -> bool | None:
+    """Fast, free startup check of the user's Claude login (shares the SDK's credentials).
+    Returns None if the CLI can't be found/run, so an inconclusive check never false-warns."""
+    import shutil
+    import subprocess
+    exe = shutil.which("claude") or os.path.expanduser("~/.claude/local/claude")
+    if not os.path.exists(exe):
+        for c in ("/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+            if os.path.exists(c):
+                exe = c
+                break
+    if not os.path.exists(exe):
+        return None
+    try:
+        out = subprocess.run([exe, "auth", "status"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+    return _parse_auth_status(out.stdout, out.stderr)
+
+
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
 # Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
@@ -210,6 +277,7 @@ class Orchestrator:
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
         self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
+        self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
         self.ears = None        # set in start() if voice input enabled
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
@@ -220,6 +288,8 @@ class Orchestrator:
         self._speech_buf = ""
         self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
         self._speak_done = False     # cap reached → stop speaking the rest of this reply
+        self._first_spoken = False   # first sentence already streamed out this turn (#64)
+        self._auth_warn_ts = 0.0     # debounce the spoken "signed out of Claude" guidance
         self._speaking = False
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
@@ -247,6 +317,21 @@ class Orchestrator:
         self._git_ct_cache: dict[str, tuple[float, float]] = {}   # path -> (commit_time, cached_at)
         self._research_pass_i = 0     # counts research passes → rotates the objective (feature/risk)
         self._last_roadmap_day = ""   # "YYYY-MM-DD" of the last roadmap synthesis (once/day)
+        # Autonomous teammate (#71): reuses the research ws/running/cancelled slots above (only one
+        # idle background activity runs at a time). _autonomous_prs tracks PR timestamps for the
+        # daily budget; _autonomous_last is the last write-pass start (min-gap throttle).
+        self._autonomous_prs: list[float] = []
+        self._autonomous_last = 0.0
+        # Recent autonomous activity (PRs shipped + steward fixes), for the daily digest + a spoken
+        # "what did you do?" — each: {ts, kind: 'pr'|'steward', project?, text}. Kept bounded.
+        self._autonomous_log: list[dict] = []
+        # System steward (#72): its own periodic health timer + last published health.
+        self._steward_handle = None
+        self._steward_health: dict = {}
+        # Parallel "meanwhile" dispatch: a dedicated same-project background workspace (own brain +
+        # lock) so a second command can run alongside the in-flight focused turn instead of queuing.
+        self._parallel_ws: Workspace | None = None   # dedicated, kept OUT of self.workspaces
+        self._parallel_pending = 0                   # in-flight/queued parallel turns (close at 0)
         # Daily morning brief: a re-arming timer; fires at most once per calendar day at/after the
         # configured local hour, on the first quiet moment. Cancelled the instant you speak/type.
         self._morning_brief_handle = None
@@ -263,6 +348,11 @@ class Orchestrator:
         # wake word wakes it again (then it's fully hands-free once more). The mic stays on so
         # it can still hear the wake word; everything else is ignored while asleep.
         self._sleeping = False
+        # In-app voice enrollment (build a speaker voiceprint from the user's next few utterances).
+        self._enrolling = False
+        self._enroll_clips: list = []
+        self._enroll_target = 5
+        self._enroll_name: str | None = None   # captured from the first utterance during enroll
         self._last_greet_ts = 0.0     # last time a greeting was spoken (to debounce repeats)
         # True while we've paused the user's media (music/video) during a wake->listen window,
         # so we know to resume it afterwards.
@@ -575,6 +665,7 @@ class Orchestrator:
         self._loop.create_task(self._seed_registry())
         self._arm_idle_research()
         self._arm_morning_brief()
+        self._arm_steward()
         # Proactive reminders/timers — load any persisted from a prior run and arm them.
         try:
             from .scheduler import Scheduler
@@ -582,14 +673,41 @@ class Orchestrator:
             self.scheduler.start(self._loop)
         except Exception as e:
             print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
-        # Smart gate for hands-free always-listen (loads its model in the background).
-        if getattr(self.settings.voice.stt, "smart_gate", False):
+        # Local typed-decision model (laya): powers the hands-free smart-gate, the local
+        # command-verify, and the auto-fresh-context / destructive-action guards. Loaded once in
+        # the background if ANY of those features is on. Transparent no-op until ready.
+        v = self.settings.voice
+        laya_wanted = (getattr(v.stt, "laya_needed", False)
+                       or getattr(v, "auto_fresh_context", False)
+                       or getattr(v, "destructive_guard", False))
+        if laya_wanted:
             try:
                 from .voice.smartgate import SmartGate
                 self.smart_gate = SmartGate()
                 self.smart_gate.start()
             except Exception as e:
                 print(f"[otto] smart-gate init failed: {e!r}", file=sys.stderr, flush=True)
+        # Speaker verification ("whose voice?") — loads the x-vector model in the background when
+        # enabled. Supports MULTIPLE enrolled voices (family/shared machine). Fail-open until ready.
+        if getattr(v.stt, "speaker_verify", False):
+            try:
+                from .voice.speaker import SpeakerVerifier
+                d = v.stt.speaker_voiceprints_dir or str(OTTO_HOME / "voiceprints")
+                self.speaker = SpeakerVerifier(model_id=v.stt.speaker_model, voiceprints_dir=d)
+                if self.speaker.has_voiceprint:
+                    self.speaker.start()        # load the ~0.8GB model only when there's a voice
+                    print(f"[otto] speaker verification enabled; voices: {self.speaker.names}",
+                          file=sys.stderr, flush=True)
+                else:
+                    # No voices enrolled → DON'T load the model (saves ~0.8GB). It loads on the
+                    # first enrollment (start_enrollment) instead.
+                    print("[otto] speaker_verify on but no voices enrolled — menu → 'Enroll a "
+                          "voice' (model not loaded until then)", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[otto] speaker verifier init failed: {e!r}", file=sys.stderr, flush=True)
+        # Startup sign-in check: warn right away if Claude's login has lapsed (in the background —
+        # never blocks startup), so a signed-out state is obvious before the first command (#68).
+        self._loop.create_task(self._auth_preflight())
 
     async def _seed_registry(self) -> None:
         """Register every discoverable project in memory so the cross-project overview covers
@@ -708,6 +826,10 @@ class Orchestrator:
             if roadmap:
                 pre = (pre + "\n\n[Today's prioritized roadmap — lead the brief with its top 1-2 "
                        "items:]\n" + roadmap).strip()
+            digest = self.autonomy_digest()
+            if digest:
+                pre = (pre + "\n\n[What you (Orrin) did autonomously overnight — mention this "
+                       "briefly so the user knows what's waiting for review:]\n" + digest).strip()
             prompt = (self._MORNING_BRIEF_PROMPT + "\n\n" + pre) if pre else self._MORNING_BRIEF_PROMPT
             await self._run_turn(self.focused_ws, prompt, echo_user=False)
         except Exception as e:
@@ -913,6 +1035,14 @@ class Orchestrator:
         if self._roadmap_due():
             await self._run_roadmap_synthesis()
             return                                  # re-arms in its own finally
+        # Autonomous teammate (#71): when enabled and within budget, prefer actually SHIPPING a
+        # scoped change (ready-for-review PR) over read-only research. Falls through to research
+        # when autonomy is off, out of budget, or nothing actionable is queued.
+        if self._autonomous_enabled() and self._autonomous_budget_ok():
+            task = self._pick_autonomous_task()
+            if task is not None:
+                await self._run_autonomous_work(*task)   # re-arms in its own finally
+                return
         path = self._next_research_project()
         if path is None:
             self._arm_idle_research()
@@ -994,6 +1124,312 @@ class Orchestrator:
                 await ws.brain.disconnect()
             except Exception:
                 pass
+
+    # ── Autonomous teammate (#71): ship scoped ready-for-review PRs when idle ──────────────────
+    _AUTONOMY_PROMPT = (
+        "You are Orrin working AUTONOMOUSLY in the background as a careful engineering teammate. "
+        "The user is away. Do ONE small, well-scoped improvement in this project and open it as a "
+        "ready-for-review pull request for the user to merge. Work strictly as follows:\n"
+        "1. Create and switch to a NEW feature branch named exactly `{branch}` (never work on "
+        "{protected} — you are blocked from pushing/merging those anyway).\n"
+        "2. Make the SMALLEST change that accomplishes this task, nothing more:\n"
+        "   {task}\n"
+        "3. Run the project's own tests/lint/build and make sure they pass. If you cannot get them "
+        "green, DO NOT open a PR — revert your changes, stop, and say why.\n"
+        "4. Commit with a clear message, push the feature branch, and open a ready-for-review PR "
+        "with a concise summary of what and why. Never target or merge a protected branch.\n"
+        "5. If there is no git remote or `gh` is unavailable, stop after committing on the branch "
+        "and say so — do not force anything.\n"
+        "6. Then call `resolve_suggestion` with id {sid} (status 'done') if it fully addresses it, "
+        "and `remember` a one-line note of what you shipped.\n"
+        "Hard rules: nothing destructive (no rm/reset/force-push/history rewrite), no deploys or "
+        "releases, no changes outside this project, keep the diff small and focused. Be quiet — no "
+        "chit-chat, just do the work."
+    )
+
+    def _autonomous_enabled(self) -> bool:
+        return bool(getattr(self.settings.voice, "autonomous_work", False))
+
+    def _autonomous_budget_ok(self) -> bool:
+        """Within the daily write-pass cap AND past the min gap since the last pass."""
+        v = self.settings.voice
+        now = time.time()
+        day_ago = now - 86400.0
+        self._autonomous_prs = [t for t in self._autonomous_prs if t > day_ago]
+        if len(self._autonomous_prs) >= int(getattr(v, "autonomous_max_prs_per_day", 3)):
+            return False
+        return (now - self._autonomous_last) >= float(getattr(v, "autonomous_min_gap", 3600.0))
+
+    def _is_opted_out(self, path: str) -> bool:
+        from pathlib import Path
+        from .memory import project_slug
+        opt = [str(x) for x in (getattr(self.settings.voice, "autonomous_optout", []) or [])]
+        if not opt:
+            return False
+        full = str(Path(path).expanduser())
+        slug = project_slug(path)
+        return any(o == full or o == slug or o == path for o in opt)
+
+    def _pick_autonomous_task(self) -> tuple[str, dict] | None:
+        """Find a project (git-weighted, not opted-out, past the per-project gap) that has an open,
+        actionable suggestion to ship. Returns (project_path, suggestion) or None."""
+        from pathlib import Path
+        from .memory import project_slug
+        from .projects import list_projects
+        try:
+            cands = [p.path for p in list_projects(current=self.focused,
+                                                   pinned=self.settings.brain.projects)]
+        except Exception:
+            cands = []
+        reg = self.memory.registry()
+        now = time.time()
+        gap = float(getattr(self.settings.voice, "autonomous_min_gap", 3600.0))
+        git_weight = bool(getattr(self.settings.voice, "idle_research_git_weight", True))
+        ranked: list[tuple[float, str]] = []
+        home = str(Path.home())
+        for path in cands:
+            full = str(Path(path).expanduser())
+            if full in ("/", home) or len(full) < 4 or self._is_opted_out(path):
+                continue
+            last = (reg.get(project_slug(path), {}) or {}).get("last_autonomous") or 0.0
+            if last and (now - last) < gap:
+                continue
+            ranked.append((self._git_last_commit(full) if git_weight else 0.0, path))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        for _w, path in ranked:
+            try:
+                sugg = self.memory.list_suggestions(project_path=path, status="open", limit=5)
+            except Exception:
+                sugg = []
+            # Prefer concrete action items over pure risk notes.
+            actionable = [s for s in sugg if (s.get("kind") or "action") != "risk"] or sugg
+            if actionable:
+                return (path, actionable[0])
+        return None
+
+    def _autonomous_prompt(self, path: str, sugg: dict) -> str:
+        from pathlib import Path
+        v = self.settings.voice
+        prefix = str(getattr(v, "autonomous_branch_prefix", "orrin/"))
+        sid = str(sugg.get("id") or "")
+        slug = (Path(path).name or "work").lower().replace(" ", "-")[:24]
+        branch = f"{prefix}{slug}-{sid[:8] or 'task'}"
+        protected = ", ".join(str(b) for b in (getattr(v, "protected_branches", None)
+                                               or ["main", "master"]))
+        return self._AUTONOMY_PROMPT.format(
+            branch=branch, protected=protected, task=(sugg.get("text") or "").strip(), sid=sid)
+
+    async def _open_work_ws(self, path: str) -> Workspace | None:
+        """A dedicated WRITE-mode workspace (branch edits + safe git/test + PR-create), kept out of
+        self.workspaces so it never uses a user slot or pollutes the real chat."""
+        from pathlib import Path
+        p = str(Path(path).expanduser())
+        await self._close_research_ws()
+        try:
+            ws = Workspace(self, self.settings, p, new_chat=True, write_mode=True)
+            await ws.brain.connect()
+            self._research_ws = ws
+            return ws
+        except Exception as e:
+            print(f"[otto] work ws open failed: {e!r}", file=sys.stderr, flush=True)
+            return None
+
+    async def _run_autonomous_work(self, path: str, sugg: dict) -> None:
+        """Run one autonomous write pass: branch → scoped change → verify → ready PR. Reuses the
+        research running/cancel slots (only one idle activity runs at a time), so a spoken/typed
+        command interrupts it immediately via _cancel_idle_research."""
+        self._research_running = True
+        self._research_cancelled = False
+        self._autonomous_last = time.time()
+        name = ""
+        try:
+            self.memory.register_project(path)
+            ws = await self._open_work_ws(path)
+            if ws is None or self._research_cancelled:
+                return
+            name = ws.name
+            print(f"[otto] autonomous work -> {name} (write): {sugg.get('text','')!r}",
+                  file=sys.stderr, flush=True)
+            self.bus.publish({"type": "autonomous", "active": True, "name": name,
+                              "task": (sugg.get("text") or "")[:160]})
+            await self._run_turn(ws, self._autonomous_prompt(path, sugg),
+                                 echo_user=False, research=True)
+            if not self._research_cancelled:
+                self.memory.mark_autonomous(path)
+                self._autonomous_prs.append(time.time())    # consumed a write-pass slot
+                self._record_autonomy("pr", (sugg.get("text") or "")[:120], project=name)
+                self.bus.notify("Orrin shipped work",
+                                f"Opened a PR for {name}: {(sugg.get('text') or '')[:80]}")
+        except Exception as e:
+            print(f"[otto] autonomous work failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self.bus.publish({"type": "autonomous", "active": False})
+            await self._close_research_ws()
+            self._research_running = False
+            self._arm_idle_research()
+
+    # ── System steward (#72): keep the Mac + Orrin's own footprint healthy ─────────────────────
+    def _steward_enabled(self) -> bool:
+        v = self.settings.voice
+        # autonomous_work is the master switch for ALL background autonomy (teammate + steward).
+        return bool(getattr(v, "autonomous_work", False)
+                    and getattr(v, "system_steward", False))
+
+    def _arm_steward(self) -> None:
+        if not self._steward_enabled() or self._loop is None:
+            return
+        if self._steward_handle is not None:
+            self._steward_handle.cancel()
+        delay = max(30.0, float(getattr(self.settings.voice, "steward_interval", 600.0)))
+        self._steward_handle = self._loop.call_later(
+            delay, lambda: self._loop.create_task(self._steward_tick()))
+
+    def _cancel_steward(self) -> None:
+        if self._steward_handle is not None:
+            self._steward_handle.cancel()
+            self._steward_handle = None
+
+    async def _steward_tick(self) -> None:
+        self._steward_handle = None
+        try:
+            if self._steward_enabled():
+                await self._run_steward_scan()
+        except Exception as e:
+            print(f"[otto] steward scan failed: {e!r}", file=sys.stderr, flush=True)
+        finally:
+            self._arm_steward()
+
+    def _release_orrin_caches(self) -> None:
+        """Nudge Python + MLX to hand memory back (Orrin-owned, always safe)."""
+        import gc
+        gc.collect()
+        try:
+            import mlx.core as mx
+            (getattr(mx, "clear_cache", None)
+             or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
+        except Exception:
+            pass
+
+    async def _run_steward_scan(self) -> None:
+        """One health pass: measure, auto-fix ONLY Orrin-owned cruft, edge-triggered alert on
+        non-Orrin problems (low disk/memory), publish a health snapshot to the dashboard."""
+        from . import steward as _steward
+        v = self.settings.voice
+        loop = self._loop
+        assert loop is not None
+        health = await loop.run_in_executor(None, _steward.scan)
+        fixed: list[str] = []
+        # --- Orrin-owned auto-fixes (no asking) ---
+        if health.get("orphan_workers"):
+            n = await loop.run_in_executor(None, _steward.sweep_orphans)
+            if n:
+                fixed.append(f"swept {n} orphaned worker(s)")
+        removed = await loop.run_in_executor(
+            None, _steward.clear_stale_lock, str(OTTO_HOME / "orrin.lock"), os.getpid())
+        if removed:
+            fixed.append("cleared a stale lock")
+        trimmed = await loop.run_in_executor(
+            None, _steward.trim_logs, str(OTTO_HOME / "logs"),
+            float(getattr(v, "steward_log_max_mb", 50.0)))
+        if trimmed:
+            fixed.append(f"trimmed {trimmed} oversized log(s)")
+        self._release_orrin_caches()
+        # --- Alerts for non-Orrin problems (edge-triggered: only when newly crossing a threshold) ---
+        issues: list[tuple[str, str]] = []
+        disk = health.get("disk_free_gb", 999.0)
+        if disk and disk < float(getattr(v, "steward_disk_min_gb", 5.0)):
+            issues.append(("disk", f"Low disk: {disk} GB free"))
+        mem = health.get("free_mem_gb", 999.0)
+        if 0 < mem < float(getattr(v, "steward_free_mem_min_gb", 1.5)):
+            issues.append(("mem", f"Low memory: {mem} GB free"))
+        prev = set((self._steward_health or {}).get("issue_keys", []))
+        for key, msg in issues:
+            if key not in prev:
+                self.bus.notify("System steward", msg)
+        health["issue_keys"] = [k for k, _ in issues]
+        health["fixed"] = fixed
+        self._steward_health = health
+        self.bus.publish({"type": "health", **health})
+        if fixed:
+            self._record_autonomy("steward", "; ".join(fixed))
+            print(f"[otto] steward fixed: {', '.join(fixed)}", file=sys.stderr, flush=True)
+
+    # ── Transparency: activity ledger + digest + toggle (#71/#72 Phase 3) ──────────────────────
+    def _record_autonomy(self, kind: str, text: str, *, project: str = "") -> None:
+        """Append one background action to the ledger (bounded), for the digest + spoken recap."""
+        self._autonomous_log.append(
+            {"ts": time.time(), "kind": kind, "project": project, "text": text})
+        self._autonomous_log = self._autonomous_log[-50:]
+
+    def autonomy_digest(self, *, hours: float = 24.0) -> str:
+        """A short plain-English recap of what Orrin did on its own recently (PRs shipped + machine
+        upkeep) plus current health — empty string if nothing to report."""
+        cut = time.time() - hours * 3600.0
+        recent = [a for a in self._autonomous_log if a.get("ts", 0) >= cut]
+        prs = [a for a in recent if a.get("kind") == "pr"]
+        fixes = [a for a in recent if a.get("kind") == "steward"]
+        lines: list[str] = []
+        if prs:
+            lines.append(f"Opened {len(prs)} PR{'s' if len(prs) != 1 else ''} for review:")
+            lines += [f"  • {a.get('project') or 'a project'}: {a.get('text','').strip()}"
+                      for a in prs[-5:]]
+        if fixes:
+            lines.append(f"Machine upkeep ({len(fixes)} pass{'es' if len(fixes) != 1 else ''}): "
+                         + "; ".join(a.get("text", "") for a in fixes[-3:]))
+        h = self._steward_health or {}
+        if h:
+            parts = []
+            if h.get("free_mem_gb"):
+                parts.append(f"{h['free_mem_gb']} GB memory free")
+            if h.get("disk_free_gb"):
+                parts.append(f"{h['disk_free_gb']} GB disk free")
+            if parts:
+                lines.append("Machine health: " + ", ".join(parts)
+                             + ("." if not h.get("issue_keys") else " — needs attention."))
+        return "\n".join(lines).strip()
+
+    def set_autonomous(self, on: bool, *, speak: bool = True) -> None:
+        """Flip the background-autonomy master switch at runtime (menu or voice), persist it, and
+        arm/cancel the loops immediately. The steward follows the master switch (and its own flag)."""
+        v = self.settings.voice
+        v.autonomous_work = bool(on)
+        try:
+            save_config(self.settings.model_dump(mode="json"))
+        except Exception as e:
+            print(f"[otto] couldn't persist autonomy toggle: {e!r}", file=sys.stderr, flush=True)
+        if on:
+            self._arm_idle_research()
+            self._arm_steward()
+            msg = "Background work is on — I'll improve things and keep the machine tidy while you're away."
+        else:
+            self._cancel_idle_research()
+            self._cancel_steward()
+            msg = "Background work is off. I'll only act when you ask."
+        self.bus.publish({"type": "autonomy_state", "on": bool(on)})
+        print(f"[otto] autonomous_work -> {on}", file=sys.stderr, flush=True)
+        if speak:
+            self.bus.transcript("assistant", msg, final=True)
+            self._voice_out(msg)
+
+    # Voice phrases that toggle background autonomy. Returns True (enable), False (disable), or None.
+    _AUTONOMY_ON = ("work in the background", "start working in the background",
+                    "turn on autonomous", "enable autonomous", "enable background work",
+                    "start background work", "work on things yourself", "work on your own",
+                    "keep improving things", "be my teammate")
+    _AUTONOMY_OFF = ("stop working in the background", "stop background work",
+                     "turn off autonomous", "disable autonomous", "disable background work",
+                     "pause autonomous", "pause background work", "stop working on your own",
+                     "stop improving things")
+
+    def _autonomy_command(self, text: str) -> bool | None:
+        low = " ".join(_norm_words(text))
+        if not low:
+            return None
+        if any(p in low for p in self._AUTONOMY_OFF):
+            return False
+        if any(p in low for p in self._AUTONOMY_ON):
+            return True
+        return None
 
     def on_mic_decision(self, granted: bool) -> None:
         """Called (via the menu-bar's main-thread mic prompt) once the user decides. With the
@@ -1225,6 +1661,7 @@ class Orchestrator:
         if self.scheduler is not None:
             self.scheduler.shutdown()
         await self._close_research_ws()
+        await self._close_parallel_ws()
         for ws in list(self.workspaces.values()):
             await ws.brain.disconnect()
 
@@ -1496,6 +1933,28 @@ class Orchestrator:
     # "in <name>, <command>" / "in the <name> workspace: <command>" — target another workspace.
     _RE_TARGET = re.compile(
         r"^in\s+(?:the\s+)?(?P<name>.+?)(?:\s+workspace)?\s*[,:]\s*(?P<cmd>.+)$", re.I)
+    # Parallel-intent leads: "meanwhile, do X" — run X concurrently with the in-flight turn.
+    # Three anchored forms so a normal sentence starting with "while…" isn't misread as parallel.
+    _RE_MEANWHILE_SIMPLE = re.compile(
+        r"^\s*(?:meanwhile|in\s+the\s+meantime|at\s+the\s+same\s+time|"
+        r"in\s+parallel|simultaneously|in\s+the\s+background)\b[,:]?\s+(?P<cmd>.+)$", re.I)
+    _RE_MEANWHILE_WHILE = re.compile(
+        r"^\s*(?:while|whilst)\s+(?:that|this|it|the\s+\w+(?:\s+\w+)?)(?:'s|’s)?\s+"
+        r"(?:runs?|ran|running|builds?|building|compil\w+|install\w+|download\w+|"
+        r"process\w*|is\s+\w+ing|are\s+\w+ing|happens?|happening|goes?|going|"
+        r"works?|working)\b[,:]?\s+(?P<cmd>.+)$", re.I)
+    # "by the time <clause>, <command>" — comma splits the clause from the command (most reliable).
+    _RE_MEANWHILE_BYTIME = re.compile(
+        r"^\s*by\s+the\s+time\s+[^,]+,\s*(?P<cmd>.+)$", re.I)
+    # No-comma fallback: end the clause at a progress verb followed by a request lead, so we don't
+    # grab a verb mid-clause ("…this build is happening can you open Finder" → "open Finder").
+    _RE_MEANWHILE_BYTIME2 = re.compile(
+        r"^\s*by\s+the\s+time\s+.+?\b"
+        r"(?:runs?|running|builds?|building|is\s+\w+ing|are\s+\w+ing|happens?|happening|"
+        r"finish\w*|complet\w*|done|installs?|installing)\s+"
+        r"(?=can\s+you|could\s+you|would\s+you|will\s+you|please|also)(?P<cmd>.+)$", re.I)
+    _RE_MEANWHILE_LEAD = re.compile(
+        r"^(?:can\s+you|could\s+you|would\s+you|will\s+you|please|also|and|then)\b\s*", re.I)
     # "clone <url> [branch <b>]" / "set up a workspace from <url>" — Otto makes its own code space.
     _RE_CLONE = re.compile(
         r"^(?:clone|check\s?out|set\s*up|open|create)\s+(?:a\s+)?(?:new\s+)?(?:workspace\s+"
@@ -1614,6 +2073,110 @@ class Orchestrator:
             self.bus.transcript("user", original, final=True)   # show it before it runs quietly
             await self._run_turn(ws, cmd)
 
+    # A trailing background marker ("… in the background / in parallel") and a connector
+    # ("meanwhile / in the meantime / at the same time / in parallel / simultaneously"), both
+    # matchable ANYWHERE in the utterance (not just at the start) so "do A in the background and
+    # meanwhile do B" splits correctly.
+    _RE_BG_MARKER = re.compile(r"\b(?:in\s+the\s+background|in\s+parallel)\b", re.I)
+    _RE_BG_CONNECTOR = re.compile(
+        r"\b(?:and\s+)?(?:meanwhile|in\s+the\s+meantime|at\s+the\s+same\s+time|in\s+parallel|"
+        r"simultaneously)\b[,:]?\s*", re.I)
+    _RE_FILLER_LEAD = re.compile(
+        r"^(?:ok(?:ay)?|alright|all\s+right|so|right|hey|now|um+|uh+|well|please|also|and|then|"
+        r"can\s+you|could\s+you|would\s+you|will\s+you|let['’]?s|let\s+us|let\s+me|"
+        r"do\s+one\s+thing|do\s+this|just)\b[\s,]*", re.I)
+
+    def _strip_lead(self, s: str) -> str:
+        """Peel leading filler/politeness ("ok, do one thing,", "and please", "let's") so the clause
+        handed to the brain starts at the real verb."""
+        s = (s or "").strip(" ,.")
+        for _ in range(5):
+            n = self._RE_FILLER_LEAD.sub("", s).strip(" ,.")
+            if n == s:
+                break
+            s = n
+        return s
+
+    def _split_meanwhile(self, text: str) -> tuple[bool, str, str]:
+        """Parse a 'do this alongside that' utterance into (is_parallel, foreground, background).
+
+        The clause explicitly marked for the background ("read this IN THE BACKGROUND", "… in
+        parallel") runs in the background workspace; the rest runs in the foreground. Also handles
+        the leading-connector shapes ("meanwhile / while that runs, do X" → X is the background
+        task) and a mid-sentence connector ("open Y, meanwhile read X"). Returns (False, "", "")
+        for a normal utterance."""
+        t = (text or "").strip()
+        # Case A — an explicit "<task> in the background/parallel" clause: that clause is the
+        # background task, whatever else was said is the foreground. Covers the user's natural
+        # "read this in the background and meanwhile let's open GitNexus".
+        m = self._RE_BG_MARKER.search(t)
+        if m:
+            bg = self._strip_lead(t[:m.start()])
+            fg = self._strip_lead(self._RE_BG_CONNECTOR.sub("", t[m.end():]))
+            if bg:
+                return True, fg, bg
+        # Case B — leading connector "meanwhile / while that runs / by the time …, do X": X is the
+        # concurrent (background) task; nothing explicit in the foreground.
+        for rx in (self._RE_MEANWHILE_SIMPLE, self._RE_MEANWHILE_WHILE,
+                   self._RE_MEANWHILE_BYTIME, self._RE_MEANWHILE_BYTIME2):
+            mm = rx.match(t)
+            if mm:
+                cmd = self._strip_lead((mm.group("cmd") or ""))
+                if cmd:
+                    return True, "", cmd
+        # Case C — mid-sentence connector "<foreground>, meanwhile <background>".
+        mm = self._RE_BG_CONNECTOR.search(t)
+        if mm and mm.start() > 0:
+            fg = self._strip_lead(t[:mm.start()])
+            bg = self._strip_lead(t[mm.end():])
+            if bg:
+                return True, fg, bg
+        return False, "", ""
+
+    async def _open_parallel_ws(self) -> Workspace | None:
+        """A dedicated background workspace on the FOCUSED project (its own new-chat brain + lock)
+        so a parallel turn runs alongside the in-flight focused turn without sharing its session
+        or its dashboard lane. Reused across concurrent 'meanwhile' commands; closed when idle."""
+        p = self.focused
+        if self._parallel_ws is not None and self._parallel_ws.project == p:
+            return self._parallel_ws
+        await self._close_parallel_ws()
+        try:
+            ws = Workspace(self, self.settings, p, new_chat=True)
+            ws.name = f"{ws.name} (parallel)"
+            ws.tag = p + " ·parallel"     # own dashboard lane (never interleaves the focused chat)
+            await ws.brain.connect()
+            self._parallel_ws = ws
+            return ws
+        except Exception as e:
+            print(f"[otto] parallel ws open failed: {e!r}", file=sys.stderr, flush=True)
+            return None
+
+    async def _close_parallel_ws(self) -> None:
+        ws, self._parallel_ws = self._parallel_ws, None
+        if ws is not None:
+            try:
+                await ws.brain.disconnect()
+            except Exception:
+                pass
+
+    async def _run_parallel_turn(self, cmd: str, original: str) -> None:
+        """Run `cmd` concurrently with the in-flight focused turn, in the parallel workspace.
+        Silent (never spoken — the focused turn keeps the voice), streams to its own lane, and
+        notifies on completion. Falls back to the normal queue if a parallel brain can't start."""
+        self._parallel_pending += 1
+        try:
+            ws = await self._open_parallel_ws()
+            if ws is None:
+                await self._run_turn(self.focused_ws, original)   # couldn't parallelize → queue it
+                return
+            self.bus.transcript("user", cmd, final=True, ws=ws.tag)
+            await self._run_turn(ws, cmd, echo_user=False, background=True)
+        finally:
+            self._parallel_pending -= 1
+            if self._parallel_pending <= 0:
+                await self._close_parallel_ws()
+
     # -- input routing -----------------------------------------------------
     def submit_user_input(self, text: str) -> None:
         """Entry point for both typed and spoken input."""
@@ -1624,6 +2187,11 @@ class Orchestrator:
         self._cancel_idle_research()   # ...and pause any background research immediately
         if self._is_stop_command(text):   # typed/said "stop" — halt now
             self.interrupt_now("text")
+            return
+        _auto = self._autonomy_command(text)   # "work in the background" / "stop background work"
+        if _auto is not None:
+            self.bus.transcript("user", text, final=True)
+            self.set_autonomous(_auto)
             return
         # If the agent is waiting on an ask_user answer, this input is that answer.
         if self._pending_answer and not self._pending_answer.done():
@@ -1651,6 +2219,22 @@ class Orchestrator:
             self._loop.create_task(self._targeted_turn(
                 m.group("name").strip(), m.group("cmd").strip(), text))
             return
+        # Background / "meanwhile" dispatch. Split the utterance into a foreground clause and a
+        # background clause (e.g. "read this in the background and meanwhile open GitNexus" →
+        # fg="open GitNexus", bg="read this"). The background clause runs CONCURRENTLY in its own
+        # workspace — even when nothing else is running — so a long read never blocks you, and the
+        # foreground clause (plus your next commands) proceed immediately.
+        if getattr(self.settings.voice, "parallel_dispatch", True):
+            is_par, fg_cmd, bg_cmd = self._split_meanwhile(text)
+            if is_par and bg_cmd:
+                if fg_cmd:
+                    self._loop.create_task(self._run_parallel_turn(bg_cmd, bg_cmd))
+                    self._loop.create_task(self._handle_turn(fg_cmd))
+                elif self.focused_ws.lock.locked():
+                    self._loop.create_task(self._run_parallel_turn(bg_cmd, bg_cmd))
+                else:
+                    self._loop.create_task(self._handle_turn(bg_cmd))   # nothing to run alongside
+                return
         self._loop.create_task(self._handle_turn(text))
 
     def _run_demo(self) -> None:
@@ -1754,6 +2338,13 @@ class Orchestrator:
         if self._is_dictation_command(text):
             self.set_dictation(not self._dictation)
             return
+        # Background-autonomy toggle ("start/stop working in the background") — caught early so it
+        # can't be dropped by the ambient gate.
+        _auto = self._autonomy_command(text)
+        if _auto is not None:
+            self.bus.transcript("user", text, final=True)
+            self.set_autonomous(_auto)
+            return
         # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
@@ -1812,6 +2403,10 @@ class Orchestrator:
         if self._is_self_echo(text):
             print(f"[otto] ignoring self-echo (recent reply): {text!r}",
                   file=sys.stderr, flush=True)
+            return
+        # Voice enrollment in progress: this utterance is a voice SAMPLE, not a command.
+        if self._enrolling:
+            self._enroll_capture(text)
             return
         # Asleep (paused by "stop listening"): ignore everything EXCEPT the wake word, which
         # wakes Otto back into fully hands-free listening. If a command trails the wake word
@@ -1924,15 +2519,106 @@ class Orchestrator:
             return True
         return any(p in core for p in self._STRONG_SLEEP)
 
-    def _enter_sleep(self) -> None:
-        """Pause hands-free listening until the wake word. The mic stays on for the wake word."""
+    def _enter_sleep(self, *, speak: bool = True) -> None:
+        """Pause hands-free listening until the wake word. The mic stays on for the wake word.
+        Publishes the 'sleeping' state so the on-screen character visibly naps (watch mode)."""
         self._sleeping = True
         self._cancel_await()
         self._unduck_media()   # resume any media we paused before going quiet
         ack = "Okay, going quiet. Say the wake word when you need me."
         self.bus.transcript("assistant", ack, final=True)
-        self._status("idle", "Sleeping — say the wake word")
-        self._voice_out(ack)
+        self._status("sleeping", "Sleeping — say the wake word")
+        if speak:
+            self._voice_out(ack)
+
+    def sleep_now(self) -> None:
+        """Put Orrin to sleep (watch mode) from the menu bar — silent."""
+        if not self._sleeping:
+            self._enter_sleep(speak=False)
+
+    def wake_now(self) -> None:
+        """Wake Orrin from the menu bar — silent; back to hands-free listening."""
+        if self._sleeping:
+            self._sleeping = False
+            self._status("idle", "Ready")
+
+    # -- in-app voice enrollment (speaker verification) --------------------
+    def start_enrollment(self, target: int = 5) -> None:
+        """Enroll a voice through Orrin's own mic (no Terminal): ask for the person's name, capture a
+        few utterances into a voiceprint under that name, then turn speaker-ID on live. Multiple
+        people can enroll (family/shared machine). Menu-triggered."""
+        try:
+            from .voice.speaker import SpeakerVerifier
+            if self.speaker is None:
+                d = (self.settings.voice.stt.speaker_voiceprints_dir
+                     or str(OTTO_HOME / "voiceprints"))
+                self.speaker = SpeakerVerifier(model_id=self.settings.voice.stt.speaker_model,
+                                               voiceprints_dir=d)
+            self.speaker.start()   # load the model now (idempotent; no-op if already loaded)
+        except Exception as e:
+            print(f"[otto] enrollment init failed: {e!r}", file=sys.stderr, flush=True)
+            self._voice_out("I couldn't start voice setup right now.")
+            return
+        self._enroll_clips = []
+        self._enroll_name = None
+        self._enroll_target = max(3, int(target))
+        self._enrolling = True
+        self._status("listening", "Enrolling a voice…")
+        self._voice_out("Let's set up a voice. First, tell me your name.")
+
+    def _enroll_capture(self, text: str) -> None:
+        """During enrollment, the first utterance is the person's NAME; the rest are voice samples."""
+        from .voice.speaker import _safe_name, to_float32_mono
+        if self._enroll_name is None:                # first utterance = name
+            nm = _safe_name(text)
+            if not nm:
+                self._voice_out("Sorry, what's your name?")
+                return
+            self._enroll_name = nm
+            self.bus.transcript("assistant", f"Enrolling: {nm}", final=True)
+            self._voice_out(f"Thanks {nm}. Now say a few full sentences naturally — "
+                            f"I'll listen for {self._enroll_target}.")
+            return
+        pcm = getattr(self.ears, "last_audio", None) if self.ears is not None else None
+        audio = to_float32_mono(pcm) if pcm else None
+        if audio is None or audio.size < 8000:      # < ~0.5s — too short to be useful
+            self._voice_out("A bit more — say a full sentence.")
+            return
+        self._enroll_clips.append((audio, 16000))
+        n = len(self._enroll_clips)
+        left = self._enroll_target - n
+        self.bus.transcript("assistant", f"Enrollment: {n}/{self._enroll_target}", final=True)
+        if left > 0:
+            self._voice_out(f"Got it. {left} more.")
+            return
+        self._enrolling = False
+        self._status("thinking", "Saving voiceprint…")
+        if self._loop is not None:
+            self._loop.create_task(self._finish_enrollment())
+
+    async def _finish_enrollment(self) -> None:
+        for _ in range(60):                          # the model's first load can take ~20s
+            if self.speaker is not None and self.speaker.ready:
+                break
+            await asyncio.sleep(0.5)
+        clips, self._enroll_clips = self._enroll_clips, []
+        name = self._enroll_name or "me"
+        saved = None
+        try:
+            if self.speaker is not None and self._loop is not None:
+                saved = await self._loop.run_in_executor(
+                    None, self.speaker.enroll, clips, name)
+        except Exception as e:
+            print(f"[otto] enrollment failed: {e!r}", file=sys.stderr, flush=True)
+        self._enroll_name = None
+        if saved:
+            print(f"[otto] enrolled voice '{saved}'; voices: {self.speaker.names}",
+                  file=sys.stderr, flush=True)
+            self._voice_out(f"All set, {saved}. I'll recognize your voice now.")
+            self._status("idle", "Ready · voice enrolled")
+        else:
+            self._voice_out("That didn't take — let's try enrolling again later.")
+            self._status("idle", "Ready")
 
     # -- voice command dispatch (refine + dictation) ----------------------
     def _dispatch_voice_command(self, text: str, deliberate: bool = False,
@@ -1962,16 +2648,27 @@ class Orchestrator:
         # questions ("what's the weather", "otto …?") skip it and stay instant — the laya gate only
         # sees the ambiguous middle (declarative/ambient-shaped speech), where it drops room/TV/
         # side-talk. Prefer the fast LOCAL laya gate when ready; else the Haiku verify (if enabled).
-        smart_ready = bool(getattr(stt, "smart_gate", False) and self.smart_gate is not None
-                           and self.smart_gate.ready)
-        # In a live conversation (the follow-up window right after Orrin replied) TRUST what you
-        # say — you're clearly talking to it — so a conversational follow-up ("...the Oceane
-        # project, correct?") isn't dropped by the gate.
-        ambiguous = (hands_free and not deliberate and not self._follow_up_active
+        laya_ready = self.smart_gate is not None and self.smart_gate.ready
+        smart_ready = bool(getattr(stt, "smart_gate", False) and laya_ready)
+        # A follow-up window (right after Orrin replied) no longer BYPASSES the gate — that opened a
+        # long, unfiltered window that ran the whole room as commands. Instead it RELAXES the
+        # threshold in _dispatch_async, so a genuine conversational follow-up still passes while
+        # clear ambient is still dropped.
+        ambiguous = (hands_free and not deliberate
                      and not looks_like_command(text) and not looks_like_question(text))
         use_laya = ambiguous and smart_ready
-        need_verify = ambiguous and not smart_ready and stt.hands_free_verify
-        need_gate = use_laya or need_verify
+        # If the addressing gate isn't active, still verify ambiguous hands-free input: locally via
+        # laya when present (offline, ~50 ms), else the cloud Haiku verify (if enabled).
+        local_verify = bool(ambiguous and not smart_ready and laya_ready
+                            and getattr(stt, "local_command_verify", True))
+        need_verify = ambiguous and not smart_ready and not local_verify and stt.hands_free_verify
+        # Speaker verification runs on the whole hands-free path (even obvious commands — a colleague
+        # can say "open chrome" too), before the content gate. Only when enrolled + model ready.
+        spk_ready = bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
+                         and self.speaker.ready and self.speaker.has_voiceprint)
+        need_speaker = spk_ready and hands_free and not deliberate
+        need_gate = use_laya or local_verify or need_verify or need_speaker
+        follow_up = bool(self._follow_up_active)
         # Intent first: react like a person, not a switch. Chit-chat ("hey", "how are you",
         # "thanks") gets a warm INSTANT reply right here — no Claude round-trip, no "On it." —
         # then a short hands-free window so you can keep talking. A question or an action flows
@@ -2005,21 +2702,66 @@ class Orchestrator:
             self._ack(intent); self.submit_user_input(text)   # fast path — ack, no model calls
             return
         if self._loop is not None:
-            self._loop.create_task(self._dispatch_async(text, need_gate, intent, use_laya))
+            self._loop.create_task(self._dispatch_async(
+                text, need_gate, intent, use_laya, local_verify, follow_up, need_speaker))
         else:
             self.submit_user_input(text)
 
+    def _utterance_audio(self):
+        """(float32 mono PCM, sample_rate) of the most recent finalized utterance, or (None, sr)."""
+        ears = self.ears
+        pcm = getattr(ears, "last_audio", None) if ears is not None else None
+        if not pcm:
+            return None, 16000
+        from .voice.speaker import to_float32_mono
+        return to_float32_mono(pcm), int(getattr(ears, "sample_rate", 16000))
+
     async def _dispatch_async(self, text: str, gate: bool = False,
-                              intent: str = "command", use_laya: bool = False) -> None:
+                              intent: str = "command", use_laya: bool = False,
+                              local_verify: bool = False, follow_up: bool = False,
+                              need_speaker: bool = False) -> None:
         if gate:
+            stt = self.settings.voice.stt
+            # Speaker gate FIRST: match to the closest enrolled voice; accept only a registered
+            # (and active) person above threshold. Logs every decision so it's tunable.
+            if need_speaker and self.speaker is not None:
+                audio, sr = self._utterance_audio()
+                if audio is not None:
+                    try:
+                        m = await self._loop.run_in_executor(None, self.speaker.match, audio, sr)
+                    except Exception:
+                        m = None
+                    if m is not None:
+                        name, sim = m
+                        thr = float(getattr(stt, "speaker_threshold", 0.55))
+                        active = [n.lower() for n in getattr(stt, "speaker_active", []) or []]
+                        ok = sim >= thr and (not active or name.lower() in active)
+                        print(f"[otto] speaker: best={name} sim={sim:.2f} thr={thr:.2f} "
+                              f"active={active or 'all'} -> {'accept' if ok else 'DROP'}: {text!r}",
+                              file=sys.stderr, flush=True)
+                        if not ok:
+                            return
             if use_laya and self.smart_gate is not None:
                 try:
                     score = await self._loop.run_in_executor(None, self.smart_gate.score, text)
                 except Exception:
                     score = None
-                thr = float(getattr(self.settings.voice.stt, "smart_gate_threshold", 0.55))
+                # In a follow-up window use the lower bar (drop only clear ambient); otherwise the
+                # stricter addressing threshold.
+                thr = float(getattr(stt, "follow_up_threshold", 0.30) if follow_up
+                            else getattr(stt, "smart_gate_threshold", 0.55))
                 if score is not None and score < thr:
-                    print(f"[otto] smart-gate dropped ambient (p={score:.2f}): {text!r}",
+                    print(f"[otto] smart-gate dropped ambient (p={score:.2f}<{thr:.2f}): {text!r}",
+                          file=sys.stderr, flush=True)
+                    return
+            elif local_verify and self.smart_gate is not None:
+                try:
+                    p = await self._loop.run_in_executor(
+                        None, self.smart_gate.is_real_command, text)
+                except Exception:
+                    p = None
+                if p is not None and p < 0.30:      # conservative: drop only clear non-commands
+                    print(f"[otto] local verify dropped (p={p:.2f}): {text!r}",
                           file=sys.stderr, flush=True)
                     return
             else:
@@ -2282,32 +3024,90 @@ class Orchestrator:
 
     # -- the turn ----------------------------------------------------------
     async def _handle_turn(self, text: str, *, echo_user: bool = True) -> None:
-        """Run a turn in the focused workspace (compat entry point)."""
-        await self._run_turn(self.focused_ws, text, echo_user=echo_user)
+        """Run a turn in the focused workspace. First applies two local (laya) safety/hygiene
+        checks: a destructive-action confirm (even under bypass) and auto-fresh-context on a clear
+        topic change. Both degrade to a no-op when laya isn't ready."""
+        ws = self.focused_ws
+        if not await self._destructive_ok(text):
+            return                                   # user declined a destructive-looking command
+        await self._maybe_fresh_context(ws, text)    # topic change → new chat before the turn
+        ws.last_command = text
+        await self._run_turn(ws, text, echo_user=echo_user)
+
+    async def _destructive_ok(self, text: str) -> bool:
+        """Under permission='bypass', ask laya whether a command looks destructive/irreversible and,
+        if so, require a spoken confirm. Returns True to proceed, False if the user declined."""
+        v = self.settings.voice
+        if not (getattr(v, "destructive_guard", False) and self.smart_gate is not None
+                and self.smart_gate.ready
+                and self.settings.brain.permission == "bypass" and self._loop is not None):
+            return True
+        try:
+            p = await self._loop.run_in_executor(None, self.smart_gate.is_destructive, text)
+        except Exception:
+            p = None
+        if p is None or p < 0.55:
+            return True
+        print(f"[otto] destructive guard (p={p:.2f}) — confirming: {text!r}",
+              file=sys.stderr, flush=True)
+        ok = await self.confirm(f"That sounds destructive — {text}. Should I go ahead?")
+        if not ok:
+            self.bus.transcript("assistant", "Okay, I won't do that.", final=True)
+            self._voice_out("Okay, I won't do that.")
+        return ok
+
+    async def _maybe_fresh_context(self, ws: Workspace, text: str) -> None:
+        """If this command clearly starts a NEW topic (laya says it doesn't continue the current
+        one), rebind the focused workspace to a fresh chat so a stale thread can't bleed into the
+        answer. Durable memory is re-injected on the new chat's first turn."""
+        v = self.settings.voice
+        if not (getattr(v, "auto_fresh_context", False) and self.smart_gate is not None
+                and self.smart_gate.ready and self._loop is not None
+                and getattr(ws, "last_command", "") and ws.session_id):
+            return
+        try:
+            cont = await self._loop.run_in_executor(
+                None, self.smart_gate.is_continuation, text, ws.last_command)
+        except Exception:
+            cont = None
+        if cont is not None and cont < 0.35:
+            print(f"[otto] topic change (cont={cont:.2f}) — fresh context for: {text!r}",
+                  file=sys.stderr, flush=True)
+            try:
+                await ws.rebind(self.settings, new_chat=True)
+            except Exception as e:
+                print(f"[otto] fresh-context rebind failed: {e!r}", file=sys.stderr, flush=True)
 
     async def _run_turn(self, ws: Workspace, text: str, *, echo_user: bool = True,
-                        research: bool = False) -> None:
+                        research: bool = False, background: bool = False) -> None:
         """Run one turn for a workspace. Different workspaces run concurrently (per-workspace
         lock). EVERY workspace streams its real work — the user's turn, tool calls, and reply —
         to its OWN chat window in the dashboard (events tagged with the workspace). Only the
         *focused* workspace is spoken aloud; the others work in the background and post a
-        completion notification when done. This mirrors having several Claude windows open."""
+        completion notification when done. This mirrors having several Claude windows open.
+
+        `background=True` forces the silent, notify-on-done path even when this workspace is on
+        the focused project — used for parallel "meanwhile" turns so they run alongside (never
+        speak over) the in-flight focused turn and never clobber its chat session."""
         async with ws.lock:
             p = ws.project
-            focused = p == self.focused
+            tag = getattr(ws, "tag", p)   # dashboard window id (parallel turns get their own lane)
+            focused = p == self.focused and not background
             print(f"[otto] turn -> {ws.name} (focused={focused}): {text!r}",
                   file=sys.stderr, flush=True)
             if echo_user:
-                self.bus.transcript("user", text, final=True, ws=p)   # show it in this window
+                self.bus.transcript("user", text, final=True, ws=tag)   # show it in this window
             if focused:
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""
                 self._spoken_chars = 0
                 self._speak_done = False
+                self._first_spoken = False
             ws.state = "thinking"
             self._publish_workspaces()
             assistant_text = ""
             errored = False   # so a voice-only user hears that a turn failed (not just a toast)
+            auth_error = False   # brain login lapsed → give one "sign in" message, not the raw error
             # Prepend durable memory (facts + recent summary + relevant saved-note excerpts)
             # so Claude has cross-session context. The dashboard/transcript already showed the
             # user's *clean* text above; only what we send to the brain carries the
@@ -2336,12 +3136,16 @@ class Orchestrator:
                 send_text = text
             try:
                 async for ev in ws.brain.send(send_text):
-                    live = p == self.focused   # focus can change mid-turn
+                    live = p == self.focused and not background   # focus can change mid-turn
                     if ev["type"] == "delta":
                         chunk = ev["text"]
                         assistant_text += chunk
-                        self.bus.assistant_delta(chunk, ws=p)     # into this window
-                        if live:
+                        self.bus.assistant_delta(chunk, ws=tag)   # into this window
+                        # A lapsed-login error arrives as a single (non-streamed) delta — don't
+                        # speak it; we surface a clear "sign in" message at end of turn instead.
+                        if _is_auth_error(assistant_text):
+                            auth_error = True
+                        elif live:
                             self._feed_speech(chunk)              # ...but only speak the focused
                             self._status("speaking", "Speaking…")
                         ws.state = "speaking"
@@ -2349,20 +3153,26 @@ class Orchestrator:
                         ws.state = "working"
                         # The tool call itself IS the visible work — show it in the window
                         # (that's the "chat window" feel). No spoken narration of tools.
-                        self._announce_tool(ev["name"], ev.get("detail", ""), ws=p)
+                        self._announce_tool(ev["name"], ev.get("detail", ""), ws=tag)
                         if live:
                             self._status("working", ev["name"])
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
                             errored = True
-                            self.bus.notify(
-                                "Brain error",
-                                ev.get("error_text") or "The model returned an error.")
+                            if _is_auth_error(ev.get("error_text") or assistant_text):
+                                auth_error = True
+                            else:
+                                self.bus.notify(
+                                    "Brain error",
+                                    ev.get("error_text") or "The model returned an error.")
                         sid = ev.get("session_id")   # a new chat mints its id on turn 1
                         # Only persist when the chat id actually changed — it's stable after
                         # turn 1, so writing config.yaml every turn was needless disk + YAML
-                        # work on the loop.
-                        if sid and sid != getattr(ws, "_persisted_sid", None):
+                        # work on the loop. NEVER persist a background/parallel chat's id: it's a
+                        # throwaway new_chat on the focused project and would clobber the real
+                        # chat's resume id.
+                        if sid and not background \
+                                and sid != getattr(ws, "_persisted_sid", None):
                             ws._persisted_sid = sid
                             try:
                                 self._persist_session(p, sid)
@@ -2389,12 +3199,29 @@ class Orchestrator:
                           file=sys.stderr, flush=True)
             finally:
                 reply = assistant_text.strip()
-                print(f"[otto] turn done ({ws.name}), reply len={len(reply)}",
-                      file=sys.stderr, flush=True)
+                print(f"[otto] turn done ({ws.name}), reply len={len(reply)}"
+                      f"{' [auth]' if auth_error else ''}", file=sys.stderr, flush=True)
+                # Login lapsed: don't recite the raw SDK error. Drop the buffered error text and,
+                # for a focused user turn, give ONE clear (debounced) "sign in" message + a
+                # dashboard signal. Applies to background/research turns too (silently — no speak).
+                if auth_error:
+                    self._speech_buf = ""
+                    self._speak_done = True
+                    reply = ("I'm signed out of Claude. In Terminal run `claude`, then `/login`, "
+                             "and restart me.")
+                    ws.state = "idle"
+                    ws.last_reply = ""
+                    self.bus.transcript("assistant", reply, final=True, ws=tag)
+                    if p == self.focused and not background and not research:
+                        self._warn_signed_out()
+                    self._status("error: signed out of Claude", "Signed out of Claude")
+                    self._publish_workspaces()
+                    return
                 # A voice-only user (screen not visible) must HEAR that a request failed —
                 # otherwise a crashed turn is pure silence. Speak a short apology when the
                 # focused, user-facing turn errored and produced no reply to speak.
-                if errored and not reply and not research and p == self.focused:
+                if errored and not reply and not research and not background \
+                        and p == self.focused:
                     try:
                         self._voice_out("Sorry — that hit an error. Mind trying again?")
                     except Exception:
@@ -2402,7 +3229,7 @@ class Orchestrator:
                 ws.state = "idle"
                 ws.last_reply = reply
                 if reply:
-                    self.bus.transcript("assistant", reply, final=True, ws=p)
+                    self.bus.transcript("assistant", reply, final=True, ws=tag)
                     # Learn from the exchange in the background (records the turn + folds any
                     # durable facts/summary into the store). Off the voice path, never blocks.
                     # Research turns save their own findings via the remember tool, so skip the
@@ -2441,25 +3268,65 @@ class Orchestrator:
                     self.notify(f"{ws.name} finished", summary)
                 self._publish_workspaces()
 
+    async def _auth_preflight(self) -> None:
+        """At startup, check whether Claude is signed in and warn immediately if not — so a lapsed
+        login surfaces before the first spoken command instead of failing mid-conversation. Runs in
+        the background (never blocks startup); inconclusive checks stay silent."""
+        if not getattr(self.settings.voice, "auth_preflight", True) or self._loop is None:
+            return
+        try:
+            logged_in = await self._loop.run_in_executor(None, _claude_logged_in)
+        except Exception:
+            return
+        if logged_in is False:
+            print("[otto] auth preflight: not signed in to Claude", file=sys.stderr, flush=True)
+            self._status("error: signed out of Claude", "Signed out of Claude")
+            self._warn_signed_out()
+
+    def _warn_signed_out(self) -> None:
+        """One clear, debounced 'sign in to Claude' message (spoken at most once a minute) + a
+        notification + a dashboard signal — instead of reciting the raw auth error every turn."""
+        self.bus.notify("Signed out of Claude",
+                        "Run `claude`, then /login in Terminal, then restart Orrin.")
+        self.bus.publish({"type": "auth", "signed_out": True})
+        now = time.monotonic()
+        if now - getattr(self, "_auth_warn_ts", 0.0) > 60.0:
+            self._auth_warn_ts = now
+            try:
+                self._voice_out("I'm signed out of Claude. Open Terminal, run claude, "
+                                "then type slash login, and restart me.")
+            except Exception:
+                pass
+
     def _feed_speech(self, chunk: str) -> None:
-        """Accumulate the reply's deltas. We DON'T speak sentence-by-sentence anymore — a separate
-        Kokoro synth + afplay per sentence made speech choppy/robotic (gaps between sentences).
-        Instead the whole (short) reply is synthesized as ONE clip at _flush_speech, which Kokoro
-        renders with smooth cross-sentence prosody. The instant ack covers the small extra delay."""
+        """Accumulate the reply's deltas. With `stream_sentences` on (#64) we speak the FIRST
+        complete sentence as soon as it lands — so audio starts while the model is still
+        generating — then the remainder is spoken as ONE clip at _flush_speech (not per-sentence,
+        which synthesized choppy). Off = the old single-clip-at-end behavior."""
         if not self.mouth or self.voice_muted:
             return
         self._speech_buf += chunk
+        tts = self.settings.voice.tts
+        if (getattr(tts, "stream_sentences", True) and not self._first_spoken
+                and not self._speak_done):
+            sent, rest = _split_first_sentence(
+                self._speech_buf, int(getattr(tts, "stream_min_chars", 12)))
+            if sent:
+                self._speech_buf = rest
+                self._first_spoken = True
+                self._emit_speech(sent)
 
     def _flush_speech(self) -> None:
         buf = self._speech_buf
         self._speech_buf = ""
         if buf.strip():
-            self._speak_capped(buf)
+            self._emit_speech(buf)
+        self._speak_done = True                        # turn's speech is complete
 
-    def _speak_capped(self, raw: str) -> None:
-        """Speak the whole cleaned reply as one utterance (smooth), capped as a backstop against a
-        runaway verbose reply. The model already answers in a sentence or two WITH closure; if it
-        ever overruns the cap we trim at a word boundary and stop — no 'the rest is on screen'."""
+    def _emit_speech(self, raw: str) -> None:
+        """Speak one cleaned chunk (first sentence, or the remainder), respecting the TOTAL
+        spoken-length cap across the turn's clips. Skips a dead reply ('okay.'/'sure.') and, once
+        the cap is hit, trims at a word boundary and stops the rest."""
         if self._speak_done:
             return
         s = _speakable(raw)
@@ -2469,11 +3336,15 @@ class Orchestrator:
             print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
         cap = self.settings.voice.tts.max_spoken_chars or 0
-        if cap and len(s) > cap:                       # runaway reply — trim at a word boundary
-            s = s[:cap].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+        if cap:
+            remaining = cap - self._spoken_chars
+            if remaining <= 0:
+                return                                 # already spoke the cap's worth this turn
+            if len(s) > remaining:                     # runaway reply — trim at a word boundary
+                s = s[:remaining].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+                self._speak_done = True                # nothing more to speak after the trim
         self._voice_out(s)
         self._spoken_chars += len(s) + 1
-        self._speak_done = True                        # one clip per turn
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
         if name == "Task":

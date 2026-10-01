@@ -44,6 +44,15 @@ def _resolve_lang(voice, stt):
     return ml, v                                  # "hi", "ta", … a Whisper language code
 
 
+def pick_mlx_model(stt, voice_language) -> str:
+    """Choose the MLX Whisper model from the user's configured language (NOT the resolved whisper
+    code — Hinglish resolves to whisper-lang "en" but still needs the multilingual model). English
+    family → the small english model; everything else (hinglish/hi/ta/auto) → the multilingual turbo."""
+    vl = (voice_language or "en").lower()
+    is_en = vl in ("en", "", "en-in")
+    return stt.mlx_model if is_en else stt.mlx_multilingual_model
+
+
 class _PipeErrorWatch(logging.Handler):
     """Watches the root logger for RealtimeSTT's dead-pipe errors ("Error receiving data from
     connection" / EOFError). When the recorder's worker dies the parent floods these; counting
@@ -157,15 +166,39 @@ class Ears:
         self._max_record_s = float(
             getattr(settings.voice.stt, "max_recording_seconds", 0) or 15.0)
         self._watchdog: threading.Timer | None = None
+        # Transcription engine. "mlx" records via RealtimeSTT but transcribes the captured audio with
+        # mlx-whisper (Apple-Silicon GPU) instead of faster-whisper. Resolved to False in start() if
+        # mlx-whisper can't be imported, so we always fall back to faster-whisper rather than go mute.
+        self._use_mlx = getattr(settings.voice.stt, "transcriber", "faster-whisper") == "mlx"
+        self._mlx = None                          # the mlx_whisper module, set in start()
+        self._mlx_model = ""                      # resolved (english vs multilingual) in start()
+        # Audio tap: accumulate the current utterance's raw PCM (via on_recorded_chunk, between
+        # recording-start and -stop). Needed for speaker verification AND for the MLX transcriber
+        # (which transcribes this buffer). Off = zero overhead (no chunk callback wired).
+        self._capture_audio = bool(
+            getattr(settings.voice.stt, "speaker_verify", False) or self._use_mlx)
+        self.sample_rate = 16000
+        self.last_audio: bytes | None = None      # PCM of the most recent finalized utterance
+        self._utt_chunks: list[bytes] = []
+        self._recording = False
 
     def _post(self, fn, *args) -> None:
         """Bounce a callback from the recorder thread onto the asyncio loop."""
         self._loop.call_soon_threadsafe(fn, *args)
 
     # -- recording watchdog (force-finalize an over-long capture) --------------
+    def _on_chunk(self, chunk: bytes) -> None:
+        """RealtimeSTT hands us each mic chunk. While a recording is active, buffer it so the
+        finalized utterance's audio is available for speaker verification. Best-effort, cheap."""
+        if self._recording and chunk:
+            self._utt_chunks.append(bytes(chunk))
+
     def _rec_started(self) -> None:
         """RealtimeSTT began a recording. Notify the orchestrator and arm the max-duration
         watchdog so a never-ending capture (continuous ambient/media audio) still finalizes."""
+        if self._capture_audio:
+            self._recording = True
+            self._utt_chunks = []
         self._post(self._on_speech_start)
         self._cancel_watchdog()
         if self._max_record_s > 0:
@@ -175,6 +208,9 @@ class Ears:
 
     def _rec_stopped(self) -> None:
         """Recording ended (naturally or forced) — disarm the watchdog and notify."""
+        if self._capture_audio and self._recording:
+            self._recording = False
+            self.last_audio = b"".join(self._utt_chunks) if self._utt_chunks else None
         self._cancel_watchdog()
         self._last_record_stop = time.monotonic()   # transcript should follow shortly
         if self._on_recording_stop is not None:
@@ -277,6 +313,8 @@ class Ears:
         if prompt:
             params["initial_prompt"] = prompt
         params["on_recording_stop"] = self._rec_stopped
+        if self._capture_audio:                     # tap raw PCM for speaker verification
+            params["on_recorded_chunk"] = self._on_chunk
 
         # Live captions: stream partial words as you speak, so the dashboard visibly reacts to
         # your voice (transcribed by a small fast model). Optional; off saves CPU on always-on.
@@ -315,6 +353,8 @@ class Ears:
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
         self._last_rebuild = 0.0
+        if self._use_mlx:
+            self._init_mlx(lang)         # sets self._mlx / self._use_mlx (falls back on failure)
         # Stall detection: if a recording finishes but no transcript comes back, the
         # transcription pipe is wedged (worker alive but its parent pipe broke — the EOFError
         # flood). Track the last recording-stop and the last text so the watchdog can catch it.
@@ -336,10 +376,83 @@ class Ears:
     def _note_pipe_error(self) -> None:
         self._pipe_errors += 1
 
+    def _init_mlx(self, lang) -> None:
+        """Import mlx-whisper and pick the model (English vs multilingual). On any failure, log and
+        fall back to faster-whisper so speech never breaks."""
+        cfg = self.settings.voice.stt
+        try:
+            import mlx_whisper
+            self._mlx = mlx_whisper
+            # Model by CONFIGURED language (hinglish → multilingual turbo even though its whisper
+            # code is pinned "en"); transcribe language is the resolved whisper code.
+            self._mlx_model = pick_mlx_model(cfg, getattr(self.settings.voice, "language", "en"))
+            self._mlx_lang = None if (not lang or lang == "auto") else lang
+            self._mlx_fails = 0
+            print(f"[otto] MLX transcriber enabled ({self._mlx_model}, lang={self._mlx_lang})",
+                  file=sys.stderr, flush=True)
+            # First transcription loads weights + compiles Metal kernels (~15-20s); warm it in the
+            # background so the user's first real command isn't slow.
+            def _warm():
+                try:
+                    import numpy as np
+                    self._mlx.transcribe(np.zeros(16000, dtype=np.float32),
+                                         path_or_hf_repo=self._mlx_model)
+                    print("[otto] MLX transcriber warm", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[otto] MLX warmup failed: {e!r}", file=sys.stderr, flush=True)
+            threading.Thread(target=_warm, daemon=True).start()
+        except Exception as e:
+            self._use_mlx = False
+            self._mlx = None
+            print(f"[otto] mlx-whisper unavailable ({e!r}) — using faster-whisper",
+                  file=sys.stderr, flush=True)
+
+    def _transcribe_mlx(self, pcm: bytes | None) -> str:
+        """Transcribe the just-recorded utterance PCM with mlx-whisper (Apple-Silicon GPU)."""
+        if not pcm or self._mlx is None:
+            return ""
+        import numpy as np
+        audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        if audio.size < 1600:                       # < ~0.1s — nothing worth transcribing
+            return ""
+        kw = {"path_or_hf_repo": self._mlx_model}
+        if self._mlx_lang:
+            kw["language"] = self._mlx_lang
+        text = (self._mlx.transcribe(audio, **kw).get("text") or "").strip()
+        # Release MLX's Metal buffer cache so it doesn't accumulate across utterances.
+        try:
+            import mlx.core as mx
+            (getattr(mx, "clear_cache", None) or getattr(mx.metal, "clear_cache", lambda: None))()
+        except Exception:
+            pass
+        return text
+
     def _run(self) -> None:
         while self._running:
             try:
-                text = self._recorder.text()  # blocks: (wake ->) record -> transcribe
+                if self._use_mlx:
+                    # RealtimeSTT still does (wake ->) record + VAD; we transcribe the captured
+                    # PCM with MLX instead of faster-whisper. On a transient MLX error, fall back
+                    # to the recorder's own faster-whisper transcribe for THIS utterance; after a
+                    # few failures, drop MLX for the session.
+                    self._recorder.wait_audio()
+                    try:
+                        text = self._transcribe_mlx(self.last_audio)
+                        self._mlx_fails = 0
+                    except Exception as me:
+                        self._mlx_fails = getattr(self, "_mlx_fails", 0) + 1
+                        print(f"[otto] MLX transcribe failed ({me!r}) — faster-whisper fallback",
+                              file=sys.stderr, flush=True)
+                        try:
+                            text = self._recorder.transcribe()
+                        except Exception:
+                            text = ""
+                        if self._mlx_fails >= 3:
+                            self._use_mlx = False
+                            print("[otto] disabling MLX for this session (repeated failures)",
+                                  file=sys.stderr, flush=True)
+                else:
+                    text = self._recorder.text()  # blocks: (wake ->) record -> transcribe
             except Exception as e:
                 # Don't hot-spin the CPU (and go silently deaf) on a persistent recorder error:
                 # log it and back off briefly before retrying.

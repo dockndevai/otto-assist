@@ -216,6 +216,10 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     async def settings_page() -> FileResponse:
         return FileResponse(WEB_DIR / "settings.html")
 
+    @app.get("/hud")
+    async def hud_page() -> FileResponse:
+        return FileResponse(WEB_DIR / "hud.html")
+
     # -- mobile pairing ---------------------------------------------------
     # What the phone needs to connect: the token + reachable addresses. Only served to a
     # LOOPBACK caller (the local dashboard / menu bar) so a remote client can't fetch the
