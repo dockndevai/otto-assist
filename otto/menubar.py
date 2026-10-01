@@ -206,6 +206,8 @@ class OttoApp(rumps.App):
         self.dictation_item = rumps.MenuItem("Dictation mode", callback=self.toggle_dictation)
         self.watch_item = rumps.MenuItem("Watch mode (nap)", callback=self.toggle_watch)
         self.enroll_item = rumps.MenuItem("Enroll a voice", callback=self.enroll_voice)
+        self.autonomy_item = rumps.MenuItem("Autonomous teammate", callback=self.toggle_autonomy)
+        self.autonomy_item.state = 1 if getattr(self.settings.voice, "autonomous_work", False) else 0
         self.move_menu = rumps.MenuItem("Move Orrin")
         for _label, _c in (("Bottom-right", "br"), ("Bottom-left", "bl"),
                            ("Top-right", "tr"), ("Top-left", "tl")):
@@ -219,6 +221,7 @@ class OttoApp(rumps.App):
             self.move_menu,
             self.watch_item,
             self.enroll_item,
+            self.autonomy_item,
             rumps.MenuItem("Open Dashboard", callback=self.open_dashboard),
             rumps.MenuItem("Settings…", callback=self.open_settings),
             self.project_menu,
@@ -583,6 +586,16 @@ class OttoApp(rumps.App):
                 self.orch.sleep_now()
         except Exception as e:
             print(f"[otto] watch-mode toggle failed: {e}", file=sys.stderr, flush=True)
+
+    def toggle_autonomy(self, _) -> None:
+        """Flip the background-autonomy master switch (code teammate + system steward). Orrin works
+        on scoped improvements and keeps the machine tidy while you're away; off = only on request."""
+        try:
+            on = not getattr(self.settings.voice, "autonomous_work", False)
+            self.orch.set_autonomous(on, speak=False)
+            self.autonomy_item.state = 1 if on else 0
+        except Exception as e:
+            print(f"[otto] autonomy toggle failed: {e}", file=sys.stderr, flush=True)
 
     def toggle_mic(self, _) -> None:
         self.orch.mic_muted = not self.orch.mic_muted

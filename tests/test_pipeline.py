@@ -890,6 +890,53 @@ def test_steward_requires_master_switch():
     assert s.voice.steward_interval > 0 and s.voice.steward_disk_min_gb > 0
 
 
+def test_autonomy_command_detection():
+    """Voice/typed phrases that toggle background autonomy map to enable/disable/none."""
+    orch = Orchestrator(load_settings(), EventBus())
+    for p in ["start working in the background", "work on things yourself",
+              "keep improving things", "be my teammate", "enable autonomous mode"]:
+        assert orch._autonomy_command(p) is True, p
+    for p in ["stop working in the background", "pause background work",
+              "turn off autonomous", "stop improving things"]:
+        assert orch._autonomy_command(p) is False, p
+    for p in ["what's the weather", "open chrome", "", "remind me at five"]:
+        assert orch._autonomy_command(p) is None, p
+
+
+def test_set_autonomous_persists_and_arms(tmp_path, monkeypatch):
+    """The runtime toggle flips the flag, persists it, and arms/cancels the loops."""
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
+    saved = {}
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: saved.update(d))
+    s = load_settings()
+
+    async def run():
+        orch = Orchestrator(s, EventBus())
+        orch._loop = asyncio.get_running_loop()
+        armed = {"idle": 0, "steward": 0, "cancel_idle": 0, "cancel_steward": 0}
+        monkeypatch.setattr(orch, "_arm_idle_research", lambda: armed.__setitem__("idle", armed["idle"] + 1))
+        monkeypatch.setattr(orch, "_arm_steward", lambda: armed.__setitem__("steward", armed["steward"] + 1))
+        monkeypatch.setattr(orch, "_cancel_idle_research", lambda: armed.__setitem__("cancel_idle", 1))
+        monkeypatch.setattr(orch, "_cancel_steward", lambda: armed.__setitem__("cancel_steward", 1))
+        orch.set_autonomous(True, speak=False)
+        assert s.voice.autonomous_work is True and saved and armed["idle"] == 1 and armed["steward"] == 1
+        orch.set_autonomous(False, speak=False)
+        assert s.voice.autonomous_work is False and armed["cancel_idle"] == 1 and armed["cancel_steward"] == 1
+    asyncio.run(run())
+
+
+def test_autonomy_digest():
+    """The digest recaps recent PRs + steward fixes + current health, and is empty when idle."""
+    orch = Orchestrator(load_settings(), EventBus())
+    assert orch.autonomy_digest() == ""
+    orch._record_autonomy("pr", "Add a --version flag", project="cli-tool")
+    orch._record_autonomy("steward", "swept 2 orphaned worker(s)")
+    orch._steward_health = {"free_mem_gb": 4.0, "disk_free_gb": 120.0, "issue_keys": []}
+    d = orch.autonomy_digest()
+    assert "Add a --version flag" in d and "cli-tool" in d
+    assert "swept 2 orphaned" in d and "GB memory free" in d
+
+
 def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
     """The research queue skips the focused project + freshly-researched ones, least-recent first;
     quiescence gate reflects state."""
