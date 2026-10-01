@@ -2073,25 +2073,65 @@ class Orchestrator:
             self.bus.transcript("user", original, final=True)   # show it before it runs quietly
             await self._run_turn(ws, cmd)
 
-    def _split_meanwhile(self, text: str) -> tuple[bool, str]:
-        """Detect a parallel-intent lead ("meanwhile / while that runs / at the same time / by the
-        time … , do X") and return (True, X) with the command stripped of the lead and any leading
-        politeness ("can you", "please", "also"). Returns (False, "") for a normal utterance."""
+    # A trailing background marker ("… in the background / in parallel") and a connector
+    # ("meanwhile / in the meantime / at the same time / in parallel / simultaneously"), both
+    # matchable ANYWHERE in the utterance (not just at the start) so "do A in the background and
+    # meanwhile do B" splits correctly.
+    _RE_BG_MARKER = re.compile(r"\b(?:in\s+the\s+background|in\s+parallel)\b", re.I)
+    _RE_BG_CONNECTOR = re.compile(
+        r"\b(?:and\s+)?(?:meanwhile|in\s+the\s+meantime|at\s+the\s+same\s+time|in\s+parallel|"
+        r"simultaneously)\b[,:]?\s*", re.I)
+    _RE_FILLER_LEAD = re.compile(
+        r"^(?:ok(?:ay)?|alright|all\s+right|so|right|hey|now|um+|uh+|well|please|also|and|then|"
+        r"can\s+you|could\s+you|would\s+you|will\s+you|let['’]?s|let\s+us|let\s+me|"
+        r"do\s+one\s+thing|do\s+this|just)\b[\s,]*", re.I)
+
+    def _strip_lead(self, s: str) -> str:
+        """Peel leading filler/politeness ("ok, do one thing,", "and please", "let's") so the clause
+        handed to the brain starts at the real verb."""
+        s = (s or "").strip(" ,.")
+        for _ in range(5):
+            n = self._RE_FILLER_LEAD.sub("", s).strip(" ,.")
+            if n == s:
+                break
+            s = n
+        return s
+
+    def _split_meanwhile(self, text: str) -> tuple[bool, str, str]:
+        """Parse a 'do this alongside that' utterance into (is_parallel, foreground, background).
+
+        The clause explicitly marked for the background ("read this IN THE BACKGROUND", "… in
+        parallel") runs in the background workspace; the rest runs in the foreground. Also handles
+        the leading-connector shapes ("meanwhile / while that runs, do X" → X is the background
+        task) and a mid-sentence connector ("open Y, meanwhile read X"). Returns (False, "", "")
+        for a normal utterance."""
+        t = (text or "").strip()
+        # Case A — an explicit "<task> in the background/parallel" clause: that clause is the
+        # background task, whatever else was said is the foreground. Covers the user's natural
+        # "read this in the background and meanwhile let's open GitNexus".
+        m = self._RE_BG_MARKER.search(t)
+        if m:
+            bg = self._strip_lead(t[:m.start()])
+            fg = self._strip_lead(self._RE_BG_CONNECTOR.sub("", t[m.end():]))
+            if bg:
+                return True, fg, bg
+        # Case B — leading connector "meanwhile / while that runs / by the time …, do X": X is the
+        # concurrent (background) task; nothing explicit in the foreground.
         for rx in (self._RE_MEANWHILE_SIMPLE, self._RE_MEANWHILE_WHILE,
                    self._RE_MEANWHILE_BYTIME, self._RE_MEANWHILE_BYTIME2):
-            m = rx.match(text)
-            if not m:
-                continue
-            cmd = (m.group("cmd") or "").strip()
-            # Strip up to two leading politeness/conjunction words ("can you", "also please …").
-            for _ in range(2):
-                stripped = self._RE_MEANWHILE_LEAD.sub("", cmd)
-                if stripped == cmd:
-                    break
-                cmd = stripped.strip()
-            if cmd:
-                return True, cmd
-        return False, ""
+            mm = rx.match(t)
+            if mm:
+                cmd = self._strip_lead((mm.group("cmd") or ""))
+                if cmd:
+                    return True, "", cmd
+        # Case C — mid-sentence connector "<foreground>, meanwhile <background>".
+        mm = self._RE_BG_CONNECTOR.search(t)
+        if mm and mm.start() > 0:
+            fg = self._strip_lead(t[:mm.start()])
+            bg = self._strip_lead(t[mm.end():])
+            if bg:
+                return True, fg, bg
+        return False, "", ""
 
     async def _open_parallel_ws(self) -> Workspace | None:
         """A dedicated background workspace on the FOCUSED project (its own new-chat brain + lock)
@@ -2179,17 +2219,21 @@ class Orchestrator:
             self._loop.create_task(self._targeted_turn(
                 m.group("name").strip(), m.group("cmd").strip(), text))
             return
-        # "meanwhile / while that runs / at the same time, do X" — if a focused turn is already
-        # running, run X CONCURRENTLY in a parallel same-project workspace instead of queuing it
-        # behind the in-flight turn. If nothing's running there's nothing to parallelize, so just
-        # run the (de-prefixed) command normally, now.
+        # Background / "meanwhile" dispatch. Split the utterance into a foreground clause and a
+        # background clause (e.g. "read this in the background and meanwhile open GitNexus" →
+        # fg="open GitNexus", bg="read this"). The background clause runs CONCURRENTLY in its own
+        # workspace — even when nothing else is running — so a long read never blocks you, and the
+        # foreground clause (plus your next commands) proceed immediately.
         if getattr(self.settings.voice, "parallel_dispatch", True):
-            is_par, par_cmd = self._split_meanwhile(text)
-            if is_par:
-                if self.focused_ws.lock.locked():
-                    self._loop.create_task(self._run_parallel_turn(par_cmd, text))
+            is_par, fg_cmd, bg_cmd = self._split_meanwhile(text)
+            if is_par and bg_cmd:
+                if fg_cmd:
+                    self._loop.create_task(self._run_parallel_turn(bg_cmd, bg_cmd))
+                    self._loop.create_task(self._handle_turn(fg_cmd))
+                elif self.focused_ws.lock.locked():
+                    self._loop.create_task(self._run_parallel_turn(bg_cmd, bg_cmd))
                 else:
-                    self._loop.create_task(self._handle_turn(par_cmd))
+                    self._loop.create_task(self._handle_turn(bg_cmd))   # nothing to run alongside
                 return
         self._loop.create_task(self._handle_turn(text))
 
