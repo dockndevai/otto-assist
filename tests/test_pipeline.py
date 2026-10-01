@@ -972,6 +972,26 @@ def test_dashboard_enrollment_flow(monkeypatch):
     assert any(e.get("state") == "failed" for e in events if e.get("type") == "enroll")
 
 
+def test_voice_listing_and_removal(tmp_path, monkeypatch):
+    """The enrollment page's voice list reads straight off disk when the model isn't loaded, and
+    removal deletes the print + broadcasts the new list."""
+    monkeypatch.setattr("otto.orchestrator.OTTO_HOME", tmp_path)
+    s = load_settings()
+    s.voice.stt.speaker_voiceprints_dir = str(tmp_path / "voiceprints")
+    orch = Orchestrator(s, EventBus())
+    vp = tmp_path / "voiceprints"; vp.mkdir(parents=True)
+    (vp / "ankit.npy").write_bytes(b"x"); (vp / "guest.npy").write_bytes(b"y")
+    assert orch.speaker is None                       # model not loaded
+    assert sorted(orch.list_voices()) == ["ankit", "guest"]
+    events = []
+    monkeypatch.setattr(orch.bus, "publish", lambda e: events.append(e))
+    assert orch.remove_voice("guest") is True
+    assert not (vp / "guest.npy").exists()
+    assert orch.list_voices() == ["ankit"]
+    assert any(e.get("type") == "enroll" and e.get("state") == "voices"
+               and e.get("voices") == ["ankit"] for e in events)
+
+
 def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
     """The research queue skips the focused project + freshly-researched ones, least-recent first;
     quiescence gate reflects state."""
