@@ -117,6 +117,15 @@ class STTConfig(BaseModel):
     # Multilingual Whisper model used when voice.language is non-English (Hinglish/Hindi/regional).
     # "small" is the CPU sweet spot; "medium" is more accurate but slow without a GPU.
     multilingual_model: str = "small"
+    # Transcription engine. "faster-whisper" (default) runs on CPU via RealtimeSTT. "mlx" uses
+    # Apple-Silicon GPU acceleration (mlx-whisper) for much faster transcription — RealtimeSTT still
+    # does recording/VAD/wake, but the captured audio is transcribed with MLX instead. Falls back to
+    # faster-whisper automatically if mlx-whisper or the model isn't available (never goes mute).
+    transcriber: Literal["faster-whisper", "mlx"] = "faster-whisper"
+    # MLX Whisper model ids (Hugging Face). English-only default is small; the multilingual/Hinglish
+    # path (voice.language non-English) uses the fast large-v3-turbo. Downloaded once on first use.
+    mlx_model: str = "mlx-community/whisper-small.en-mlx"
+    mlx_multilingual_model: str = "mlx-community/whisper-large-v3-turbo"
     # How long a pause (seconds) ends your turn. Higher = Otto waits longer for you to
     # finish, so it won't cut you off mid-thought. Lower = snappier but interrupts.
     # 1.0s keeps it responsive; the instant spoken ack covers the rest of the wait.
@@ -215,6 +224,31 @@ class STTConfig(BaseModel):
     # would let a rare false-positive run an action unconfirmed.
     smart_gate: bool = False
     smart_gate_threshold: float = 0.55
+    # During a follow-up window (right after Orrin replied) you're likely still talking to it, so
+    # the smart-gate uses this LOWER bar — it only drops clearly-ambient speech, keeping genuine
+    # conversational follow-ups. Outside the window the stricter smart_gate_threshold applies.
+    follow_up_threshold: float = 0.30
+    # Local command-verify: when the smart-gate is unavailable, use laya (not a cloud model) to
+    # reject grammatical-but-nonsensical STT hallucinations on the hands-free path. Offline, ~50ms.
+    # Preferred over the hands_free_verify cloud call when laya is present.
+    local_command_verify: bool = True
+
+    @property
+    def laya_needed(self) -> bool:
+        """Any feature that requires laya to be loaded (so start() can bring it up)."""
+        return bool(self.smart_gate or self.local_command_verify)
+
+    # Speaker verification ("whose voice is this?") — the one signal content can't give. Enroll one
+    # or MORE voices (menu → "Enroll a voice", or `python -m otto.voice.enroll_speaker`); each
+    # hands-free utterance is matched to the closest enrolled voice and accepted only if it clears
+    # the threshold AND is in the active set — so a shared/family machine responds to registered
+    # people and ignores everyone else (TV, guests, Orrin's echo). OFF by default; fail-open — if the
+    # model/voiceprints aren't ready the check is skipped, never locking you out.
+    speaker_verify: bool = False
+    speaker_threshold: float = 0.55          # cosine bar for accepting a match
+    speaker_model: str = "microsoft/wavlm-base-plus-sv"
+    speaker_voiceprints_dir: str = ""        # "" = OTTO_HOME/voiceprints (one <name>.npy per voice)
+    speaker_active: list[str] = Field(default_factory=list)  # names to listen to; [] = all enrolled
 
 
 class TTSConfig(BaseModel):
@@ -236,6 +270,11 @@ class TTSConfig(BaseModel):
     # bite; keep it generous so a normal concise reply is spoken in full (not truncated). 0
     # disables the cap. Markdown/URLs/code are stripped from speech regardless.
     max_spoken_chars: int = 600
+    # Latency: speak the FIRST complete sentence as soon as the model emits it (while it's still
+    # generating the rest), then speak the remainder at end of turn — so audio starts sooner. One
+    # extra clip, not per-sentence (which synthesized choppy). Off = single clip at end (old way).
+    stream_sentences: bool = True
+    stream_min_chars: int = 8         # don't split off a first "sentence" shorter than this
     # When a phone (authenticated remote client) is connected, don't also speak the reply
     # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
     # driving it remotely. The dashboard on the Mac itself does NOT count as remote.
@@ -259,6 +298,9 @@ class HotkeyConfig(BaseModel):
     # Talk button and the wake word cover push-to-talk without it.
     enabled: bool = False
     push_to_talk: str = "<cmd>+<shift>+j"
+    # Global hotkey to toggle sleep/watch-mode instantly (no voice) — the reliable way to silence
+    # Orrin in a loud room (a match/TV), and wake it back. Needs the same Input Monitoring grant.
+    sleep_toggle: str = "<cmd>+<shift>+o"
 
 
 class VoiceConfig(BaseModel):
@@ -272,6 +314,10 @@ class VoiceConfig(BaseModel):
     #   "hi"       — Hindi          |  "auto" — auto-detect  |  any Whisper code (e.g. "ta")
     # Non-English values switch STT to the multilingual model (heavier on CPU, no GPU here).
     language: str = "en"
+    # What language Orrin REPLIES in, decoupled from what it understands. "" = mirror the user
+    # (reply in whatever they spoke, incl. Hinglish). "en" = understand any language they speak but
+    # ALWAYS reply in clear English (never Hindi/Hinglish). Any Whisper/lang name also works.
+    reply_language: str = ""
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
@@ -306,6 +352,62 @@ class VoiceConfig(BaseModel):
     # briefing; fires at most once per calendar day.
     morning_brief: bool = True
     morning_brief_hour: int = 9               # local hour (0-23) the brief becomes eligible
+    # Floating on-screen character: show Orrin as a small always-on-top character panel on the
+    # desktop that reacts to voice state (idle/listening/thinking/speaking). Off by default; toggle
+    # from the menu bar. The character is a swappable pack (voice.character) — see CHARACTERS.md.
+    # Floating HUD: a small draggable always-on-top pill (Wispr-Flow style) showing Orrin's state +
+    # a live one-line readout of what it's hearing/doing. Toggle from the menu bar.
+    floating_character: bool = False
+    # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
+    # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
+    auth_preflight: bool = True
+    # Parallel dispatch: when a turn is already running and you say "meanwhile / while that runs /
+    # at the same time, do X", run X concurrently in a dedicated background workspace on the same
+    # project (its own Claude + chat) instead of queuing it behind the in-flight turn. The parallel
+    # turn is silent (never spoken) and notifies on completion; the focused turn keeps speaking.
+    # Set False to always queue (old behavior).
+    parallel_dispatch: bool = True
+    # Auto-fresh context: before a focused command, use laya to check whether it CONTINUES the
+    # current chat's topic. If it's a clearly-unrelated new task, start a fresh chat first so a
+    # stale topic can't bleed into the answer (the disk-question-got-a-screensaver-answer bug).
+    # Durable memory (facts/summary) is re-injected, so only the transient conversation resets.
+    auto_fresh_context: bool = True
+    # Destructive-action guardrail: even under permission="bypass", use laya to flag a command
+    # that looks destructive/irreversible (delete/reset/force-push/drop) and ask you to confirm
+    # first — a cheap local safety net against a misheard command running unconfirmed.
+    destructive_guard: bool = True
+
+    # ── Autonomous work (the background "teammate", #71) ──────────────────────────────────────
+    # When ON, Orrin's idle background loop is allowed to WRITE: it branches, makes a scoped
+    # change, verifies it green, and opens a ready-for-review PR (never pushes/merges a protected
+    # branch, never does anything destructive — enforced by the write-gate in brain/agent.py).
+    # OFF by default: nothing autonomous runs until you flip this. This is also the global kill
+    # switch for both the code teammate and the system steward below.
+    autonomous_work: bool = False
+    # System steward (#72): a standing background role watching the Mac's health (memory/CPU/disk/
+    # thermals + Orrin's own worker fleet) and auto-fixing ONLY Orrin-owned cruft (sweep its
+    # orphaned STT workers, clear a stale lock, release its own caches, trim its logs). Anything
+    # touching other apps/system/non-Orrin processes stays alert+confirm. OFF by default; also
+    # gated by autonomous_work acting as the master switch.
+    system_steward: bool = False
+    # Per-project opt-OUT for autonomous work (project paths or memory slugs). Autonomous work is
+    # otherwise allowed in every active project once autonomous_work is on; list a repo here to keep
+    # it hands-off (read-only research only).
+    autonomous_optout: list = Field(default_factory=list)
+    # Branches the autonomous teammate must NEVER push to, merge, reset, or force-update. It works
+    # only on its own feature branches and opens PRs against these.
+    protected_branches: list = Field(default_factory=lambda: ["main", "master"])
+    # Budget for autonomous code work — bounds how much the teammate ships unattended.
+    autonomous_max_prs_per_day: int = 3       # across all projects, per calendar day
+    autonomous_min_gap: float = 3600.0        # ≥ this many seconds between write passes (1h)
+    # Prefix for the teammate's feature branches (so its work is easy to spot / clean up).
+    autonomous_branch_prefix: str = "orrin/"
+
+    # ── System steward (#72) cadence + alert thresholds ───────────────────────────────────────
+    steward_interval: float = 600.0           # health scan every N seconds (10 min)
+    steward_disk_min_gb: float = 5.0          # alert if free disk drops below this
+    steward_free_mem_min_gb: float = 1.5      # alert if free memory drops below this
+    steward_log_max_mb: float = 50.0          # trim Orrin's own logs above this size
 
 
 class MemoryConfig(BaseModel):

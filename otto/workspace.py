@@ -78,17 +78,25 @@ class Workspace:
 
     def __init__(self, orch: Any, settings: Settings, project: str, *,
                  resume: str | None = None, new_chat: bool = False,
-                 read_only: bool = False) -> None:
+                 read_only: bool = False, write_mode: bool = False) -> None:
         self.project = project
         self.name = Path(project).name or project
+        # Dashboard/window id for this workspace's transcript events. Defaults to the project path
+        # (one window per project). A parallel same-project workspace overrides this so its events
+        # land in their own lane instead of interleaving with the focused turn's chat.
+        self.tag = project
         self.read_only = read_only
+        # Autonomous write mode (the background teammate / steward, #71/#72): edits + safe git/test
+        # + PR-create on a feature branch, gated by the autonomy allowlist in the brain.
+        self.write_mode = write_mode
         self.ctx = WorkspaceContext(orch, project)
-        self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
-                                 new_chat=new_chat, cwd=project, read_only=read_only)
+        self.brain = ClaudeBrain(self.ctx, settings, resume=resume, new_chat=new_chat,
+                                 cwd=project, read_only=read_only, write_mode=write_mode)
         self.state = "idle"                 # idle | thinking | speaking | working
         self.lock = asyncio.Lock()          # serialize this workspace's own turns
         self.last_canvas: str | None = None  # last visual it rendered (shown when focused)
         self.last_reply = ""                # last spoken/summary line (for the done-notify)
+        self.last_command = ""              # last focused user command (topic hint for auto-fresh)
         self._last_preamble: str | None = None  # memory block last injected into this chat
 
     @property
@@ -102,7 +110,8 @@ class Workspace:
             await self.brain.disconnect()
         except Exception:
             pass
-        self.brain = ClaudeBrain(self.ctx, settings, resume=resume,
-                                 new_chat=new_chat, cwd=self.project, read_only=self.read_only)
+        self.brain = ClaudeBrain(self.ctx, settings, resume=resume, new_chat=new_chat,
+                                 cwd=self.project, read_only=self.read_only,
+                                 write_mode=self.write_mode)
         self._last_preamble = None       # fresh chat → re-inject memory on its first turn
         await self.brain.connect()

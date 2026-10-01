@@ -49,7 +49,7 @@
   draw();
 
   const stateEl = $("state"), statePillTxt = $("statePillTxt"), stateDot = $("stateDot");
-  const LABEL = { listening: "Listening", thinking: "Thinking", working: "Working", speaking: "Speaking", starting: "Starting", idle: "Ready" };
+  const LABEL = { listening: "Listening", thinking: "Thinking", working: "Working", speaking: "Speaking", starting: "Starting", idle: "Ready", sleeping: "Sleeping" };
   function setState(state, text) {
     mode = state === "starting" ? "idle" : (state || "idle");
     const live = state && state !== "idle";
