@@ -38,6 +38,33 @@ for pkg in ["faster_whisper", "ctranslate2", "onnxruntime", "silero_vad", "openw
     except Exception as e:                       # a missing optional dep shouldn't break the build
         print(f"[orrin.spec] skip {pkg}: {e}")
 
+# MLX Whisper (Apple-Silicon STT, #73). The `mlx.core` extension loads `libmlx.dylib`, which at
+# RUNTIME loads `mlx.metallib` (the 174 MB Metal shader library) from the directory COLOCATED next
+# to itself (via dladdr — there's no env override in mlx 0.32). PyInstaller sends .dylibs to
+# Contents/Frameworks but data files to Contents/Resources, which splits the metallib away from the
+# dylib → "Encountered an error while initializing the extension" and a silent fall back to
+# faster-whisper in the packaged app. Fix: collect the Python bits, then force BOTH the dylibs and
+# the metallib into the SAME bundle dir (mlx/lib) as *binaries*, so they stay colocated.
+for pkg in ["mlx", "mlx_whisper"]:
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d; binaries += b; hiddenimports += h
+    except Exception as e:
+        print(f"[orrin.spec] skip {pkg}: {e}")
+try:
+    import mlx.core as _mlx_core
+    _mlx_lib = os.path.join(os.path.dirname(_mlx_core.__file__), "lib")
+    _mlx_added = []
+    for _fn in sorted(os.listdir(_mlx_lib)):
+        if _fn.endswith((".dylib", ".metallib")):
+            binaries.append((os.path.join(_mlx_lib, _fn), "mlx/lib"))
+            _mlx_added.append(_fn)
+    print(f"[orrin.spec] mlx native libs colocated in mlx/lib: {_mlx_added}")
+    hiddenimports += ["mlx", "mlx.core", "mlx.nn", "mlx.utils", "mlx_whisper",
+                      "mlx_whisper.transcribe", "mlx_whisper.load_models"]
+except Exception as e:
+    print(f"[orrin.spec] MLX not bundled ({e}) — packaged app will use faster-whisper")
+
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
