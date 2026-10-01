@@ -395,6 +395,19 @@ def test_remote_off_rejects_token():
                  headers={"Authorization": "Bearer secret-abc"}).status_code == 403
 
 
+def test_remote_bypass_forces_destructive_guard():
+    # allow_remote + permission=bypass/auto leaves destructive_guard as the only confirm gate
+    # for a remote token-holder — a config that turns it off must not stick.
+    s = load_settings()
+    s.server.allow_remote = True
+    s.server.auth_token = "secret-abc"
+    s.brain.permission = "bypass"
+    s.voice.destructive_guard = False
+    orch = Orchestrator(s, EventBus())
+    create_app(orch, EventBus())
+    assert orch.settings.voice.destructive_guard is True
+
+
 def test_pairing_endpoint_local_only():
     from fastapi.testclient import TestClient
     s = load_settings()
@@ -2499,6 +2512,34 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         orch._dispatch_voice_command("stop", deliberate=True)
         await asyncio.sleep(0)
         assert sent == ["stop"]
+    asyncio.run(run())
+
+
+def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
+    """Regression: with speaker-ID ON but laya removed and hands_free_verify OFF, a recognized
+    speaker's command must NOT be dropped by the (now-guarded) cloud 'is this a command?' verify."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        st = orch.settings.voice.stt
+        st.filter_hallucinations = True
+        st.hands_free_verify = False          # no cloud verify requested
+        st.refine = False
+        st.speaker_verify = True
+        orch.smart_gate = None                # laya removed
+        class FakeSpeaker:
+            ready = True; has_voiceprint = True
+            def match(self, audio, sr): return ("ankit", 0.9)
+        orch.speaker = FakeSpeaker()
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+        # if the cloud verify were (wrongly) consulted it would reject and drop — it must NOT be.
+        import otto.voice.noise as noise
+        async def reject(text, model="haiku"): return False
+        monkeypatch.setattr(noise, "is_real_command", reject)
+        orch._dispatch_voice_command("the camera and take my photo", hands_free=True)
+        await asyncio.sleep(0.05)
+        assert sent == ["the camera and take my photo"]   # recognized speaker → passes, not dropped
     asyncio.run(run())
 
 

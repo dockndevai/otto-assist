@@ -2759,7 +2759,8 @@ class Orchestrator:
             return
         if self._loop is not None:
             self._loop.create_task(self._dispatch_async(
-                text, need_gate, intent, use_laya, local_verify, follow_up, need_speaker))
+                text, need_gate, intent, use_laya, local_verify, follow_up, need_speaker,
+                need_verify))
         else:
             self.submit_user_input(text)
 
@@ -2775,7 +2776,7 @@ class Orchestrator:
     async def _dispatch_async(self, text: str, gate: bool = False,
                               intent: str = "command", use_laya: bool = False,
                               local_verify: bool = False, follow_up: bool = False,
-                              need_speaker: bool = False) -> None:
+                              need_speaker: bool = False, need_verify: bool = False) -> None:
         if gate:
             stt = self.settings.voice.stt
             # Speaker gate FIRST: match to the closest enrolled voice; accept only a registered
@@ -2820,7 +2821,11 @@ class Orchestrator:
                     print(f"[otto] local verify dropped (p={p:.2f}): {text!r}",
                           file=sys.stderr, flush=True)
                     return
-            else:
+            elif need_verify:
+                # Cloud "is this a real command?" verify — ONLY when hands_free_verify is explicitly
+                # on (and the utterance was ambiguous). With laya removed and verify off, there is no
+                # content gate: speaker-ID + the is_noise heuristic are the only filters, so genuine
+                # commands are never dropped here.
                 try:
                     from .voice.noise import is_real_command
                     if not await is_real_command(
