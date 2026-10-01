@@ -579,7 +579,7 @@ class OttoApp(rumps.App):
             if available():
                 if self._enroll_win is None:
                     self._enroll_win = DashboardWindow(self.url.rstrip("/") + "/enroll",
-                                                       title="Enroll your voice")
+                                                       title="Enroll your voice", close_bridge=True)
                 self._enroll_win.show()
                 return
         except Exception as e:

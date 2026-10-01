@@ -21,14 +21,46 @@ def available() -> bool:
         return False
 
 
+_CLOSE_CLS = None
+
+
+def _close_handler(win):
+    """A WKScriptMessageHandler that closes the window when the page posts an 'orrinClose' message —
+    gives in-app pages (e.g. /enroll) a working 'Done/Back' button. Lazy for pyobjc-free import."""
+    global _CLOSE_CLS
+    if _CLOSE_CLS is None:
+        import objc
+        from Foundation import NSObject
+
+        class _CloseHandler(NSObject):
+            def initWithWindow_(self, w):
+                self = objc.super(_CloseHandler, self).init()
+                if self is None:
+                    return None
+                self._w = w
+                return self
+
+            def userContentController_didReceiveScriptMessage_(self, ucc, msg):
+                try:
+                    self._w.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "close", None, False)
+                except Exception:
+                    pass
+
+        _CLOSE_CLS = _CloseHandler
+    return _CLOSE_CLS.alloc().initWithWindow_(win)
+
+
 class DashboardWindow:
     """A single reusable native window hosting the dashboard web app."""
 
-    def __init__(self, url: str, title: str = "Orrin") -> None:
+    def __init__(self, url: str, title: str = "Orrin", close_bridge: bool = False) -> None:
         self.url = url
         self.title = title
         self.window = None
         self.webview = None
+        self._close_bridge = close_bridge   # expose window.webkit.messageHandlers.orrinClose
+        self._closer = None
 
     # -- public API (call on the main thread) -----------------------------
     def show(self, suffix: str = "") -> None:
@@ -68,6 +100,12 @@ class DashboardWindow:
         win.center()
 
         cfg = WKWebViewConfiguration.alloc().init()
+        if self._close_bridge:
+            try:
+                self._closer = _close_handler(win)
+                cfg.userContentController().addScriptMessageHandler_name_(self._closer, "orrinClose")
+            except Exception:
+                pass
         wv = WKWebView.alloc().initWithFrame_configuration_(rect, cfg)
         wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
         wv.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(self.url + (suffix or ""))))

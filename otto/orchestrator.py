@@ -2590,6 +2590,40 @@ class Orchestrator:
         self._status("idle", "Ready")
         self.bus.publish({"type": "enroll", "state": "cancelled"})
 
+    def _voiceprints_dir(self):
+        from pathlib import Path
+        return Path(self.settings.voice.stt.speaker_voiceprints_dir
+                    or (OTTO_HOME / "voiceprints")).expanduser()
+
+    def list_voices(self) -> list[str]:
+        """Enrolled voice names — from the loaded verifier if present, else read straight off disk
+        (so the enrollment page can list voices without loading the ~772 MB model)."""
+        if self.speaker is not None:
+            return list(self.speaker.names)
+        try:
+            return sorted(p.stem for p in self._voiceprints_dir().glob("*.npy"))
+        except Exception:
+            return []
+
+    def remove_voice(self, name: str) -> bool:
+        """Delete an enrolled voiceprint (in-memory if loaded, and on disk), then broadcast the new
+        list so the enrollment page updates."""
+        ok = False
+        if self.speaker is not None:
+            try:
+                ok = self.speaker.remove(name)
+            except Exception:
+                ok = False
+        else:
+            from .voice.speaker import _safe_name
+            try:
+                (self._voiceprints_dir() / f"{_safe_name(name)}.npy").unlink(missing_ok=True)
+                ok = True
+            except Exception:
+                ok = False
+        self.bus.publish({"type": "enroll", "state": "voices", "voices": self.list_voices()})
+        return ok
+
     def start_enrollment(self, target: int = 5) -> None:
         """Enroll a voice through Orrin's own mic (no Terminal): ask for the person's name, capture a
         few utterances into a voiceprint under that name, then turn speaker-ID on live. Multiple
