@@ -1097,6 +1097,13 @@ def test_recorder_health_predicate():
     e._last_record_stop = 0.0
     rec.transcript_process = Dead()
     assert e._unhealthy_reason(rec, now) == "worker died"
+    # worker NEVER spawned (both None) past the startup grace → flagged, so the watchdog rebuilds /
+    # alerts instead of leaving Otto silently not-listening ("0 recorder workers").
+    rec.transcript_process = None; rec.reader_process = None
+    e._started_at = now - 100
+    assert e._unhealthy_reason(rec, now) == "worker not running"
+    e._started_at = now - 5                                       # within grace → don't false-flag
+    assert e._unhealthy_reason(rec, now) == ""
 
 
 def test_pretrust_silero_vad_skips_prompt():
