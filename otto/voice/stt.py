@@ -353,6 +353,8 @@ class Ears:
         self._recorder = AudioToTextRecorder(**params)
         self._running = True
         self._last_rebuild = 0.0
+        self._started_at = time.monotonic()   # for a startup grace before flagging "never spawned"
+        self._unhealthy_streak = 0            # consecutive unhealthy checks → alert if unrecoverable
         if self._use_mlx:
             self._init_mlx(lang)         # sets self._mlx / self._use_mlx (falls back on failure)
         # Stall detection: if a recording finishes but no transcript comes back, the
@@ -490,9 +492,21 @@ class Ears:
                 continue                              # don't rebuild-storm
             reason = self._unhealthy_reason(rec, time.monotonic())
             if reason:
+                self._unhealthy_streak += 1
                 print(f"[otto] recorder unhealthy ({reason}) — rebuilding",
                       file=sys.stderr, flush=True)
                 self._rebuild_recorder()
+                # If it can't recover after a couple of tries, TELL the user (dashboard/notify)
+                # instead of leaving them in a silent not-listening state.
+                if (self._unhealthy_streak >= 2 and not self._deaf_reported
+                        and self._on_health is not None):
+                    self._deaf_reported = True
+                    self._post(self._on_health, "deaf")
+            else:
+                self._unhealthy_streak = 0
+                if self._deaf_reported and self._on_health is not None:
+                    self._deaf_reported = False
+                    self._post(self._on_health, "ok")   # recorder recovered — clear the alert
 
     def _unhealthy_reason(self, rec, now: float) -> str:
         """Why the recorder needs rebuilding, or '' if it's fine. Pure/testable.
@@ -507,6 +521,16 @@ class Ears:
         rp = getattr(rec, "reader_process", None)
         if (tp is not None and not tp.is_alive()) or (rp is not None and not rp.is_alive()):
             return "worker died"
+        # Worker NEVER came up: the mic pipeline failed to spawn at startup (a spawn race, or mic
+        # access denied) — the recorder object exists but no child is listening, so Otto is silently
+        # deaf. The check above only catches a worker that WAS alive and died; this catches one that
+        # never started. Guarded by a startup grace so we don't fire while the children are still
+        # forking. (The "0 recorder workers / not listening" state.)
+        if (now - getattr(self, "_started_at", now)) > 20:
+            tp_alive = tp is not None and tp.is_alive()
+            rp_alive = rp is not None and rp.is_alive()
+            if not tp_alive and not rp_alive:
+                return "worker not running"
         if (self._last_record_stop > 0
                 and now - self._last_record_stop > 12
                 and self._last_text < self._last_record_stop):
