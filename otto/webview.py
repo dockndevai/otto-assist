@@ -185,13 +185,17 @@ class FloatingCharacter:
 
     Main-thread only (rumps callbacks are). Falls back silently if WebKit/PyObjC isn't available."""
 
-    def __init__(self, url: str, width: int = 340, height: int = 72) -> None:
+    def __init__(self, url: str, width: int = 340, height: int = 72,
+                 notch: bool = False) -> None:
         self.url = url          # http://127.0.0.1:PORT/hud
-        self.w = width
-        self.h = height
+        self.notch = notch      # True = top-center dock (click-through, auto-hide); False = corner pill
+        # Notch dock needs more room: wide enough for the expanded bar, tall enough for it to drop
+        # down from the top edge while the collapsed sliver sits flush at the top.
+        self.w = 400 if notch else width
+        self.h = 120 if notch else height
         self.window = None
         self.webview = None
-        self.corner = "br"      # br|bl|tr|tl
+        self.corner = "tc" if notch else "br"   # tc=top-center | br|bl|tr|tl
         self._drag = None       # native drag message handler (kept referenced)
 
     def toggle(self) -> None:
@@ -230,9 +234,14 @@ class FloatingCharacter:
         left = vf.origin.x + m
         bottom = vf.origin.y + m
         top = vf.origin.y + vf.size.height - self.h - m
+        # Top-center (notch): horizontally centered, top edge flush with the usable area (just under
+        # the menu bar). visibleFrame already excludes the menu bar, so the dock sits right below it.
+        center_x = vf.origin.x + (vf.size.width - self.w) / 2
+        notch_top = vf.origin.y + vf.size.height - self.h
         return {
             "br": (right, bottom), "bl": (left, bottom),
             "tr": (right, top), "tl": (left, top),
+            "tc": (center_x, notch_top),
         }.get(corner, (right, bottom))
 
     def move_to(self, corner: str) -> None:
@@ -283,12 +292,21 @@ class FloatingCharacter:
         # Native drag: the page posts "drag" on pointerdown and we drag the window with the event,
         # so the small pill can be moved anywhere (a webview eats mouse events, so window-background
         # dragging alone won't work).
+        # Notch dock: click-through (it's an informational status dock anchored under the notch, not
+        # something you drag or click) so it never blocks the menu bar or whatever is below it. The
+        # corner pill stays draggable via the page's "drag" message handler.
+        if self.notch:
+            try:
+                win.setIgnoresMouseEvents_(True)
+            except Exception:
+                pass
         cfg = WKWebViewConfiguration.alloc().init()
-        try:
-            self._drag = _drag_handler(win)
-            cfg.userContentController().addScriptMessageHandler_name_(self._drag, "drag")
-        except Exception:
-            self._drag = None
+        if not self.notch:
+            try:
+                self._drag = _drag_handler(win)
+                cfg.userContentController().addScriptMessageHandler_name_(self._drag, "drag")
+            except Exception:
+                self._drag = None
         wv = WKWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, self.w, self.h), cfg)
         wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
