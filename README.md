@@ -30,32 +30,83 @@ voice, on a live dashboard.
 
 Most voice assistants *are* the brain. Orrin is the opposite: it brings the voice and the
 screen, and **uses your Claude as the brain** — so whatever you've already set up in Claude
-Code just works, spoken.
+Code just works, spoken. No new model, no new agent, no new account.
 
 - 🎙️ **Talk to your own Claude** — say the wake word (or click **Talk**), speak, and Orrin
-  runs your Claude and answers out loud.
-- 🧩 **Inherits everything** — Gmail, Google Drive, GitHub, your files, every MCP connector,
-  subagent and skill in your Claude — automatically, because Orrin loads your Claude config.
-- 🖥️ **A live dashboard** — a product-grade layout: a **sidebar** (Home / Conversations /
-  Visuals / Skills / MCP Connectors / Settings), a **weather hero** with real conditions +
-  air quality, **GitHub-activity** and **quick-action** widgets, a right **Chat drawer**
-  ("Ask Orrin anything"), a floating **listening bar**, and a bottom **status bar** (Claude
-  Code · MCP · Mode · TTS · version). Cards appear only when they have data — no empty boxes.
-- 🎨 **Light or dark, with a mood** — full theme toggle (system-aware), and a **mood color**
-  (green / blue / red) that tints the orb by severity, automatically or set by Orrin.
-- 🗣️ **Reliable, hands-free voice** — strict half-duplex (it mutes the mic while it speaks, so
-  it never answers its own voice), **sleep/wake** ("stop listening" → the wake word brings it
-  back), and **pick any macOS voice** with a live ▶ preview in Settings.
-- 💬 **Every chat, every project** — switch projects *and* individual Claude chats by voice or
-  from the UI; an **All projects** search spans every session on the machine (cowork included)
-  and resumes the one you pick.
-- 🍎 **Lives in your menu bar** — a login-item app with a state-colored icon (grey idle, cyan
-  listening, blue thinking, purple speaking, red muted), project/chat switcher, mute, restart.
-- ✅ **Tells you when it's ready** — a first-run setup checklist (Microphone, Claude CLI, a
-  real **Claude test turn**, Voice output, Accessibility) with Open Settings / Recheck, and a
-  ✓ Ready pill. It re-runs on every launch, so a missing permission is visible, not silent.
-- 🔌 **Is itself an MCP for Claude** — `claude mcp add otto` gives *any* Claude session a
-  voice and a screen (`speak` / `ask` / `show`).
+  runs *your* Claude and answers out loud.
+- 🧩 **Inherits everything** — Gmail, Drive, GitHub, your files, every MCP connector, subagent
+  and skill in your Claude — automatically, because Orrin loads your Claude config.
+- 🧠 **It's yours** — your keys, your model, your projects; memory and voice run on your Mac.
+
+## Features
+
+🎙️ **Talk to your own Claude, live** — wake word, a **Talk** button, or an opt-in **⌘⇧J**
+hotkey; Orrin runs your Claude and speaks the answer while the work streams to the dashboard.
+
+⚡ **Fast, on-device speech** — transcription runs on the Apple-silicon GPU via **MLX Whisper**
+(`large-v3-turbo`), ~6× faster than CPU, and Orrin **starts talking at the first sentence**
+while the model is still finishing — so it feels like a conversation, not a round-trip.
+
+🌍 **Understands any language** — Indian English and **Hinglish** out of the box; it understands
+what you say in whatever you speak and replies in your language (or always in English — your
+call). Nothing leaves your Mac to do it.
+
+🪪 **Knows your voice** — enroll once on a guided **/enroll** page (read a few phrases, no
+Terminal), and Orrin responds to *you* and ignores the TV, people across the room, and its own
+echo. Register more than one voice for a shared/family Mac.
+
+🗣️ **Hands-free and reliable** — strict half-duplex so it never answers its own voice,
+**sleep/wake** ("stop listening" → the wake word brings it back), and a **self-healing mic**:
+if the recorder ever drops, Orrin rebuilds it and, if it can't, *tells you aloud* instead of
+going silently deaf. Pick any macOS voice (live ▶ preview), or a local neural voice.
+
+🧠 **Remembers across sessions and projects** — a persistent store (per-project + a global tier
+about you) that every session reads and writes; it learns what's worth keeping on its own and
+injects a small, bounded context block into each turn. Say *"remember this doc"* to teach it a
+file.
+
+⚙️ **"Meanwhile, do X"** — say two things at once ("read this in the background and open
+GitNexus") and Orrin **splits them**: the background task runs concurrently in its own
+workspace while you keep going in the foreground.
+
+🤖 **A background teammate — opt-in, and it merges nothing on its own** — when you're idle Orrin
+quietly researches your projects and saves findings; turn on **Autonomous teammate** and it goes
+further: branches, makes a scoped change, verifies it green, and opens a **ready-for-review PR**
+for you to merge — never touching `main` directly, never doing anything destructive. A **system
+steward** keeps the Mac tidy (sweeps Orrin's own stray workers, clears caches, watches memory and
+disk) and flags trouble. Everything here ships **off by default**; you flip it on from the menu.
+
+🖥️ **A live dashboard** — sidebar (Home / Conversations / Visuals / Skills / MCP Connectors /
+Settings), a **weather hero** with real conditions + air quality, **GitHub-activity** and
+**quick-action** widgets, an "Ask Orrin anything" **Chat drawer**, and a bottom status bar
+(Claude Code · MCP · Mode · TTS · version). Cards appear only when they have data.
+
+🫥 **A HUD that stays out of the way** — a small always-on-top glass pill shows Orrin's state
+(listening / thinking / speaking) and a live one-line transcript, and **tucks into the notch and
+auto-hides when idle**, peeking out only when there's something to show.
+
+🍎 **Lives in your menu bar** — a login-item app with a state-colored icon (grey idle, green
+listening, blue thinking, purple speaking, red muted), a project/chat switcher, **Enroll a
+voice**, the **Autonomous teammate** toggle, mute, and restart.
+
+💬 **Every chat, every project** — switch projects *and* individual Claude chats by voice or UI;
+an **All projects** search spans every session on the machine and resumes the one you pick.
+
+⏰ **Timers, alarms, reminders** — *"remind me in 20 minutes"*, *"set a timer for the pasta"*,
+*"every hour tell me to stretch"* — they fire aloud and survive a restart.
+
+✅ **Tells you when it's ready** — a first-run checklist (Microphone, Claude CLI, a real Claude
+test turn, Voice output, Accessibility) with Open Settings / Recheck and a ✓ Ready pill; it
+re-runs every launch, so a missing permission is visible, not silent.
+
+🔌 **Also an MCP for Claude** — `claude mcp add otto` gives *any* Claude session a voice and a
+screen (`speak` / `ask` / `show` / `notify`).
+
+📱 **A pocket remote** — a companion mobile app (Flutter) talks to your Mac over a token-secured
+link (Tailscale for anywhere), so you can check in and talk to your agents when you step away.
+
+🔒 **Private by design** — no new account, no telemetry. Orrin uses the Claude you already run,
+your own keys and connectors; speech, speaker-ID and memory stay on your Mac.
 
 ## Get Orrin
 
@@ -215,6 +266,10 @@ config** — not here. Orrin's `config.yaml` is wiring only:
 | `brain.permission` | `guarded` | access level: `bypass` (full), `auto` (= bypass), `guarded` (confirm only dangerous), `voice` (confirm all consequential), `deny` (read-only). With `allow_remote` on, `bypass`/`auto` grants a token-holding remote full control. |
 | `brain.project_dir` | `~` | current project (the brain's cwd) |
 | `brain.continue_conversation` | `false` | resume the project's latest session |
+| `voice.stt.transcriber` | `mlx` | `mlx` = fast Apple-silicon Whisper (`large-v3-turbo`); falls back to `faster-whisper` automatically |
+| `voice.stt.speaker_verify` | `false` | recognize your enrolled voice and ignore others / the TV / its own echo (enroll at `/enroll`) |
+| `voice.language` | `en` | understand language: `en` / `hinglish` / … (replies follow `voice.reply_language`) |
+| `voice.autonomous_work` | `false` | master switch for the background teammate + system steward — off until you flip it |
 | `voice.stt.always_listen` | `false` | `true` = just talk, no wake word (say "stop listening" to sleep) |
 | `voice.stt.silence_seconds` | `1.3` | pause that ends your turn — higher waits longer |
 | `voice.stt.refine` | `false` | clean filler/false-starts from the transcript first (cheap model) |
