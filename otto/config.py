@@ -362,6 +362,12 @@ class VoiceConfig(BaseModel):
     # Floating HUD: a small draggable always-on-top pill (Wispr-Flow style) showing Orrin's state +
     # a live one-line readout of what it's hearing/doing. Toggle from the menu bar.
     floating_character: bool = False
+    # HUD placement: "notch" = a top-center dock that tucks under the notch and auto-hides to a thin
+    # sliver when idle, expanding only when there's activity (click-through, informational); "corner"
+    # = the draggable bottom/-corner pill (classic). Notch is the default.
+    hud_mode: str = "notch"
+    hud_autohide: bool = True                 # notch mode: collapse to a sliver when idle
+    hud_autohide_delay: float = 2.5           # seconds of idle before it tucks away
     # At startup, check whether Claude is signed in (fast, free `claude auth status`) and warn
     # immediately if not — so a lapsed login surfaces before your first command, not mid-sentence.
     auth_preflight: bool = True

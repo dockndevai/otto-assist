@@ -35,6 +35,20 @@
     text-overflow: ellipsis; color: #f2f4f9; margin-top: 2px; }
   #line.dim { opacity: .5; }
   #line .who { opacity: .5; }
+
+  /* Notch dock: top-center, click-through, tucks into the notch and auto-hides to a sliver when
+     idle; drops down and expands on activity. (Corner pill styles above are unchanged.) */
+  body.notch #bar { inset: auto; left: 50%; top: 0; transform: translateX(-50%);
+    width: 360px; height: 54px; margin-top: 7px; cursor: default; overflow: hidden;
+    transition: width .34s cubic-bezier(.22,1,.36,1), height .34s cubic-bezier(.22,1,.36,1),
+      margin-top .34s cubic-bezier(.22,1,.36,1), border-radius .34s, padding .34s, opacity .28s; }
+  body.notch #bar[data-mode="collapsed"] { width: 108px; height: 9px; margin-top: 0; padding: 0;
+    border-radius: 0 0 10px 10px; }
+  body.notch #bar[data-mode="collapsed"] .eq,
+  body.notch #bar[data-mode="collapsed"] #txt { opacity: 0; transition: opacity .18s; }
+  body.notch #bar[data-mode="collapsed"]::after { content: ""; position: absolute; inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, transparent, var(--c, #64748b), transparent); }
 </style>
 </head>
 <body>
@@ -63,6 +77,21 @@
   };
   let state = "idle", hold = null;
 
+  // Notch dock: top-center, auto-hide to a sliver when idle, expand on activity.
+  const Q = new URLSearchParams(location.search);
+  const NOTCH = Q.get("mode") === "notch";
+  const AUTOHIDE = NOTCH && Q.get("autohide") !== "0";
+  const HIDE_MS = Math.max(0.8, parseFloat(Q.get("delay") || "2.5")) * 1000;
+  let hideT = null;
+  if (NOTCH) document.body.classList.add("notch");
+  function expand() { if (!NOTCH) return; clearTimeout(hideT); bar.dataset.mode = "expanded"; }
+  function scheduleCollapse() {
+    if (!NOTCH || !AUTOHIDE) { return; }
+    clearTimeout(hideT);
+    hideT = setTimeout(() => { bar.dataset.mode = "collapsed"; }, HIDE_MS);
+  }
+  const ACTIVE = { listening: 1, thinking: 1, working: 1, speaking: 1, signed_out: 1 };
+
   function applyState(s) {
     s = (s || "idle"); if (s.startsWith("error")) s = "signed_out";
     if (!S[s]) s = "idle";
@@ -74,6 +103,7 @@
     eq.classList.toggle("on", cfg.on);
     labelEl.textContent = cfg.label;
     if (!hold) setLine(defaultLine(), true);
+    if (NOTCH) { ACTIVE[state] ? expand() : scheduleCollapse(); }
   }
   function defaultLine() {
     return ({ listening: "Listening…", thinking: "Working on it…", working: "Working…",
@@ -85,7 +115,11 @@
   function activity(html, holdMs) {          // transient "what's going on" line
     if (hold) clearTimeout(hold);
     setLine(html, false);
-    hold = holdMs ? setTimeout(() => { hold = null; setLine(defaultLine(), true); }, holdMs) : null;
+    if (NOTCH) expand();
+    hold = holdMs ? setTimeout(() => {
+      hold = null; setLine(defaultLine(), true);
+      if (NOTCH && !ACTIVE[state]) scheduleCollapse();
+    }, holdMs) : null;
   }
 
   function onEvent(ev) {
@@ -116,6 +150,7 @@
     ws.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch { return; } onEvent(ev); };
     ws.onclose = () => setTimeout(connect, 2000);
   }
+  if (NOTCH) bar.dataset.mode = "collapsed";   // start tucked away; expand when something happens
   applyState("idle");
   connect();
 })();
