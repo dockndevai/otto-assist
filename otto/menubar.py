@@ -559,7 +559,15 @@ class OttoApp(rumps.App):
             if not available():
                 return
             if self._float is None:
-                self._float = FloatingCharacter(f"{self.url}/hud")
+                v = self.settings.voice
+                mode = getattr(v, "hud_mode", "notch")
+                if mode == "notch":
+                    hud_url = (f"{self.url}/hud?mode=notch"
+                               f"&autohide={1 if getattr(v, 'hud_autohide', True) else 0}"
+                               f"&delay={getattr(v, 'hud_autohide_delay', 2.5)}")
+                    self._float = FloatingCharacter(hud_url, notch=True)
+                else:
+                    self._float = FloatingCharacter(f"{self.url}/hud")
             if toggle:
                 self._float.toggle()
             else:
