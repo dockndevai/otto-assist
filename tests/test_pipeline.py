@@ -3373,14 +3373,24 @@ def test_streaming_tts_speaks_first_sentence_then_rest():
 def test_is_otto_worker_matches_only_our_workers():
     """The orphan sweep must kill OUR reparented STT workers but never an unrelated python, the
     menubar main itself, or a shell/grep that merely mentions the path."""
-    from otto.menubar import _is_otto_worker
+    from otto.menubar import _is_orrin_main, _is_otto_worker
     venv = "/Users/x/Documents/projects/personal-assist/.venv/bin/python"
     assert _is_otto_worker(f"{venv} -c from multiprocessing.spawn import spawn_main; ...")
     assert _is_otto_worker("/Applications/Orrin.app/Contents/MacOS/Orrin -c "
                            "from multiprocessing.resource_tracker import main")
+    # the packaged app's real install path has a SPACE — the old argv0 space-split missed it
+    assert _is_otto_worker("/Users/x/Library/Application Support/Otto/venv/bin/python -c "
+                           "from multiprocessing.spawn import spawn_main")
     assert not _is_otto_worker(f"{venv} -m otto.menubar")           # the main, not a worker
     assert not _is_otto_worker("/usr/bin/python3 -c from multiprocessing.spawn import spawn_main")
     assert not _is_otto_worker("/bin/zsh -c grep personal-assist/.venv multiprocessing")
+
+    # _is_orrin_main: the app / menu-bar main (takeover target), never a worker or an unrelated proc
+    assert _is_orrin_main("/Applications/Orrin.app/Contents/MacOS/Orrin")
+    assert _is_orrin_main(f"{venv} -m otto.menubar")
+    assert not _is_orrin_main("/Applications/Orrin.app/Contents/MacOS/Orrin -c "
+                              "from multiprocessing.resource_tracker import main")   # a worker
+    assert not _is_orrin_main("/usr/bin/python3 /Users/x/script.py")
 
 
 def test_is_auth_error_detection():
