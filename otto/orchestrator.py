@@ -103,6 +103,13 @@ def _claude_logged_in() -> bool | None:
 
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
+# Fallback for Orchestrator._destructive_ok when laya's smart_gate isn't available (it's been
+# removed, so this is the normal production path) — a plain keyword match standing in for a real
+# destructive-intent score.
+_DESTRUCTIVE_TEXT_RE = re.compile(
+    r"\b(delete|remove|erase|wipe|destroy|drop|truncate|format|factory reset|reset|uninstall|"
+    r"force[- ]?push|rm\s+-\w*[rf]|shut\s*down|unsubscribe|revoke)\b", re.IGNORECASE)
+
 # Replies that mean "nothing to say" — never speak these aloud (they're what the model emits
 # for garbled/no-op input; speaking them is just noise).
 _DEAD_REPLIES = {
@@ -2369,7 +2376,7 @@ class Orchestrator:
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
         if self._pending_answer is not None and not self._pending_answer.done():
-            if self._echo_blocking():             # mic tail of Orrin speaking the question
+            if self._echo_blocking() or self._is_self_echo(text):  # mic tail of Orrin speaking the question
                 print(f"[otto] ignoring echo while awaiting answer: {text!r}",
                       file=sys.stderr, flush=True)
                 return
@@ -3159,20 +3166,29 @@ class Orchestrator:
         await self._run_turn(ws, text, echo_user=echo_user)
 
     async def _destructive_ok(self, text: str) -> bool:
-        """Under permission='bypass', ask laya whether a command looks destructive/irreversible and,
-        if so, require a spoken confirm. Returns True to proceed, False if the user declined."""
+        """Under permission='bypass', flag a command that looks destructive/irreversible and, if
+        so, require a spoken confirm. Prefers laya's smart_gate when it's ready; laya has been
+        removed so smart_gate is permanently None in production — falls back to a plain keyword
+        match so this guard (forced on for remote+bypass users, see server/app.py) isn't a silent
+        no-op. Returns True to proceed, False if the user declined."""
         v = self.settings.voice
-        if not (getattr(v, "destructive_guard", False) and self.smart_gate is not None
-                and self.smart_gate.ready
+        if not (getattr(v, "destructive_guard", False)
                 and self.settings.brain.permission == "bypass" and self._loop is not None):
             return True
-        try:
-            p = await self._loop.run_in_executor(None, self.smart_gate.is_destructive, text)
-        except Exception:
-            p = None
-        if p is None or p < 0.55:
-            return True
-        print(f"[otto] destructive guard (p={p:.2f}) — confirming: {text!r}",
+        source = "laya"
+        if self.smart_gate is not None and self.smart_gate.ready:
+            try:
+                p = await self._loop.run_in_executor(None, self.smart_gate.is_destructive, text)
+            except Exception:
+                p = None
+            if p is None or p < 0.55:
+                return True
+            detail = f"p={p:.2f}"
+        else:
+            if not _DESTRUCTIVE_TEXT_RE.search(text):
+                return True
+            source, detail = "keyword fallback", "no laya"
+        print(f"[otto] destructive guard ({source}, {detail}) — confirming: {text!r}",
               file=sys.stderr, flush=True)
         ok = await self.confirm(f"That sounds destructive — {text}. Should I go ahead?")
         if not ok:

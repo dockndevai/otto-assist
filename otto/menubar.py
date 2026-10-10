@@ -92,29 +92,25 @@ def _acquire_single_instance_lock_or_exit() -> None:
         OTTO_HOME.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+    # Take over, don't defer: a fresh launch terminates any other Orrin main (stale, stuck, or a
+    # duplicate like a stray dist/ build) and sweeps orphaned workers FIRST, so you can always get a
+    # clean instance just by launching Orrin — and never get stuck behind a broken one that's still
+    # holding the mic. (Previously the new instance politely exited, which left the broken one up.)
+    _kill_other_orrin_mains()
+    _sweep_orphan_workers()
     fd = open(lock_path, "a+")   # Python opens fds non-inheritable, so children can't hold it
-    try:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        # Locked. If the recorded MAIN pid is dead, this is a ghost hold (e.g. an orphaned
-        # worker that inherited the fd) — sweep and retry once rather than refuse to start.
-        other = ""
-        try:
-            fd.seek(0)
-            other = fd.read().strip()
-        except Exception:
-            pass
-        stale = other.isdigit() and not _pid_alive(int(other))
-        if stale:
-            _sweep_orphan_workers()
-            time.sleep(0.5)
+    for attempt in range(3):
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
         except OSError:
-            print(f"[otto] Orrin is already running{f' (pid {other})' if other else ''}; "
-                  "this instance is exiting to avoid a microphone collision.",
-                  file=sys.stderr, flush=True)
-            sys.exit(0)
+            if attempt == 2:
+                # Another launch raced us and won — only one of us should run, so bow out.
+                print("[otto] another Orrin instance grabbed the lock first; this one is exiting.",
+                      file=sys.stderr, flush=True)
+                sys.exit(0)
+            _kill_other_orrin_mains()
+            time.sleep(0.5)
     try:
         fd.seek(0)
         fd.truncate()
@@ -131,13 +127,65 @@ _OTTO_PROC_MARKERS = ("personal-assist/.venv", "Orrin.app/Contents/MacOS",
 
 
 def _is_otto_worker(cmd: str) -> bool:
-    """True if this process command line is one of OUR RealtimeSTT multiprocessing workers.
-    The EXECUTABLE (argv[0]) must be the otto python / Orrin binary, so a shell/editor/grep that
-    merely mentions the path isn't matched."""
+    """True if this process is one of OUR RealtimeSTT multiprocessing workers. We require the
+    `multiprocessing` marker AND one of our install-path markers anywhere in the command. Matching
+    across the WHOLE command (not a space-split argv[0]) is deliberate: the packaged app's real path
+    contains a space ("…/Application Support/Otto/venv/…"), so the old argv[0] split truncated before
+    the marker and silently never matched a packaged worker (orphans were never swept)."""
     if "multiprocessing" not in cmd:
         return False
-    exe = cmd.split(" ", 1)[0]
+    # argv[0] is the path up to the first flag. Split on " -" (space-dash) rather than the first
+    # space, so a path WITH spaces (the packaged app's "…/Application Support/Otto/venv/…") isn't
+    # truncated before the marker — the old space-split silently never matched packaged workers.
+    exe = cmd.split(" -", 1)[0]
     return any(m in exe for m in _OTTO_PROC_MARKERS)
+
+
+def _is_orrin_main(cmd: str) -> bool:
+    """True if this is an Orrin MAIN process (the app / menu-bar entrypoint), not a worker — so a
+    fresh launch can take over from a stale or duplicate one."""
+    if "multiprocessing" in cmd:
+        return False
+    return ("Orrin.app/Contents/MacOS/Orrin" in cmd) or ("otto.menubar" in cmd)
+
+
+def _kill_other_orrin_mains() -> int:
+    """Terminate any OTHER Orrin main process (a previous launch, or a stale/stuck one) so launching
+    Orrin always wins and the orphan gets closed — you never sit behind a broken instance. SIGTERM
+    first, then SIGKILL the stubborn ones. Never touches this process."""
+    me = os.getpid()
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return 0
+    victims = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_s, _, cmd = line.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid != me and _is_orrin_main(cmd):
+            victims.append(pid)
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    if victims:
+        time.sleep(0.6)
+        for pid in victims:
+            try:
+                os.kill(pid, signal.SIGKILL)   # if it ignored SIGTERM
+            except Exception:
+                pass
+        print(f"[otto] took over from {len(victims)} existing Orrin instance(s)",
+              file=sys.stderr, flush=True)
+    return len(victims)
 
 
 def _sweep_orphan_workers() -> int:
