@@ -2376,7 +2376,7 @@ class Orchestrator:
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
         if self._pending_answer is not None and not self._pending_answer.done():
-            if self._echo_blocking():             # mic tail of Orrin speaking the question
+            if self._echo_blocking() or self._is_self_echo(text):  # mic tail of Orrin speaking the question
                 print(f"[otto] ignoring echo while awaiting answer: {text!r}",
                       file=sys.stderr, flush=True)
                 return
