@@ -445,6 +445,11 @@ class OttoApp(rumps.App):
             except Exception:
                 pass
             try:
+                if self.orch.ears is not None:
+                    self.orch.ears.stop()
+            except Exception:
+                pass
+            try:
                 self.orch = Orchestrator(self.settings, self.bus)
                 self.orch._external_ptt = True
             except Exception as e:
