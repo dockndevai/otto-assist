@@ -3416,11 +3416,19 @@ def test_is_otto_worker_matches_only_our_workers():
     assert not _is_otto_worker("/bin/zsh -c grep personal-assist/.venv multiprocessing")
 
     # _is_orrin_main: the app / menu-bar main (takeover target), never a worker or an unrelated proc
-    assert _is_orrin_main("/Applications/Orrin.app/Contents/MacOS/Orrin")
-    assert _is_orrin_main(f"{venv} -m otto.menubar")
-    assert not _is_orrin_main("/Applications/Orrin.app/Contents/MacOS/Orrin -c "
-                              "from multiprocessing.resource_tracker import main")   # a worker
-    assert not _is_orrin_main("/usr/bin/python3 /Users/x/script.py")
+    app_exe = "/Applications/Orrin.app/Contents/MacOS/Orrin"
+    assert _is_orrin_main(app_exe, my_exe=app_exe)
+    assert _is_orrin_main(f"{venv} -m otto.menubar", my_exe=venv)
+    assert not _is_orrin_main(f"{app_exe} -c "
+                              "from multiprocessing.resource_tracker import main", my_exe=app_exe)  # a worker
+    assert not _is_orrin_main("/usr/bin/python3 /Users/x/script.py", my_exe=venv)
+
+    # scoped to the SAME install: another copy of Orrin.app, or another checkout's venv, must
+    # not be treated as takeover-able even though the marker string matches.
+    other_app_exe = "/Users/y/Downloads/Orrin.app/Contents/MacOS/Orrin"
+    other_venv = "/Users/y/other-checkout/personal-assist/.venv/bin/python"
+    assert not _is_orrin_main(app_exe, my_exe=other_app_exe)
+    assert not _is_orrin_main(f"{venv} -m otto.menubar", my_exe=other_venv)
 
 
 def test_is_auth_error_detection():
