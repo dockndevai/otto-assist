@@ -141,19 +141,34 @@ def _is_otto_worker(cmd: str) -> bool:
     return any(m in exe for m in _OTTO_PROC_MARKERS)
 
 
-def _is_orrin_main(cmd: str) -> bool:
-    """True if this is an Orrin MAIN process (the app / menu-bar entrypoint), not a worker — so a
-    fresh launch can take over from a stale or duplicate one."""
+def _my_install_exe() -> str:
+    """Our own executable path — the python interpreter in this install's venv, or the packaged
+    app's binary. Used to scope _is_orrin_main to the SAME install. Deliberately NOT realpath'd: a
+    venv's python is often a symlink to a shared base interpreter, and resolving it could make two
+    unrelated checkouts that merely share a base interpreter look like the same install."""
+    return sys.executable or sys.argv[0]
+
+
+def _is_orrin_main(cmd: str, my_exe: str) -> bool:
+    """True if this is an Orrin MAIN process (the app / menu-bar entrypoint) from the SAME
+    install as us — not a worker, and not an unrelated Orrin install elsewhere on disk (another
+    user's app copy, a different checkout's venv, a stray build). A fresh launch should only ever
+    take over a stale or duplicate copy of ITSELF, never someone else's install."""
     if "multiprocessing" in cmd:
         return False
-    return ("Orrin.app/Contents/MacOS/Orrin" in cmd) or ("otto.menubar" in cmd)
+    if not (("Orrin.app/Contents/MacOS/Orrin" in cmd) or ("otto.menubar" in cmd)):
+        return False
+    exe = cmd.split(" -", 1)[0].strip()
+    return exe == my_exe
 
 
 def _kill_other_orrin_mains() -> int:
-    """Terminate any OTHER Orrin main process (a previous launch, or a stale/stuck one) so launching
-    Orrin always wins and the orphan gets closed — you never sit behind a broken instance. SIGTERM
-    first, then SIGKILL the stubborn ones. Never touches this process."""
+    """Terminate any OTHER Orrin main process from THIS install (a previous launch, or a
+    stale/stuck one) so launching Orrin always wins and the orphan gets closed — you never sit
+    behind a broken instance. SIGTERM first, then SIGKILL the stubborn ones. Never touches this
+    process, and never a different install."""
     me = os.getpid()
+    my_exe = _my_install_exe()
     try:
         out = subprocess.run(["ps", "-axo", "pid=,command="],
                              capture_output=True, text=True, timeout=5)
@@ -169,7 +184,7 @@ def _kill_other_orrin_mains() -> int:
             pid = int(pid_s)
         except ValueError:
             continue
-        if pid != me and _is_orrin_main(cmd):
+        if pid != me and _is_orrin_main(cmd, my_exe):
             victims.append(pid)
     for pid in victims:
         try:
