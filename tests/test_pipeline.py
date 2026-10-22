@@ -3003,6 +3003,34 @@ def test_background_clause_runs_parallel_even_when_idle():
     asyncio.run(run())
 
 
+def test_run_user_turn_skips_interactive_guards_in_background():
+    """Regression: a background lane (the parallel 'meanwhile' workspace or a non-focused targeted
+    turn) must NOT run the spoken destructive confirm. It shares one `_pending_answer` slot with the
+    focused turn, so a confirm there would race it. The focused turn still gets the full guards."""
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        calls = {"destructive": 0, "fresh": 0, "turn": []}
+        async def fake_destructive(text): calls["destructive"] += 1; return True
+        async def fake_fresh(ws, text): calls["fresh"] += 1
+        async def fake_run_turn(ws, text, *, echo_user=True, research=False, background=False):
+            calls["turn"].append((text, background))
+        orch._destructive_ok = fake_destructive
+        orch._maybe_fresh_context = fake_fresh
+        orch._run_turn = fake_run_turn
+
+        # foreground turn → full guards, then run (not backgrounded)
+        await orch._run_user_turn(orch.focused_ws, "delete everything")
+        assert calls["destructive"] == 1 and calls["fresh"] == 1
+        assert calls["turn"][-1] == ("delete everything", False)
+
+        # background lane → guards skipped (no racing confirm); the turn still runs, silently
+        await orch._run_user_turn(orch.focused_ws, "rm -rf build", background=True)
+        assert calls["destructive"] == 1 and calls["fresh"] == 1   # unchanged — not re-invoked
+        assert calls["turn"][-1] == ("rm -rf build", True)
+    asyncio.run(run())
+
+
 def test_meanwhile_routes_parallel_only_when_busy():
     """A 'meanwhile' command routes to the parallel path when a focused turn is running, but to a
     normal (de-prefixed) turn when nothing is in flight."""

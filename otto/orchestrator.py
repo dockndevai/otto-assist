@@ -2087,7 +2087,8 @@ class Orchestrator:
         """
         path = self._resolve_workspace_name(name)
         if not path:
-            await self._run_turn(self.focused_ws, original)
+            # not really targeting → run the whole utterance as a normal focused command (guarded)
+            await self._run_user_turn(self.focused_ws, original)
             return
         ws = self.workspaces.get(path)
         if ws is None:
@@ -2095,10 +2096,13 @@ class Orchestrator:
             if ws is None:
                 return   # pool full — open_workspace already explained
         if ws.project == self.focused:
-            await self._run_turn(ws, cmd)          # _run_turn echoes the focused command
+            await self._run_user_turn(ws, cmd)     # runs + speaks in the focused project, fully guarded
         else:
             self.bus.transcript("user", original, final=True)   # show it before it runs quietly
-            await self._run_turn(ws, cmd)
+            # a non-focused lane runs concurrently and can't own the voice / shared pending-answer
+            # slot, so it skips the interactive confirm (which would race the focused turn) — same
+            # rule as _run_parallel_turn's background lane.
+            await self._run_user_turn(ws, cmd, background=True)
 
     # A trailing background marker ("… in the background / in parallel") and a connector
     # ("meanwhile / in the meantime / at the same time / in parallel / simultaneously"), both
@@ -2195,10 +2199,9 @@ class Orchestrator:
         try:
             ws = await self._open_parallel_ws()
             if ws is None:
-                await self._run_turn(self.focused_ws, original)   # couldn't parallelize → queue it
+                await self._run_user_turn(self.focused_ws, original)   # couldn't parallelize → queue it
                 return
-            self.bus.transcript("user", cmd, final=True, ws=ws.tag)
-            await self._run_turn(ws, cmd, echo_user=False, background=True)
+            await self._run_user_turn(ws, cmd, echo_user=False, background=True, lane_tag=ws.tag)
         finally:
             self._parallel_pending -= 1
             if self._parallel_pending <= 0:
@@ -3154,16 +3157,31 @@ class Orchestrator:
         pass  # VAD detects end-of-speech; nothing to do on release
 
     # -- the turn ----------------------------------------------------------
-    async def _handle_turn(self, text: str, *, echo_user: bool = True) -> None:
-        """Run a turn in the focused workspace. First applies two local (laya) safety/hygiene
-        checks: a destructive-action confirm (even under bypass) and auto-fresh-context on a clear
-        topic change. Both degrade to a no-op when laya isn't ready."""
-        ws = self.focused_ws
-        if not await self._destructive_ok(text):
-            return                                   # user declined a destructive-looking command
-        await self._maybe_fresh_context(ws, text)    # topic change → new chat before the turn
+    async def _run_user_turn(self, ws: "Workspace", text: str, *, echo_user: bool = True,
+                             background: bool = False, lane_tag: str | None = None) -> None:
+        """Run a turn for a command a HUMAN just gave, applying the shared human-input guards in one
+        place: a destructive-action confirm (even under bypass) and auto-fresh-context on a clear
+        topic change, then record last_command. `lane_tag` emits the user line to a background lane
+        (the parallel workspace) since `echo_user=False` suppresses the normal echo.
+
+        A `background=True` lane (the parallel "meanwhile" workspace) can't own the voice or the
+        single shared pending-answer slot, so it skips the interactive guards — a spoken confirm
+        there would race the focused turn's prompt — and runs the command directly; the focused
+        turn keeps full guarding. Both guards also degrade to a no-op when laya isn't ready.
+        Internal/autonomous prompts (research, roadmap, the teammate) deliberately stay on the raw
+        `_run_turn` so they're never gated."""
+        if not background:
+            if not await self._destructive_ok(text):
+                return                               # user declined a destructive-looking command
+            await self._maybe_fresh_context(ws, text)    # topic change → new chat before the turn
+        if lane_tag is not None:
+            self.bus.transcript("user", text, final=True, ws=lane_tag)
         ws.last_command = text
-        await self._run_turn(ws, text, echo_user=echo_user)
+        await self._run_turn(ws, text, echo_user=echo_user, background=background)
+
+    async def _handle_turn(self, text: str, *, echo_user: bool = True) -> None:
+        """Run a turn in the focused workspace, through the shared human-input guards."""
+        await self._run_user_turn(self.focused_ws, text, echo_user=echo_user)
 
     async def _destructive_ok(self, text: str) -> bool:
         """Under permission='bypass', flag a command that looks destructive/irreversible and, if
