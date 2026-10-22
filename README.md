@@ -20,7 +20,7 @@ voice, on a live dashboard.
 
 ![Orrin in action — the redesigned dashboard: sidebar, a live weather hero, GitHub-activity and quick-action widgets, the Chat drawer, and light/dark theme](assets/orrin-demo.gif)
 
-<sub>▶️ [Watch the demo (MP4)](assets/orrin-demo.mp4) · say **"Otto"** → the orb goes listening → thinking → speaking; the answer lands on the dashboard (real weather, GitHub activity, charts), the transcript streams in the Chat drawer, and ☀️/🌙 flips the theme.</sub>
+<sub>▶️ [Watch the demo (MP4)](assets/orrin-demo.mp4) · say **"Otto"** → the **notch dock** drops down (listening → thinking → speaking) with a live transcript, then tucks back into a sliver when idle; the answer lands on the dashboard (real weather, GitHub activity, charts), it responds only to *your* enrolled voice, and ☀️/🌙 flips the theme. Recording your own? See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).</sub>
 
 </div>
 
