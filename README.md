@@ -14,13 +14,25 @@ voice, on a live dashboard.
 > **Orrin** is the app you install. **"Otto"** is the wake word — who you call across the
 > room. The name is yours to change.
 >
-> Productization notes in [docs/COMMERCIAL.md](docs/COMMERCIAL.md); the standalone signed-app
-> build in [packaging/pyinstaller/BUILD.md](packaging/pyinstaller/BUILD.md) and
-> [SIGNING.md](packaging/pyinstaller/SIGNING.md). Source license — see [LICENSE](LICENSE).
+> The standalone signed-app build is in [packaging/pyinstaller/BUILD.md](packaging/pyinstaller/BUILD.md)
+> and [SIGNING.md](packaging/pyinstaller/SIGNING.md). Source license — see [LICENSE](LICENSE).
 
 ![Orrin in action — the redesigned dashboard: sidebar, a live weather hero, GitHub-activity and quick-action widgets, the Chat drawer, and light/dark theme](assets/orrin-demo.gif)
 
 <sub>▶️ [Watch the demo (MP4)](assets/orrin-demo.mp4) · say **"Otto"** → the **notch dock** drops down (listening → thinking → speaking) with a live transcript, then tucks back into a sliver when idle; the answer lands on the dashboard (real weather, GitHub activity, charts), it responds only to *your* enrolled voice, and ☀️/🌙 flips the theme. Recording your own? See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).</sub>
+
+<br/>
+
+<table>
+<tr>
+<td width="58%" align="center"><img src="assets/notch-dock.png" alt="The notch dock in its listening, speaking, and idle states" /></td>
+<td width="42%" align="center"><img src="assets/enroll.png" alt="Guided voice-enrollment screen" /></td>
+</tr>
+<tr>
+<td align="center"><sub>The <b>notch dock</b> drops from the notch while listening & speaking, then tucks into a sliver when idle.</sub></td>
+<td align="center"><sub>Guided <b>voice enrollment</b> — read a few phrases, no Terminal, so Orrin answers only you.</sub></td>
+</tr>
+</table>
 
 </div>
 
