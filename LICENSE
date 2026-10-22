@@ -1,39 +1,21 @@
-Orrin — Proprietary Software License
-Copyright (c) 2026 dockndevai. All rights reserved.
+MIT License
 
-IMPORTANT: Replace "dockndevai" above with the legal owner (you or your company)
-before any commercial release, and have counsel review this license.
+Copyright (c) 2026 dockndevai
 
-1. Ownership. This software, including its source code, design, and documentation
-   (the "Software"), is proprietary to and owned by the copyright holder. It is
-   licensed, not sold. All rights not expressly granted are reserved.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-2. No license granted. Except as expressly permitted in a separate written
-   agreement signed by the copyright holder, no permission is granted to use,
-   copy, modify, merge, publish, distribute, sublicense, or sell copies of the
-   Software, or to create derivative works of it.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-3. Confidentiality. The Software is confidential. You may not disclose it or make
-   it available to any third party without the copyright holder's written consent.
-
-4. Third-party components. The Software depends on third-party open-source
-   packages, each licensed under its own terms (see THIRD_PARTY_NOTICES.md). Those
-   terms govern those components; this license governs only the original code in
-   this repository.
-
-5. "Claude" and "Anthropic" are trademarks of Anthropic. Orrin is an independent
-   product and is not affiliated with, endorsed by, or sponsored by Anthropic.
-   Orrin requires you to supply your own Claude access, subject to Anthropic's
-   terms.
-
-6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-7. Limitation of liability. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR
-   ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION
-   WITH THE SOFTWARE OR ITS USE.
-
-If you want an open-core model instead (open shell, paid features), swap this file
-for the chosen OSS license (e.g. Apache-2.0) plus a commercial license for the
-proprietary parts. See docs/COMMERCIAL.md.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
