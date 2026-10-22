@@ -17,9 +17,9 @@ voice, on a live dashboard.
 > The standalone signed-app build is in [packaging/pyinstaller/BUILD.md](packaging/pyinstaller/BUILD.md)
 > and [SIGNING.md](packaging/pyinstaller/SIGNING.md). Source license — see [LICENSE](LICENSE).
 
-![Orrin in action — the redesigned dashboard: sidebar, a live weather hero, GitHub-activity and quick-action widgets, the Chat drawer, and light/dark theme](assets/orrin-demo.gif)
+![Orrin in action — the ambient dashboard: a reactive orb at center, the live turn (your words → tool calls → streamed reply) floating beside it, background research off to the side, and four color themes](assets/orrin-demo.gif)
 
-<sub>▶️ [Watch the demo (MP4)](assets/orrin-demo.mp4) · say **"Otto"** → the **notch dock** drops down (listening → thinking → speaking) with a live transcript, then tucks back into a sliver when idle; the answer lands on the dashboard (real weather, GitHub activity, charts), it responds only to *your* enrolled voice, and ☀️/🌙 flips the theme. Recording your own? See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).</sub>
+<sub>▶️ [Watch the demo (MP4)](assets/orrin-demo.mp4) · the **ambient dashboard**: say **"Otto"** and a reactive **orb** tracks the turn (listening → thinking → speaking) while the exchange — *your words → the tool calls → the streamed reply* — floats beside it; idle research drifts in its own corner, and **Aurora / Mint / Ember / Ice** reskin it. The **notch dock** mirrors the same states up by the menu bar. <br/>*This loop is a live, silent capture of the UI driven by a scripted turn — for the spoken walkthrough see [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).*</sub>
 
 <br/>
 
@@ -88,10 +88,13 @@ for you to merge — never touching `main` directly, never doing anything destru
 steward** keeps the Mac tidy (sweeps Orrin's own stray workers, clears caches, watches memory and
 disk) and flags trouble. Everything here ships **off by default**; you flip it on from the menu.
 
-🖥️ **A live dashboard** — sidebar (Home / Conversations / Visuals / Skills / MCP Connectors /
-Settings), a **weather hero** with real conditions + air quality, **GitHub-activity** and
-**quick-action** widgets, an "Ask Orrin anything" **Chat drawer**, and a bottom status bar
-(Claude Code · MCP · Mode · TTS · version). Cards appear only when they have data.
+🖥️ **A live, ambient dashboard** — no menus to hunt through. A reactive **orb** at the center
+tracks Orrin's state, and each turn floats beside it as a glass cluster — *your words → the tool
+calls as they run → the streamed reply*. Idle **research** drifts in its own corner, **risks /
+ideas / roadmap** collect in faint side panels, and a one-line **command dock** lets you type
+instead of talk. Four themes — **Aurora / Mint / Ember / Ice** — reskin the whole surface.
+
+<p align="center"><img src="assets/dashboard.png" width="820" alt="The ambient dashboard — a reactive orb at center, a floating turn with its tool calls and streamed reply, and background research off to the side" /></p>
 
 🫥 **A HUD that stays out of the way** — a small always-on-top glass pill shows Orrin's state
 (listening / thinking / speaking) and a live one-line transcript, and **tucks into the notch and

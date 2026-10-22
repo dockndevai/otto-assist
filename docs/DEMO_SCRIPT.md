@@ -9,8 +9,9 @@ A tight recording flow that shows Orrin is *your* Claude Code, by voice + a scre
 - Make sure **your voice is enrolled** (menu bar → *Enroll a voice*, or the `/enroll` page) so the
   demo shows Orrin responding to *you* and ignoring background noise.
 - Launch Orrin; open the dashboard (menu bar → *Open Dashboard*). Wait for **✓ Ready**.
-- Frame the shot so the **notch dock** (top-center), the dashboard (sidebar + weather hero + Chat
-  drawer), and the menu-bar icon are all visible.
+- Frame the shot so the **notch dock** (top-center), the **dashboard** (the center orb, the space
+  beside it where the turn floats, and the **Aurora / Mint / Ember / Ice** theme chips), and the
+  menu-bar icon are all visible.
 - Speak at a normal pace; ~1s pause after each request so Orrin picks up the turn.
 
 ## The flow (~60s)
@@ -18,12 +19,12 @@ A tight recording flow that shows Orrin is *your* Claude Code, by voice + a scre
 | # | You say (out loud) | What the viewer sees |
 |---|--------------------|----------------------|
 | 1 | *"Otto — what can you do?"* | The **notch dock** drops down and expands (listening → thinking → speaking) with a live transcript of your words; the reply streams in the Chat drawer. It tucks back into a sliver when idle. |
-| 2 | *"Otto, what's the weather and my GitHub activity?"* | Point to the **weather hero** + **GitHub Activity** cards — real, live data on the dashboard. |
-| 3 | *"Otto, check the ClickHouse project's git status, and meanwhile open the mcp-server folder."* | Shows **parallel "meanwhile" dispatch** — the background task runs in its own lane while the foreground one proceeds. |
-| 4 | *"Otto, create a file called demo.txt that says hello, and chart my last five commits by day."* | Real tool calls stream in the chat; a **chart renders in Visuals** — your actual Claude doing the work. |
+| 2 | *"Otto, what did I change this week?"* | The turn floats beside the orb — your words, then the **tool calls cascade** (`git log`, file reads) as they actually run, then the reply streams in. |
+| 3 | *"Otto, check the ClickHouse project's git status, and meanwhile open the mcp-server folder."* | Shows **parallel "meanwhile" dispatch** — a second 🧩 cluster appears in its own corner and runs while the foreground one proceeds. |
+| 4 | *"Otto, create a file called demo.txt that says hello, and chart my last five commits by day."* | Real tool calls stream in the floating turn; a **chart renders in an inline Canvas panel** — your actual Claude doing the work. |
 | 5 | *(with a TV or someone talking nearby)* stay silent, then *"Otto, what's next?"* | Shows **speaker verification** — the room/TV is ignored, only your voice gets through. |
 | 6 | *"Otto, stop listening."* then *"Otto"* to wake it | Hands-free **sleep/wake**; the dock calms, then re-arms on the wake word. |
-| 7 | Toggle **🌙/☀️** and click through **Home / Conversations / Visuals / Settings** | Light/dark theme + the whole UI in ~5s. |
+| 7 | Click the theme chips — **Aurora → Mint → Ember → Ice** | The whole ambient surface reskins live in ~5s. |
 
 ## One-liner to open the video with
 > "This is Orrin — it wraps the Claude Code I already run and gives it a voice and a screen.
