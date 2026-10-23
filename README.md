@@ -15,7 +15,8 @@ voice, on a live dashboard.
 > room. The name is yours to change.
 >
 > The standalone signed-app build is in [packaging/pyinstaller/BUILD.md](packaging/pyinstaller/BUILD.md)
-> and [SIGNING.md](packaging/pyinstaller/SIGNING.md). Source license — see [LICENSE](LICENSE).
+> and [SIGNING.md](packaging/pyinstaller/SIGNING.md). **Open source under the [MIT License](LICENSE).**
+> Orrin is an independent project — not affiliated with, endorsed by, or sponsored by Anthropic; "Claude" and "Anthropic" are their trademarks. You bring your own Claude access.
 
 ![Orrin in action — the ambient dashboard: a reactive orb at center, the live turn (your words → tool calls → streamed reply) floating beside it, background research off to the side, and four color themes](assets/orrin-demo.gif)
 
