@@ -188,8 +188,8 @@ job, so it won't relaunch); **Restart** reloads a fresh process. Remove entirely
 
 ## Everything is configurable — from the app
 
-Open **Settings** in the sidebar (or menu bar → **Settings**) to switch the project Orrin is
-working in, set the wake word, choose the brain/permissions, **pick any installed macOS voice**
+Open **Settings** from the dashboard (the **⚙** button, top-right) or the menu bar to switch the
+project Orrin is working in, set the wake word, choose the brain/permissions, **pick any installed macOS voice**
 (with a ▶ preview), and tune the rest, then **Save**. It writes
 `~/Library/Application Support/Otto/config.yaml`; most changes apply live (some after
 **Restart**).
@@ -198,7 +198,7 @@ working in, set the wake word, choose the brain/permissions, **pick any installe
 
 Four ways in:
 
-1. **🎤 Talk button** *(most reliable)* — dashboard button or menu-bar **Talk to Orrin**: click,
+1. **🎤 Talk button** *(most reliable)* — menu-bar **Talk to Orrin**: click,
    then speak — no wake word, no mishearing, no macOS permission needed. There's also an opt-in
    global **⌘⇧J** hotkey (`voice.hotkey.enabled`) that works in the packaged app — it's a
    main-thread key monitor and needs **Input Monitoring** permission.
@@ -207,7 +207,7 @@ Four ways in:
    **"stop listening"** to put it to sleep, and the **wake word** wakes it again.
 3. **Wake word** — say your phrase first; hands-free but the software wake word rides on
    speech-to-text which can drop the name (a custom trained model is reliable — see below).
-4. **Type** in the Chat drawer — always works.
+4. **Type** in the dashboard's **command dock** (the bar at the bottom) — always works.
 
 Orrin **waits for you to finish** (`voice.stt.silence_seconds`, ~1.3s pause) so it won't cut
 you off.
@@ -265,11 +265,11 @@ Because Orrin runs your Claude, it can do anything your Claude can — by voice:
 
 | Say… | Orrin… |
 |---|---|
-| *"what's the weather and my GitHub activity?"* | shows the live weather hero + GitHub card |
+| *"summarize what I changed in this repo today"* | runs `git log`/`diff` and speaks a summary — the steps float on the dashboard |
 | *"check my recent emails"* | searches Gmail, reads a spoken summary |
 | *"find my resume in Drive"* | queries Google Drive |
 | *"in the clickhouse project, check git status"* | runs it in that project in the background |
-| *"show me a chart of my last five commits"* | renders it to the Visuals canvas |
+| *"show me a chart of my last five commits"* | renders it in an inline **Canvas** panel on the dashboard |
 
 ## Configuration
 
@@ -383,7 +383,7 @@ otto/
           tools.py         in-process voice/screen/mood tools
   voice/  stt.py tts.py hotkey.py     ears (Whisper) / mouth (say, any voice) / push-to-talk
   server/ app.py           FastAPI: dashboard, WebSocket, /api, mounts /mcp
-          data.py          live data — weather/AQI, GitHub activity, MCP count (no keys)
+          data.py          local data helpers — MCP count, GitHub/weather endpoints (no keys)
           web/             dashboard + settings UI (no build step)
 packaging/pyinstaller/     standalone Orrin.app + Orrin.dmg (sign + notarize when configured)
 ```
