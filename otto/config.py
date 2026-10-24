@@ -528,6 +528,13 @@ class MemoryConfig(BaseModel):
     risk_alerts: bool = True                  # notify + dashboard alert on new high-severity risks
     suggestion_stale_days: float = 14.0       # open suggestions older than this are aged out
     max_open_suggestions: int = 50
+    # SQLite system of record (OTTO_HOME/orrin.db) — searchable transcripts + structured decisions,
+    # open-tasks and preferences, on top of the flat-file memory. Powers "what are my open tasks",
+    # "what did we decide about X", and the "continue where we left off" resume digest.
+    store: bool = True
+    # Inject a short "last time we… / open tasks / recent decisions" block on the first turn of a
+    # session so Orrin picks up where you left off.
+    resume_digest: bool = True
 
 
 class Settings(BaseSettings):

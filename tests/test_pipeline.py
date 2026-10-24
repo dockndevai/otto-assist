@@ -1857,6 +1857,60 @@ def test_local_router_disabled_falls_through(monkeypatch):
     asyncio.run(run())
 
 
+# ---- SQLite system of record (Bundle C) ------------------------------------
+def test_store_record_and_search(tmp_path):
+    from otto.store import Store
+    s = Store(tmp_path / "t.db")
+    assert s.ok
+    s.record_turn("/p", "how do I deploy the api", "run make deploy", session_id="s1")
+    s.record_turn("/p", "what about the database", "use clickhouse", session_id="s1")
+    hits = s.search_transcript("deploy", "/p")
+    assert hits and any("deploy" in (h["user"] + h["reply"]).lower() for h in hits)
+    assert s.search_transcript("nonexistent-term-xyz", "/p") == []
+
+
+def test_store_tasks_lifecycle(tmp_path):
+    from otto.store import Store
+    s = Store(tmp_path / "t.db")
+    s.add_task("/p", "ship the installer")
+    s.add_task("/p", "write the docs")
+    assert len(s.list_tasks("/p", "open")) == 2
+    done = s.set_task_status("/p", "ship the installer", "done")
+    assert done and done["text"] == "ship the installer"
+    assert len(s.list_tasks("/p", "open")) == 1
+    assert s.set_task_status("/p", "no such task here", "done") is None
+
+
+def test_store_decisions_and_resume_digest(tmp_path):
+    from otto.store import Store
+    s = Store(tmp_path / "t.db")
+    s.record_turn("/p", "let's talk about caching", "ok")
+    s.add_decision("/p", "Use Redis for the cache", source="explicit")
+    s.add_task("/p", "benchmark redis")
+    rd = s.resume_digest("/p")
+    assert "Redis" in rd and "benchmark redis" in rd and "Last time" in rd
+    assert Store(tmp_path / "empty.db").resume_digest("/other") == ""
+
+
+def test_memory_command_routing(monkeypatch, tmp_path):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.store import Store
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.store = Store(tmp_path / "t.db")
+        handled = []
+        orch._handle_turn = lambda t, **k: handled.append(t)
+        assert orch._maybe_memory_command("add a task to ship the installer") is True
+        assert orch.store.list_tasks(orch.focused, "open")[0]["text"] == "ship the installer"
+        assert orch._maybe_memory_command("what are my open tasks") is True
+        assert orch._maybe_memory_command("mark ship the installer done") is True
+        assert orch.store.list_tasks(orch.focused, "open") == []       # task closed
+        assert orch._maybe_memory_command("refactor the auth module") is False   # real work → brain
+        assert handled == []                                           # nothing hit the brain
+    asyncio.run(run())
+
+
 # ---- First-run permissions + preflight health check -----------------------
 def test_preflight_check_microphone_statuses(monkeypatch):
     from otto import preflight
