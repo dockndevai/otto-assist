@@ -84,6 +84,7 @@
   const clusters = new Map(); // key -> {el, deck, reply, timer, anchorIdx, done}
   const MAIN = "__main__";
   let focusedWs = MAIN;
+  const wsEngine = {};   // project path -> engine label (for the per-task badge)
 
   function iconFor(key, title) {
     return key !== MAIN ? "🧩" : "🐚";
@@ -92,7 +93,9 @@
     let c = clusters.get(key);
     if (c) { if (title) c.el.querySelector(".nm").textContent = title; return c; }
     const ai = takeAnchor(), an = ANCHORS[ai];
-    const node = el(`<div class="cluster"><div class="ch"><span class="ic">${iconFor(key, title)}</span><span class="nm">${esc(title || "Working")}</span><span class="st">running</span></div><div class="deck"></div></div>`);
+    const eng = wsEngine[key] || "";
+    const engChip = eng ? `<span class="eng" style="margin-left:6px;font-size:10px;opacity:.6;text-transform:uppercase;letter-spacing:.05em">${esc(eng)}</span>` : "";
+    const node = el(`<div class="cluster"><div class="ch"><span class="ic">${iconFor(key, title)}</span><span class="nm">${esc(title || "Working")}</span>${engChip}<span class="st">running</span></div><div class="deck"></div></div>`);
     Object.assign(node.style, an.css);
     node.style.setProperty("--fx", an.fx); node.style.setProperty("--fy", an.fy); node.style.setProperty("--fd", an.fd);
     layer.appendChild(node);
@@ -169,9 +172,14 @@
       case "status": setState(ev.state, ev.text);
         if (ev.state === "idle") markDone(MAIN);
         return;
-      case "project": if (ev.name) $("projPill").textContent = ev.name; return;
+      case "project":
+        if (ev.name) $("projPill").textContent = ev.name + (ev.engine_label ? " · " + ev.engine_label : "");
+        return;
       case "session": return;
-      case "workspaces": if (ev.focused) focusedWs = ev.focused; return;
+      case "workspaces":
+        if (ev.focused) focusedWs = ev.focused;
+        (ev.items || []).forEach(it => { if (it.project) wsEngine[it.project] = it.engine_label || ""; });
+        return;
       case "transcript_partial":
         if (replaying) return;
         if (ev.role === "user") { const c = ensureCluster(MAIN, shortTitle(ev.text)); ensureYou(c, ev.text, true); }

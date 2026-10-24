@@ -1559,6 +1559,117 @@ def test_targeted_turn_routing(monkeypatch):
     asyncio.run(run())
 
 
+# ---- Engine-agnostic CLI-agent adapters ------------------------------------
+def _collect(brain, text):
+    async def run():
+        out = []
+        async for ev in brain.send(text):
+            out.append(ev)
+        return out
+    return asyncio.run(run())
+
+
+def test_resolve_engine_precedence():
+    from otto.brain.factory import resolve_engine
+    s = load_settings()
+    s.brain.agents["cursor"]  # built-in exists
+    assert resolve_engine(s, "/tmp/p") == "claude"                     # global default
+    s.brain.default_engine = "cursor"
+    assert resolve_engine(s, "/tmp/p") == "cursor"                     # global override
+    s.brain.engines["/tmp/p"] = "aider"
+    assert resolve_engine(s, "/tmp/p") == "aider"                      # per-project wins
+    assert resolve_engine(s, "/tmp/p", engine="gemini") == "gemini"    # explicit wins all
+    assert resolve_engine(s, "/tmp/p", engine="nope") == "claude"      # unknown → claude fallback
+
+
+def test_make_brain_picks_sdk_vs_cli():
+    from otto.brain.factory import make_brain
+    from otto.config import AgentProfile
+    s = load_settings()
+    name, brain = make_brain(None, s, cwd="/tmp/p")
+    assert name == "claude" and type(brain).__name__ == "ClaudeBrain"
+    s.brain.agents["echotest"] = AgentProfile(kind="cli", command="echo", args=["{prompt}"])
+    s.brain.default_engine = "echotest"
+    name, brain = make_brain(None, s, cwd="/tmp/p")
+    assert name == "echotest" and type(brain).__name__ == "CliAgentBrain"
+
+
+def test_cli_agent_text_output_roundtrips():
+    from otto.brain.cli_agent import CliAgentBrain
+    from otto.config import AgentProfile
+    s = load_settings()
+    prof = AgentProfile(kind="cli", command="echo", args=["{prompt}"], output_format="text",
+                        session_from="")
+    brain = CliAgentBrain(None, s, prof, cwd="/tmp")
+    evs = _collect(brain, "hello world")
+    assert any(e["type"] == "delta" and "hello world" in e["text"] for e in evs)
+    result = evs[-1]
+    assert result["type"] == "result" and result["is_error"] is False
+
+
+def test_cli_agent_unavailable_is_clean_error():
+    from otto.brain.cli_agent import CliAgentBrain
+    from otto.config import AgentProfile
+    prof = AgentProfile(kind="cli", command="definitely-not-a-real-binary-xyz", args=["{prompt}"])
+    brain = CliAgentBrain(None, load_settings(), prof, cwd="/tmp")
+    evs = _collect(brain, "hi")
+    assert len(evs) == 1 and evs[0]["type"] == "result" and evs[0]["is_error"] is True
+    assert "unavailable" in evs[0]["error_text"].lower()
+
+
+def test_cli_agent_stream_json_parsing():
+    from otto.brain.cli_agent import CliAgentBrain
+    from otto.config import AgentProfile
+    prof = AgentProfile(kind="cli", command="echo", output_format="stream-json", session_from="auto")
+    b = CliAgentBrain(None, load_settings(), prof, cwd="/tmp")
+    assert b._parse_stream_json(b'{"text":"hi "}') == [{"type": "delta", "text": "hi "}]
+    tools = b._parse_stream_json(b'{"type":"tool_use","name":"Bash","command":"ls -a"}')
+    assert any(e["type"] == "tool_use" and e["name"] == "Bash" and "ls -a" in e["detail"]
+               for e in tools)
+    b._parse_stream_json(b'{"session_id":"abc123","text":"x"}')
+    assert b.session_id == "abc123"                                    # session captured from stream
+    assert b._parse_stream_json(b'plain non-json line') == [{"type": "delta", "text": "plain non-json line\n"}]
+
+
+def test_cli_agent_argv_resume_and_autonomy_gating():
+    from otto.brain.cli_agent import CliAgentBrain
+    from otto.config import AgentProfile
+    s = load_settings()
+    s.brain.permission = "guarded"                                     # control the autonomy gate
+    prof = AgentProfile(kind="cli", command="echo", args=["-p", "{prompt}"],
+                        resume_args=["--resume", "{session}"], autonomy_args=["--force"],
+                        session_from="")
+    b = CliAgentBrain(None, s, prof, cwd="/tmp")
+    b._exe = "echo"
+    b.session_id = "sess42"
+    argv = b._build_argv("do it")
+    assert "-p" in argv and "do it" in argv
+    assert "--resume" in argv and "sess42" in argv                     # resume args filled
+    assert "--force" not in argv                                       # guarded → no autonomy args
+    b2 = CliAgentBrain(None, s, prof, cwd="/tmp", write_mode=True)
+    b2._exe = "echo"
+    assert "--force" in b2._build_argv("do it")                        # write-mode → autonomy args on
+
+
+def test_engine_command_resolution_and_routing(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        assert orch._resolve_engine_name("cursor") == "cursor"
+        assert orch._resolve_engine_name("gemini cli") == "gemini"
+        assert orch._resolve_engine_name("claude code") == "claude"
+        assert orch._resolve_engine_name("pytest") is None
+        called = {}
+        async def fake_set(name): called["engine"] = name
+        orch._set_engine = fake_set
+        assert orch._maybe_engine_command("use cursor for this project") is True
+        await asyncio.sleep(0.02)
+        assert called.get("engine") == "cursor"
+        assert orch._maybe_engine_command("use pytest to run the suite") is False   # not an engine
+    asyncio.run(run())
+
+
 # ---- Turn-taking / dialogue-state gate -------------------------------------
 def test_turntaker_holds_unfinished_then_dispatches():
     from otto.voice.turntaking import TurnTaker
