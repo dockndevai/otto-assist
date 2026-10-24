@@ -4,17 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- dashboard CSP: own assets + Google Fonts + WS/API; block remote scripts/beacons -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
   <title>Orrin — your Claude, by voice</title>
   <meta name="description" content="Orrin — a voice & a screen for the Claude you already run." />
-  <meta name="theme-color" content="#eef2f8" />
+  <meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#262628" media="(prefers-color-scheme: dark)" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
   <link rel="apple-touch-icon" href="/static/icon-180.png" />
   <link rel="manifest" href="/static/manifest.json" />
   <script>try{var v=localStorage.getItem('orrin-variant');if(v)document.documentElement.setAttribute('data-v',v);}catch(e){}</script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -54,6 +52,18 @@
       <div class="conn" id="conn">Reconnecting…</div>
     </div>
   </div>
+  <script>
+    /* Native window drag: dragging the empty toolbar moves the window (WKWebView eats events, so
+       the page asks AppKit to drag via the 'drag' message handler the dashboard window registers). */
+    (function () {
+      var bar = document.querySelector(".bar");
+      if (!bar) return;
+      bar.addEventListener("pointerdown", function (e) {
+        if (e.target.closest("button,input,a,.seg")) return;
+        try { window.webkit.messageHandlers.drag.postMessage("drag"); } catch (_) {}
+      });
+    })();
+  </script>
   <script src="/static/app.js"></script>
 </body>
 </html>

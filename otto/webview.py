@@ -61,6 +61,8 @@ class DashboardWindow:
         self.webview = None
         self._close_bridge = close_bridge   # expose window.webkit.messageHandlers.orrinClose
         self._closer = None
+        self._drag = None                   # native window-drag message handler (kept referenced)
+        self._effect = None                 # NSVisualEffectView (kept referenced)
 
     # -- public API (call on the main thread) -----------------------------
     def show(self, suffix: str = "") -> None:
@@ -83,20 +85,28 @@ class DashboardWindow:
     # -- internals --------------------------------------------------------
     def _build(self, suffix: str = "") -> None:
         from Cocoa import (
-            NSBackingStoreBuffered, NSMakeRect, NSURL, NSURLRequest,
+            NSBackingStoreBuffered, NSColor, NSMakeRect, NSURL, NSURLRequest,
             NSViewHeightSizable, NSViewWidthSizable, NSWindow,
-            NSWindowStyleMaskClosable, NSWindowStyleMaskMiniaturizable,
-            NSWindowStyleMaskResizable, NSWindowStyleMaskTitled,
+            NSWindowStyleMaskClosable, NSWindowStyleMaskFullSizeContentView,
+            NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskResizable,
+            NSWindowStyleMaskTitled, NSWindowTitleHidden,
         )
         from WebKit import WKWebView, WKWebViewConfiguration
 
         rect = NSMakeRect(0, 0, 1180, 760)
-        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-                 | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
+        # Full-size content view + a transparent, text-less title bar = the native "unified" look:
+        # the page's own translucent toolbar fills the title-bar area with the traffic lights inline.
+        style = (NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+                 | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView)
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             rect, style, NSBackingStoreBuffered, False)
         win.setTitle_(self.title)
         win.setReleasedWhenClosed_(False)   # so we can reopen the same window
+        win.setTitlebarAppearsTransparent_(True)
+        try:
+            win.setTitleVisibility_(NSWindowTitleHidden)
+        except Exception:
+            pass
         win.center()
 
         cfg = WKWebViewConfiguration.alloc().init()
@@ -106,10 +116,50 @@ class DashboardWindow:
                 cfg.userContentController().addScriptMessageHandler_name_(self._closer, "orrinClose")
             except Exception:
                 pass
+        # The page drags the window from its empty toolbar via this message handler.
+        try:
+            self._drag = _drag_handler(win)
+            cfg.userContentController().addScriptMessageHandler_name_(self._drag, "drag")
+        except Exception:
+            self._drag = None
+
         wv = WKWebView.alloc().initWithFrame_configuration_(rect, cfg)
         wv.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+        # Transparent webview so the window's vibrancy shows through the page's translucent areas.
+        try:
+            wv.setValue_forKey_(False, "drawsBackground")
+        except Exception:
+            pass
+        try:
+            wv.setUnderPageBackgroundColor_(NSColor.clearColor())
+        except Exception:
+            pass
         wv.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(self.url + (suffix or ""))))
-        win.setContentView_(wv)
+
+        # Real macOS vibrancy behind the page: an NSVisualEffectView is the window's content view,
+        # with the webview layered on top. Follows system light/dark automatically.
+        content = wv
+        try:
+            from Cocoa import (
+                NSVisualEffectBlendingModeBehindWindow,
+                NSVisualEffectMaterialUnderWindowBackground, NSVisualEffectView,
+            )
+            try:
+                from Cocoa import NSVisualEffectStateFollowsWindowActiveState as _vstate
+            except Exception:
+                _vstate = 0
+            fx = NSVisualEffectView.alloc().initWithFrame_(rect)
+            fx.setMaterial_(NSVisualEffectMaterialUnderWindowBackground)
+            fx.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            fx.setState_(_vstate)
+            fx.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
+            wv.setFrame_(fx.bounds())
+            fx.addSubview_(wv)
+            self._effect = fx
+            content = fx
+        except Exception:
+            self._effect = None
+        win.setContentView_(content)
         self.window = win
         self.webview = wv
         # The first load can race the server (recorder/model init delays the port binding a

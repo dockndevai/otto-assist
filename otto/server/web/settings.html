@@ -4,83 +4,94 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <!-- #54: block remote scripts/styles/beacons; inline style/script/handlers need 'unsafe-inline'. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self'; base-uri 'none'; form-action 'self'" />
   <title>Orrin — Settings</title>
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)" />
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" />
   <style>
-    /* Liquid Glass — matches the dashboard (styles.css tokens). */
+    /* Native macOS Settings look — system font, inset-grouped lists, system switches, full light+dark. */
     :root{
-      --ink:#1b2438;--muted:#5b6577;--faint:#8590a3;
-      --ground-1:#eef2f8;--ground-2:#e6ecf6;--ground-3:#f4f0f7;
-      --glass:rgba(255,255,255,.52);--glass-strong:rgba(255,255,255,.74);--glass-line:rgba(255,255,255,.85);--glass-edge:rgba(120,140,180,.16);
-      --accent-1:#38bdf8;--accent-2:#7c6cf0;--accent-3:#f0a5d0;--b1:56,189,248;--b2:124,108,240;--b3:240,165,208;
-      --good:#2fbf87;--warn:#e0a020;--crit:#e5484d;
-      --shadow:0 22px 50px -26px rgba(40,60,110,.42);--shadow-soft:0 8px 22px -14px rgba(40,60,110,.30);
-      --r-lg:22px;--r-md:16px;--r-sm:12px;color-scheme:light;
+      color-scheme:light;
+      --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,"Helvetica Neue",sans-serif;
+      --mono:ui-monospace,"SF Mono",Menlo,monospace;
+      --label:#1d1d1f;--label-2:rgba(60,60,67,.6);--label-3:rgba(60,60,67,.3);
+      --group:#f2f2f7;--card:#fff;--sep:rgba(0,0,0,.09);
+      --field:#fff;--field-border:rgba(0,0,0,.16);--fill:rgba(0,0,0,.04);
+      --bar:rgba(246,246,248,.72);
+      --accent:#007aff;--accent-press:#0063cc;--on-accent:#fff;
+      --switch-on:#34c759;--switch-off:rgba(120,120,128,.32);--crit:#ff3b30;
+      --r:10px;--r-sm:6px;--shadow-sm:0 1px 2px rgba(0,0,0,.05);
     }
-    :root[data-v="mint"]{--accent-1:#2dd4bf;--accent-2:#38bdf8;--accent-3:#a7f3d0;--b1:45,212,191;--b2:56,189,248;--b3:167,243,208;--ground-3:#eef7f4}
-    :root[data-v="ember"]{--accent-1:#fb9d6a;--accent-2:#f0709a;--accent-3:#f5c77e;--b1:251,157,106;--b2:240,112,154;--b3:245,199,126;--ground-1:#f6f0ec;--ground-3:#f7eef2}
-    :root[data-v="ice"]{--accent-1:#5aa9f0;--accent-2:#8aa0e8;--accent-3:#bcd6f5;--b1:90,169,240;--b2:138,160,232;--b3:188,214,245;--ground-1:#eef1f7;--ground-2:#e7ebf4}
+    @media (prefers-color-scheme:dark){:root{
+      color-scheme:dark;
+      --label:#f5f5f7;--label-2:rgba(235,235,245,.6);--label-3:rgba(235,235,245,.3);
+      --group:#1c1c1e;--card:#2c2c2e;--sep:rgba(255,255,255,.1);
+      --field:#1c1c1e;--field-border:rgba(255,255,255,.18);--fill:rgba(255,255,255,.06);
+      --bar:rgba(38,38,40,.66);
+      --accent:#0a84ff;--accent-press:#409cff;--switch-on:#30d158;--switch-off:rgba(120,120,128,.4);--crit:#ff453b;
+    }}
     *{box-sizing:border-box}
-    body{margin:0;min-height:100%;color:var(--ink);font-family:"IBM Plex Sans",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased;
-      background:
-        radial-gradient(55% 50% at 15% 8%,rgba(var(--b1),.18),transparent 60%),
-        radial-gradient(50% 45% at 90% 6%,rgba(var(--b2),.16),transparent 62%),
-        radial-gradient(65% 55% at 82% 98%,rgba(var(--b3),.14),transparent 60%),
-        linear-gradient(160deg,var(--ground-1),var(--ground-2) 55%,var(--ground-3));background-attachment:fixed}
-    a{color:var(--accent-2);text-decoration:none}
-    .wrap{max-width:780px;margin:0 auto;padding:26px clamp(16px,3vw,24px) 120px}
-    .top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-    .brand{display:flex;align-items:center;gap:10px;font-family:"Sora",system-ui,sans-serif;font-weight:600;font-size:19px;letter-spacing:.4px}
-    .brand .dot{width:20px;height:20px;border-radius:50%;background:conic-gradient(from 210deg,var(--accent-1),var(--accent-2),var(--accent-3),var(--accent-1));box-shadow:0 0 12px rgba(var(--b2),.55)}
-    .brand small{font-family:"IBM Plex Sans";font-weight:500;font-size:13px;color:var(--faint);letter-spacing:0}
+    body{margin:0;min-height:100%;color:var(--label);font-family:var(--font);-webkit-font-smoothing:antialiased;
+      background:var(--group)}
+    a{color:var(--accent);text-decoration:none}
+    /* unified translucent toolbar with traffic-light clearance */
+    .top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;height:52px;
+      padding:0 20px 0 78px;background:var(--bar);border-bottom:1px solid var(--sep);
+      -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px)}
+    .brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;letter-spacing:-.01em}
+    .brand .dot{width:15px;height:15px;border-radius:50%;
+      background:conic-gradient(from 210deg,var(--accent),#5e5ce6,#bf5af2,var(--accent))}
+    .brand small{font-weight:500;font-size:13px;color:var(--label-2)}
     .spacer{flex:1}
-    .back{font-size:13px;color:var(--muted);padding:7px 13px;border-radius:999px;background:var(--glass-strong);border:1px solid var(--glass-edge)}
-    .cfgpath{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint);margin:2px 0 20px;word-break:break-all}
-    .card{background:var(--glass);backdrop-filter:blur(22px) saturate(150%);-webkit-backdrop-filter:blur(22px) saturate(150%);
-      border:1px solid var(--glass-line);box-shadow:var(--shadow-soft);border-radius:var(--r-lg);padding:20px 22px;margin:16px 0}
-    .card h2{font-family:"Sora",sans-serif;font-size:12px;letter-spacing:1.4px;color:var(--faint);margin:0 0 4px;text-transform:uppercase}
-    .card .hint{font-size:12.5px;color:var(--muted);margin:0 0 16px}
-    label{display:block;font-size:12.5px;color:var(--muted);margin:14px 0 5px;font-weight:500}
-    input[type=text],input:not([type]),select{width:100%;background:var(--glass-strong);border:1px solid var(--glass-edge);color:var(--ink);
-      padding:10px 12px;border-radius:var(--r-sm);font-size:14px;font-family:inherit;outline:none;transition:.2s}
-    input:focus,select:focus{border-color:var(--accent-2);box-shadow:0 0 0 3px rgba(var(--b2),.14)}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px}
+    .back{font-size:13px;color:var(--accent);padding:5px 11px;border-radius:var(--r-sm)}
+    .back:hover{background:var(--fill)}
+    .wrap{max-width:720px;margin:0 auto;padding:16px clamp(16px,3vw,24px) 120px}
+    .cfgpath{font-family:var(--mono);font-size:11px;color:var(--label-3);margin:4px 2px 18px;word-break:break-all}
+    .card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow-sm);margin:16px 0;overflow:hidden}
+    .card h2{font-size:12px;letter-spacing:.03em;text-transform:uppercase;color:var(--label-2);font-weight:600;
+      margin:0;padding:14px 16px 6px}
+    .card .hint{font-size:12.5px;color:var(--label-2);margin:0;padding:0 16px 12px;line-height:1.4}
+    label{display:block;font-size:12px;color:var(--label-2);margin:10px 0 5px;font-weight:500}
+    input[type=text],input:not([type]),select{width:100%;background:var(--field);border:1px solid var(--field-border);
+      color:var(--label);padding:7px 10px;border-radius:var(--r-sm);font-size:13.5px;font-family:inherit;outline:none;transition:.15s}
+    input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 28%,transparent)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 18px;padding:6px 16px 14px;border-top:1px solid var(--sep)}
     @media(max-width:560px){.grid{grid-template-columns:1fr}}
-    .chk{display:flex;align-items:center;gap:10px;margin:12px 0;font-size:13.5px;color:var(--ink);cursor:pointer}
+    .grid small{display:block;color:var(--label-3);font-size:11px;margin-top:4px}
+    /* list rows: label left, native switch right, hairline separators */
+    .chk{display:flex;flex-direction:row-reverse;justify-content:space-between;align-items:center;gap:12px;
+      margin:0;padding:11px 16px;font-size:14px;color:var(--label);cursor:pointer;border-top:1px solid var(--sep)}
     .chk input{position:absolute;opacity:0;width:0;height:0}
-    .chk .tog{width:38px;height:22px;border-radius:999px;background:rgba(120,140,180,.28);position:relative;transition:.22s;flex:none}
-    .chk .tog::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:.22s}
-    .chk input:checked + .tog{background:linear-gradient(120deg,var(--accent-1),var(--accent-2))}
-    .chk input:checked + .tog::after{transform:translateX(16px)}
-    .chk input:focus-visible + .tog{box-shadow:0 0 0 3px rgba(var(--b2),.2)}
-    .chk .lbl{line-height:1.3}.chk .lbl small{display:block;color:var(--faint);font-size:11.5px}
-    .proj{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--glass-edge);
-      border-radius:var(--r-sm);margin:8px 0;background:var(--glass-strong)}
-    .proj.cur{border-color:var(--accent-2);box-shadow:0 0 0 2px rgba(var(--b2),.12)}
-    .proj .nm{font-size:13.5px;font-weight:500}.proj .pt{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--faint);word-break:break-all}
-    button{font-family:inherit;font-weight:600;cursor:pointer;border-radius:999px;font-size:13.5px;transition:.2s;border:0}
-    .btn{background:linear-gradient(120deg,var(--accent-1),var(--accent-2));color:#fff;padding:11px 22px;box-shadow:var(--shadow-soft)}
-    .btn:hover{filter:brightness(1.05)}
-    .btn.ghost{background:var(--glass-strong);color:var(--ink);border:1px solid var(--glass-edge);box-shadow:none}
-    .btn.sm{padding:7px 15px;font-size:12.5px}
-    .bar{position:fixed;left:0;right:0;bottom:0;padding:16px clamp(16px,3vw,24px);padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));
-      display:flex;gap:12px;align-items:center;justify-content:center;
-      background:linear-gradient(transparent,var(--ground-2) 55%);backdrop-filter:blur(6px)}
-    .bar .inner{width:100%;max-width:780px;display:flex;gap:12px;align-items:center}
-    #msg{font-size:13px;color:var(--accent-2);font-weight:500}
+    .chk .tog{width:38px;height:24px;border-radius:999px;background:var(--switch-off);position:relative;transition:.22s;flex:none}
+    .chk .tog::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:.22s}
+    .chk input:checked + .tog{background:var(--switch-on)}
+    .chk input:checked + .tog::after{transform:translateX(14px)}
+    .chk input:focus-visible + .tog{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+    .chk .lbl{line-height:1.3}.chk .lbl small{display:block;color:var(--label-2);font-size:12px;margin-top:1px}
+    .proj{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 16px;border-top:1px solid var(--sep)}
+    .proj.cur .nm{color:var(--accent)}
+    .proj .nm{font-size:14px;font-weight:500}.proj .pt{font-family:var(--mono);font-size:11px;color:var(--label-2);word-break:break-all}
+    button{font-family:inherit;font-weight:500;cursor:pointer;border:0;transition:.15s}
+    .btn{background:var(--accent);color:var(--on-accent);padding:7px 18px;border-radius:var(--r-sm);font-size:14px}
+    .btn:hover{background:var(--accent-press)}
+    .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--field-border)}
+    .btn.ghost:hover{background:var(--fill)}
+    .btn.sm{padding:5px 13px;font-size:12.5px}
+    .bar{position:fixed;left:0;right:0;bottom:0;padding:14px clamp(16px,3vw,24px);padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));
+      display:flex;justify-content:center;background:var(--bar);border-top:1px solid var(--sep);
+      -webkit-backdrop-filter:saturate(180%) blur(20px);backdrop-filter:saturate(180%) blur(20px)}
+    .bar .inner{width:100%;max-width:720px;display:flex;gap:10px;align-items:center}
+    #msg{font-size:13px;color:var(--label-2);font-weight:500}
   </style>
 </head>
 <body>
+  <div class="top">
+    <div class="brand"><span class="dot"></span>Orrin <small>Settings</small></div>
+    <div class="spacer"></div>
+    <a class="back" href="/">← Dashboard</a>
+  </div>
   <div class="wrap">
-    <div class="top">
-      <div class="brand"><span class="dot"></span>Orrin <small>Settings</small></div>
-      <div class="spacer"></div>
-      <a class="back" href="/">← Dashboard</a>
-    </div>
     <div class="cfgpath" id="cfgpath">…</div>
 
     <div class="card">
@@ -104,7 +115,7 @@
         </div>
         <div><label>Default engine</label>
           <select id="brain_default_engine"></select>
-          <small style="opacity:.6">Claude Code, Cursor, Aider, Gemini, Codex… — or "use Cursor for this project" by voice</small>
+          <small>Claude Code, Cursor, Aider, Gemini, Codex… — or "use Cursor for this project" by voice</small>
         </div>
       </div>
       <label class="chk"><input type="checkbox" id="brain_use_claude_config" /><span class="tog"></span><span class="lbl">Use my Claude config<small>MCP servers, subagents, skills, CLAUDE.md</small></span></label>
@@ -170,6 +181,17 @@
     <span id="msg"></span>
   </div></div>
 
+  <script>
+    /* drag the window from the empty toolbar (native, via the window's 'drag' message handler) */
+    (function () {
+      var t = document.querySelector(".top");
+      if (!t) return;
+      t.addEventListener("pointerdown", function (e) {
+        if (e.target.closest("a,button,input,select")) return;
+        try { window.webkit.messageHandlers.drag.postMessage("drag"); } catch (_) {}
+      });
+    })();
+  </script>
   <script>
     try { var v = localStorage.getItem('orrin-variant'); if (v) document.documentElement.setAttribute('data-v', v); } catch (e) {}
     const $ = (id) => document.getElementById(id);
