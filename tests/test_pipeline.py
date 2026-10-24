@@ -1559,6 +1559,94 @@ def test_targeted_turn_routing(monkeypatch):
     asyncio.run(run())
 
 
+# ---- Local intent router (direct Mac actions, no engine round-trip) --------
+def test_parse_duration():
+    from otto.local_actions import parse_duration
+    assert parse_duration("set a timer for 5 minutes") == 300
+    assert parse_duration("1 hour 30 minutes") == 5400
+    assert parse_duration("30 seconds") == 30
+    assert parse_duration("half an hour") == 1800
+    assert parse_duration("remind me to stretch") is None
+
+
+def test_local_actions_match(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    from otto.local_actions import LocalActions
+    la = LocalActions(Orchestrator(load_settings(), EventBus()))
+    assert la.match("what time is it").category == "info"
+    assert la.match("set a timer for 5 minutes").category == "timers"
+    assert la.match("remind me in 10 minutes to stretch").category == "timers"
+    assert la.match("mute").category == "media"
+    assert la.match("set volume to 30%").category == "media"
+    m = la.match("empty the trash")
+    assert m.category == "system" and m.consequential is True
+    assert la.match("open spotify").category == "apps"          # resolved via alias, no filesystem
+    assert la.match("open the pull request") is None            # not an installed app → engine
+    assert la.match("write a function to parse json") is None   # real work → engine
+
+
+def test_local_router_routes_action_not_brain(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.local_actions import ActionMatch
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ran = {}
+        async def fake_exec(): ran["exec"] = True; return "done"
+        class FakeLA:
+            def match(self, text):
+                return ActionMatch(fake_exec, "do the thing", "system") if "the thing" in text else None
+        orch.local_actions = FakeLA()
+        handled = []
+        async def fake_handle(text, **k): handled.append(text)
+        orch._handle_turn = fake_handle
+
+        orch.submit_user_input("do the thing")       # matched → local, no brain
+        await asyncio.sleep(0.05)
+        assert ran.get("exec") is True and handled == []
+
+        orch.submit_user_input("write a function to sort a list")   # unmatched → brain
+        await asyncio.sleep(0.05)
+        assert handled == ["write a function to sort a list"]
+    asyncio.run(run())
+
+
+def test_local_router_confirms_consequential(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.local_actions import ActionMatch
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        ran = {}
+        async def fake_exec(): ran["exec"] = True; return "boom"
+        async def deny(action): ran["asked"] = action; return False
+        orch.confirm = deny
+        m = ActionMatch(fake_exec, "empty the Trash", "system", consequential=True)
+        await orch._run_local_action("empty the trash", m)
+        assert ran.get("asked") == "empty the Trash" and "exec" not in ran   # declined → not run
+    asyncio.run(run())
+
+
+def test_local_router_disabled_falls_through(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.local_actions import ActionMatch
+        orch = Orchestrator(load_settings(), EventBus())
+        orch.settings.voice.local_router = False
+        orch._loop = asyncio.get_running_loop()
+        async def boom_exec(): raise AssertionError("executor must not run when router is off")
+        class FakeLA:
+            def match(self, text): return ActionMatch(boom_exec, "x", "system")
+        orch.local_actions = FakeLA()
+        handled = []
+        async def fake_handle(text, **k): handled.append(text)
+        orch._handle_turn = fake_handle
+        orch.submit_user_input("do the thing")
+        await asyncio.sleep(0.05)
+        assert handled == ["do the thing"]   # router off → straight to the brain
+    asyncio.run(run())
+
+
 # ---- First-run permissions + preflight health check -----------------------
 def test_preflight_check_microphone_statuses(monkeypatch):
     from otto import preflight

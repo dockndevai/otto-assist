@@ -325,6 +325,16 @@ class VoiceConfig(BaseModel):
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
+    # Local intent router: handle simple Mac actions (open/quit apps, timers/alarms/reminders,
+    # media + volume, lock/sleep, screenshot, time/date) DIRECTLY on the machine — no Claude/Cursor
+    # round-trip — for speed. Anything it doesn't recognize falls through to the engine unchanged.
+    local_router: bool = True
+    # Require a spoken confirm before a consequential local action (force-quit, empty Trash,
+    # restart, shut down). Keep on.
+    confirm_consequential: bool = True
+    # Which local-action categories the router may handle. Drop one to send those to the engine.
+    actions_enabled: list[str] = Field(
+        default_factory=lambda: ["apps", "timers", "media", "system", "info"])
     # On app open, if you don't say anything within a few seconds, Orrin greets you and gives a
     # short spoken briefing (last session recap + anything pending + one suggestion). Cancelled
     # the moment you speak or type. Fires once per launch, only for the focused project.
