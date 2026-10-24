@@ -47,3 +47,5 @@ rec/
 
 # Local promo drafts (not for the public repo)
 promo/
+# Swift native audio helper build output
+native/orrin-audio/.build/

@@ -303,6 +303,7 @@ class Orchestrator:
         self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
         self.ears = None        # set in start() if voice input enabled
+        self._native_audio = False   # native AEC front-end active → full-duplex (no mic muting)
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
         self._eff = None        # EfficientWord-Net custom wake-word listener
@@ -600,7 +601,10 @@ class Orchestrator:
         """Should the mic stay LIVE while Orrin speaks (so voice "stop" cuts in mid-sentence)?
         True if barge-in is forced on, OR auto-barge-in is enabled AND the output route is
         acoustically safe (headphones/AirPods/external — the mic can't hear Orrin). On the
-        built-in speakers this returns False, so we stay half-duplex and never loop (#56)."""
+        built-in speakers this returns False, so we stay half-duplex and never loop (#56).
+        The native AEC front-end cancels Orrin's own voice acoustically, so it's always safe."""
+        if self._native_audio:
+            return True
         stt = self.settings.voice.stt
         if stt.barge_in:
             return True
@@ -1512,8 +1516,20 @@ class Orchestrator:
             return
         v = self.settings.voice
         try:
-            from .voice.stt import Ears
-            self.ears = Ears(
+            # Native AEC front-end (opt-in) if its helper is built; else RealtimeSTT.
+            EarsClass = None
+            if getattr(v.stt, "native_audio", False):
+                from .voice.native_ears import NativeEars
+                if NativeEars.available():
+                    EarsClass = NativeEars
+                    self._native_audio = True
+                else:
+                    print("[otto] native_audio on but orrin-audio helper not found — using RealtimeSTT",
+                          file=sys.stderr, flush=True)
+            if EarsClass is None:
+                from .voice.stt import Ears
+                EarsClass = Ears
+            self.ears = EarsClass(
                 self.settings, self._loop,
                 on_final=self._on_voice_final,
                 on_partial=lambda t: self.bus.transcript("user", t, final=False),

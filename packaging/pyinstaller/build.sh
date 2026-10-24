@@ -71,6 +71,15 @@ except md.PackageNotFoundError:
         print("   aliased ->", dst.name)
 PY
 
+echo "==> Building native audio helper (orrin-audio, Bundle B)"
+if command -v swift >/dev/null 2>&1; then
+  ( cd native/orrin-audio && swift build -c release ) \
+    && echo "    Built orrin-audio" \
+    || echo "    WARNING: orrin-audio build failed — packaged app falls back to RealtimeSTT"
+else
+  echo "    swift not found — skipping native audio helper (RealtimeSTT fallback)"
+fi
+
 echo "==> Building Orrin.app"
 rm -rf build dist
 .venv/bin/pyinstaller packaging/pyinstaller/orrin.spec --noconfirm
