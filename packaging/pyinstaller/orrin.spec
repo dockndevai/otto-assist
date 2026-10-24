@@ -68,7 +68,9 @@ except Exception as e:
 # Native audio helper (Bundle B): bundle the compiled orrin-audio at the bundle root so
 # helper_binary_path() (otto/voice/native_ears.py) finds it via sys._MEIPASS. build.sh compiles it;
 # build.sh's inside-out codesign pass signs it like every other Mach-O.
-_orrin_audio = os.path.join("native", "orrin-audio", ".build", "release", "orrin-audio")
+# Absolute (ROOT-relative): a bare relative path makes PyInstaller look under SPECPATH
+# (packaging/pyinstaller/) at copy time and fail, even though os.path.exists() passed from the repo root.
+_orrin_audio = os.path.join(ROOT, "native", "orrin-audio", ".build", "release", "orrin-audio")
 if os.path.exists(_orrin_audio):
     binaries.append((_orrin_audio, "."))
     print(f"[orrin.spec] bundled native audio helper: {_orrin_audio}")
