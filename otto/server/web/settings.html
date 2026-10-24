@@ -102,6 +102,10 @@
             <option value="deny">deny — reject actions</option>
           </select>
         </div>
+        <div><label>Default engine</label>
+          <select id="brain_default_engine"></select>
+          <small style="opacity:.6">Claude Code, Cursor, Aider, Gemini, Codex… — or "use Cursor for this project" by voice</small>
+        </div>
       </div>
       <label class="chk"><input type="checkbox" id="brain_use_claude_config" /><span class="tog"></span><span class="lbl">Use my Claude config<small>MCP servers, subagents, skills, CLAUDE.md</small></span></label>
       <label class="chk"><input type="checkbox" id="brain_computer_use" /><span class="tog"></span><span class="lbl">Desktop control<small>screenshots, click & type via mac-control</small></span></label>
@@ -183,6 +187,16 @@
       $('brain_computer_use').checked = b.computer_use !== false;
       $('brain_continue').checked = b.continue_conversation !== false;
       $('brain_register_mcp').checked = b.register_mcp !== false;
+      try {
+        const er = await (await fetch('/api/engines')).json();
+        const eng = $('brain_default_engine'); eng.innerHTML = '';
+        (er.engines || [{ key: 'claude', label: 'Claude Code', ready: true }]).forEach(e => {
+          const o = document.createElement('option');
+          o.value = e.key; o.textContent = (e.label || e.key) + (e.ready ? '' : ' (not installed)');
+          eng.appendChild(o);
+        });
+        eng.value = b.default_engine || er.default || 'claude';
+      } catch (e) {}
       $('voice_input').checked = v.input_enabled !== false;
       $('voice_output').checked = v.output_enabled !== false;
       $('voice_language').value = v.language || 'en';
@@ -225,6 +239,7 @@
       cfg.brain = Object.assign(cfg.brain || {}, {
         model: $('brain_model').value.trim(),
         permission: $('brain_permission').value,
+        default_engine: $('brain_default_engine').value,
         use_claude_config: $('brain_use_claude_config').checked,
         computer_use: $('brain_computer_use').checked,
         continue_conversation: $('brain_continue').checked,

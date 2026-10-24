@@ -352,10 +352,27 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
     @app.get("/api/workspaces")
     async def get_workspaces() -> JSONResponse:
         items = [{"project": ws.project, "name": ws.name, "state": ws.state,
-                  "focused": ws.project == orch.focused, "session_id": ws.session_id}
+                  "focused": ws.project == orch.focused, "session_id": ws.session_id,
+                  "engine": getattr(ws, "engine", ""),
+                  "engine_label": orch._engine_label(getattr(ws, "engine", ""))}
                  for ws in orch.workspaces.values()]
         return JSONResponse({"workspaces": items, "focused": orch.focused,
                              "max": orch.max_workspaces})
+
+    @app.get("/api/engines")
+    async def get_engines() -> JSONResponse:
+        """Live list of configured execution backends (so the Settings dropdown shows the built-ins
+        even before they're written to config.yaml), each flagged ready if its command is on PATH."""
+        import shutil
+        out = []
+        for key, prof in (orch.settings.brain.agents or {}).items():
+            ready = True
+            if getattr(prof, "kind", "sdk") == "cli":
+                ready = any(shutil.which(c.strip())
+                            for c in str(getattr(prof, "command", "")).split(",") if c.strip())
+            out.append({"key": key, "label": getattr(prof, "label", "") or key,
+                        "kind": getattr(prof, "kind", "sdk"), "ready": ready})
+        return JSONResponse({"engines": out, "default": orch.settings.brain.default_engine})
 
     @app.post("/api/workspace/open")
     async def open_workspace(payload: dict) -> JSONResponse:

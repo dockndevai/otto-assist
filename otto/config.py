@@ -74,8 +74,59 @@ class ServerConfig(BaseModel):
         return self.host
 
 
+class AgentProfile(BaseModel):
+    """One execution backend. `kind="sdk"` is the in-process Claude Agent SDK (the rich default);
+    `kind="cli"` is any headless command-line agent (Cursor, Aider, Gemini, Codex, opencode, …),
+    driven as a subprocess per turn. Everything a CLI backend needs is data here, so a new tool is
+    added by editing config — no code. argv placeholders: {prompt} {cwd} {session}."""
+    kind: Literal["sdk", "cli"] = "cli"
+    label: str = ""                                 # display name (UI badge); defaults to the key
+    command: str = ""                               # cli: executable (first found on PATH wins if ","-listed)
+    args: list[str] = Field(default_factory=list)   # cli: argv template, with {prompt}/{cwd}/{session}
+    prompt_via: Literal["arg", "stdin"] = "arg"     # pass the prompt as an argv token or on stdin
+    output_format: Literal["stream-json", "text"] = "text"
+    resume_args: list[str] = Field(default_factory=list)   # added when resuming, e.g. ["--resume","{session}"]
+    session_arg: list[str] = Field(default_factory=list)   # pass a minted session id, e.g. ["--session-id","{session}"]
+    # How to learn the session/chat id: "auto" = scan stream-json for common keys; "generate" = mint a
+    # UUID (and pass it via session_arg); "" = no resume.
+    session_from: str = "auto"
+    autonomy_args: list[str] = Field(default_factory=list)  # extra args ONLY under write-mode/bypass (never by default)
+    env: dict[str, str] = Field(default_factory=dict)
+    ready_cmd: str = ""                             # "" → just check `command` on PATH
+
+
+def _default_agents() -> dict[str, "AgentProfile"]:
+    """Built-in backends. Flags are best-known defaults — tune per your installed version in config;
+    the adapter is generic, so only the data below changes. Kept in SAFE mode (no auto-approve)."""
+    return {
+        "claude": AgentProfile(kind="sdk", label="Claude Code"),
+        "cursor": AgentProfile(
+            kind="cli", label="Cursor", command="cursor-agent,agent",
+            args=["-p", "{prompt}", "--output-format", "stream-json"],
+            output_format="stream-json", resume_args=["--resume", "{session}"],
+            session_from="auto", autonomy_args=["--force"]),
+        "aider": AgentProfile(
+            kind="cli", label="Aider", command="aider",
+            args=["--message", "{prompt}", "--no-auto-commits", "--no-stream"],
+            output_format="text", session_from="", autonomy_args=["--yes-always"]),
+        "gemini": AgentProfile(
+            kind="cli", label="Gemini CLI", command="gemini",
+            args=["-p", "{prompt}"], output_format="text", session_from=""),
+        "codex": AgentProfile(
+            kind="cli", label="Codex", command="codex",
+            args=["exec", "{prompt}"], output_format="text", session_from="",
+            autonomy_args=["--dangerously-bypass-approvals-and-sandbox"]),
+    }
+
+
 class BrainConfig(BaseModel):
-    type: Literal["claude"] = "claude"          # pluggable brain; only Claude for now
+    type: Literal["claude"] = "claude"          # vestigial; superseded by default_engine/agents
+    # Engine-agnostic backends. `default_engine` picks the global backend; `engines` overrides it per
+    # project path (mirrors `sessions`); `agents` is the registry of available backends (see
+    # AgentProfile). Any Workspace can run a different engine, concurrently.
+    default_engine: str = "claude"
+    engines: dict[str, str] = Field(default_factory=dict)       # project path -> engine key
+    agents: dict[str, AgentProfile] = Field(default_factory=_default_agents)
     model: str = ""                             # "" -> use Claude's default model
     # Session access level — how Otto handles Claude's permission prompts for consequential tools.
     # Change it in the dashboard (Settings → Session access level). Default is full access so a

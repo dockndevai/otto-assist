@@ -1692,15 +1692,23 @@ class Orchestrator:
         for ws in list(self.workspaces.values()):
             await ws.brain.disconnect()
 
+    def _engine_label(self, engine: str) -> str:
+        prof = getattr(self.settings.brain, "agents", {}).get(engine)
+        return (getattr(prof, "label", "") or engine or "").strip()
+
     def _publish_project(self) -> None:
+        eng = getattr(self.focused_ws, "engine", "") if self.workspaces else ""
         self.bus.publish({"type": "project", "path": self.current_project,
-                          "name": self.current_project.rstrip("/").split("/")[-1]})
+                          "name": self.current_project.rstrip("/").split("/")[-1],
+                          "engine": eng, "engine_label": self._engine_label(eng)})
         self._publish_workspaces()
 
     def _publish_workspaces(self) -> None:
         """Broadcast the live pool so the dashboard can show every workspace + its state."""
         items = [{"project": ws.project, "name": ws.name, "state": ws.state,
                   "focused": ws.project == self.focused,
+                  "engine": getattr(ws, "engine", ""),
+                  "engine_label": self._engine_label(getattr(ws, "engine", "")),
                   "session_id": ws.session_id}
                  for ws in self.workspaces.values()]
         self.bus.publish({"type": "workspaces", "items": items,
@@ -1999,6 +2007,68 @@ class Orchestrator:
         self._loop.create_task(self.clone_workspace(m.group("url"), m.group("branch")))
         return True
 
+    # "use cursor (for this project)", "switch to aider", "run this with claude", "set engine to gemini"
+    _RE_USE_ENGINE = re.compile(
+        r"^(?:use|switch to|run (?:this|it)\s+(?:with|on|using)|set\s+(?:the\s+)?engine\s+to)\s+"
+        r"(?P<engine>[\w .+-]+?)(?:\s+(?:for|on|in)\s+this(?:\s+project)?)?\.?$", re.I)
+
+    def _resolve_engine_name(self, raw: str) -> str | None:
+        """Map spoken text ('cursor', 'gemini cli', 'claude code') to a configured engine key, or
+        None if it isn't a known engine (so 'use pytest' falls through to the brain)."""
+        q = re.sub(r"\s+", " ", (raw or "").strip().lower()).strip(" .")
+        if not q:
+            return None
+        agents = getattr(self.settings.brain, "agents", {}) or {}
+        for key, prof in agents.items():
+            if q == key.lower() or q == (getattr(prof, "label", "") or "").lower():
+                return key
+        for key, prof in agents.items():
+            lbl = (getattr(prof, "label", "") or "").lower()
+            if q in key.lower() or (lbl and q in lbl) or key.lower() in q:
+                return key
+        return None
+
+    def _maybe_engine_command(self, text: str) -> bool:
+        """If `text` asks to switch the execution engine for the focused project, do it."""
+        m = self._RE_USE_ENGINE.match(text.strip())
+        if not m:
+            return False
+        name = self._resolve_engine_name(m.group("engine"))
+        if not name:
+            return False       # not a known engine — let the brain handle the sentence
+        assert self._loop is not None
+        self.bus.transcript("user", text, final=True)
+        self._loop.create_task(self._set_engine(name))
+        return True
+
+    def _persist_engine(self, project: str, engine: str) -> None:
+        import yaml
+        from .config import config_path
+        cfg_file = config_path()
+        data = yaml.safe_load(cfg_file.read_text()) if cfg_file.exists() else {}
+        data = data or {}
+        data.setdefault("brain", {}).setdefault("engines", {})[project] = engine
+        save_config(data)
+
+    async def _set_engine(self, name: str) -> None:
+        """Point the focused project at engine `name` — persist it, rebind the live workspace to a
+        fresh session on the new tool, and confirm."""
+        proj = self.focused
+        self.settings.brain.engines[proj] = name
+        self._persist_engine(proj, name)
+        label = self._engine_label(name)
+        ws = self.workspaces.get(proj)
+        if ws is not None:
+            ws.engine = name
+            try:
+                await ws.rebind(self.settings, new_chat=True)   # different tool → fresh session
+            except Exception as e:
+                print(f"[otto] engine rebind failed: {e!r}", file=sys.stderr, flush=True)
+        self._publish_project()
+        msg = f"Okay — using {label} for {proj.rstrip('/').split('/')[-1]} now."
+        self.bus.transcript("assistant", msg, final=True)
+        self._voice_out(msg)
+
     def _maybe_chat_command(self, text: str) -> bool:
         """If `text` is a chat command, act on it and return True (input consumed)."""
         assert self._loop is not None
@@ -2236,6 +2306,9 @@ class Orchestrator:
         # Chat control ("switch to X chat", "start a new chat", "rename this chat to X").
         # Handled here — before the brain turn — because switching rebuilds the brain.
         if self._maybe_chat_command(text):
+            return
+        # "use cursor / switch to aider / run this with claude" — change the focused project's engine.
+        if self._maybe_engine_command(text):
             return
         # "clone <url>" — Otto sets up a new code space (clone → open as a workspace).
         if self._maybe_clone_command(text):
