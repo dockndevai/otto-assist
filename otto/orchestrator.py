@@ -103,9 +103,8 @@ def _claude_logged_in() -> bool | None:
 
 _SPEAK_CODEBLOCK = re.compile(r"```.*?```", re.S)
 
-# Fallback for Orchestrator._destructive_ok when laya's smart_gate isn't available (it's been
-# removed, so this is the normal production path) — a plain keyword match standing in for a real
-# destructive-intent score.
+# Keyword match for Orchestrator._destructive_ok — flags a destructive/irreversible command so the
+# guard can ask for a spoken confirm (under permission='bypass').
 _DESTRUCTIVE_TEXT_RE = re.compile(
     r"\b(delete|remove|erase|wipe|destroy|drop|truncate|format|factory reset|reset|uninstall|"
     r"force[- ]?push|rm\s+-\w*[rf]|shut\s*down|unsubscribe|revoke)\b", re.IGNORECASE)
@@ -300,7 +299,6 @@ class Orchestrator:
         self._held_hands_free = False    # mode to re-dispatch a held turn with
         self._hold_started = 0.0         # when the current held turn began (max-hold cap)
         self.local_actions = None  # local intent router (direct Mac actions); created in start()
-        self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
         self.ears = None        # set in start() if voice input enabled
         self._native_audio = False   # native AEC front-end active → full-duplex (no mic muting)
@@ -743,10 +741,10 @@ class Orchestrator:
             self.local_actions = LocalActions(self)
         except Exception as e:
             print(f"[otto] local actions init failed: {e!r}", file=sys.stderr, flush=True)
-        # laya (the local typed-decision model) has been removed: its ~2.2 GB model was the biggest
-        # memory hog and it dropped genuine conversational commands as "ambient". `self.smart_gate`
-        # stays None, so the (guarded) gate branches downstream are permanently inert — hands-free
-        # filtering now rests on speaker verification + the cheap noise heuristic.
+        # laya (the local typed-decision model) was removed: its ~2.2 GB model was the biggest
+        # memory hog and it dropped genuine conversational commands as "ambient". Hands-free
+        # filtering now rests on speaker verification + the cheap noise heuristic, with the cloud
+        # "is this a real command?" verify (hands_free_verify) for ambiguous utterances.
         v = self.settings.voice
         # Speaker verification ("whose voice?") — loads the x-vector model in the background when
         # enabled. Supports MULTIPLE enrolled voices (family/shared machine). Fail-open until ready.
@@ -3012,31 +3010,19 @@ class Orchestrator:
         # genuine chained follow-ups (it dropped "close the calculator" as ambient). Keeps the gate
         # only for ambiguous/declarative input, so room chatter is still filtered.
         from .voice.noise import looks_like_command, looks_like_question
-        # Hands-free semantic gate for ambiguous input. Obvious commands ("open chrome") AND clear
-        # questions ("what's the weather", "otto …?") skip it and stay instant — the laya gate only
-        # sees the ambiguous middle (declarative/ambient-shaped speech), where it drops room/TV/
-        # side-talk. Prefer the fast LOCAL laya gate when ready; else the Haiku verify (if enabled).
-        laya_ready = self.smart_gate is not None and self.smart_gate.ready
-        smart_ready = bool(getattr(stt, "smart_gate", False) and laya_ready)
-        # A follow-up window (right after Orrin replied) no longer BYPASSES the gate — that opened a
-        # long, unfiltered window that ran the whole room as commands. Instead it RELAXES the
-        # threshold in _dispatch_async, so a genuine conversational follow-up still passes while
-        # clear ambient is still dropped.
+        # Hands-free content gate for ambiguous input. Obvious commands ("open chrome") AND clear
+        # questions ("what's the weather", "otto …?") skip it and stay instant — the gate only sees
+        # the ambiguous middle (declarative/ambient-shaped speech). For that middle, the cloud
+        # "is this a real command?" verify (hands_free_verify) drops room/TV/side-talk.
         ambiguous = (hands_free and not deliberate
                      and not looks_like_command(text) and not looks_like_question(text))
-        use_laya = ambiguous and smart_ready
-        # If the addressing gate isn't active, still verify ambiguous hands-free input: locally via
-        # laya when present (offline, ~50 ms), else the cloud Haiku verify (if enabled).
-        local_verify = bool(ambiguous and not smart_ready and laya_ready
-                            and getattr(stt, "local_command_verify", True))
-        need_verify = ambiguous and not smart_ready and not local_verify and stt.hands_free_verify
+        need_verify = bool(ambiguous and stt.hands_free_verify)
         # Speaker verification runs on the whole hands-free path (even obvious commands — a colleague
         # can say "open chrome" too), before the content gate. Only when enrolled + model ready.
         spk_ready = bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
                          and self.speaker.ready and self.speaker.has_voiceprint)
         need_speaker = spk_ready and hands_free and not deliberate
-        need_gate = use_laya or local_verify or need_verify or need_speaker
-        follow_up = bool(self._follow_up_active)
+        need_gate = need_verify or need_speaker
         # Intent first: react like a person, not a switch. Chit-chat ("hey", "how are you",
         # "thanks") gets a warm INSTANT reply right here — no Claude round-trip, no "On it." —
         # then a short hands-free window so you can keep talking. A question or an action flows
@@ -3071,8 +3057,7 @@ class Orchestrator:
             return
         if self._loop is not None:
             self._loop.create_task(self._dispatch_async(
-                text, need_gate, intent, use_laya, local_verify, follow_up, need_speaker,
-                need_verify))
+                text, need_gate, intent, need_speaker, need_verify))
         else:
             self.submit_user_input(text)
 
@@ -3086,9 +3071,8 @@ class Orchestrator:
         return to_float32_mono(pcm), int(getattr(ears, "sample_rate", 16000))
 
     async def _dispatch_async(self, text: str, gate: bool = False,
-                              intent: str = "command", use_laya: bool = False,
-                              local_verify: bool = False, follow_up: bool = False,
-                              need_speaker: bool = False, need_verify: bool = False) -> None:
+                              intent: str = "command", need_speaker: bool = False,
+                              need_verify: bool = False) -> None:
         if gate:
             stt = self.settings.voice.stt
             # Speaker gate FIRST: match to the closest enrolled voice; accept only a registered
@@ -3110,34 +3094,11 @@ class Orchestrator:
                               file=sys.stderr, flush=True)
                         if not ok:
                             return
-            if use_laya and self.smart_gate is not None:
-                try:
-                    score = await self._loop.run_in_executor(None, self.smart_gate.score, text)
-                except Exception:
-                    score = None
-                # In a follow-up window use the lower bar (drop only clear ambient); otherwise the
-                # stricter addressing threshold.
-                thr = float(getattr(stt, "follow_up_threshold", 0.30) if follow_up
-                            else getattr(stt, "smart_gate_threshold", 0.55))
-                if score is not None and score < thr:
-                    print(f"[otto] smart-gate dropped ambient (p={score:.2f}<{thr:.2f}): {text!r}",
-                          file=sys.stderr, flush=True)
-                    return
-            elif local_verify and self.smart_gate is not None:
-                try:
-                    p = await self._loop.run_in_executor(
-                        None, self.smart_gate.is_real_command, text)
-                except Exception:
-                    p = None
-                if p is not None and p < 0.30:      # conservative: drop only clear non-commands
-                    print(f"[otto] local verify dropped (p={p:.2f}): {text!r}",
-                          file=sys.stderr, flush=True)
-                    return
-            elif need_verify:
+            if need_verify:
                 # Cloud "is this a real command?" verify — ONLY when hands_free_verify is explicitly
-                # on (and the utterance was ambiguous). With laya removed and verify off, there is no
-                # content gate: speaker-ID + the is_noise heuristic are the only filters, so genuine
-                # commands are never dropped here.
+                # on (and the utterance was ambiguous). With verify off, there is no content gate:
+                # speaker-ID + the is_noise heuristic are the only filters, so genuine commands are
+                # never dropped here.
                 try:
                     from .voice.noise import is_real_command
                     if not await is_real_command(
@@ -3398,21 +3359,19 @@ class Orchestrator:
     # -- the turn ----------------------------------------------------------
     async def _run_user_turn(self, ws: "Workspace", text: str, *, echo_user: bool = True,
                              background: bool = False, lane_tag: str | None = None) -> None:
-        """Run a turn for a command a HUMAN just gave, applying the shared human-input guards in one
-        place: a destructive-action confirm (even under bypass) and auto-fresh-context on a clear
-        topic change, then record last_command. `lane_tag` emits the user line to a background lane
-        (the parallel workspace) since `echo_user=False` suppresses the normal echo.
+        """Run a turn for a command a HUMAN just gave, applying the shared human-input guard in one
+        place: a destructive-action confirm (even under bypass), then record last_command.
+        `lane_tag` emits the user line to a background lane (the parallel workspace) since
+        `echo_user=False` suppresses the normal echo.
 
         A `background=True` lane (the parallel "meanwhile" workspace) can't own the voice or the
-        single shared pending-answer slot, so it skips the interactive guards — a spoken confirm
+        single shared pending-answer slot, so it skips the interactive guard — a spoken confirm
         there would race the focused turn's prompt — and runs the command directly; the focused
-        turn keeps full guarding. Both guards also degrade to a no-op when laya isn't ready.
-        Internal/autonomous prompts (research, roadmap, the teammate) deliberately stay on the raw
-        `_run_turn` so they're never gated."""
+        turn keeps full guarding. Internal/autonomous prompts (research, roadmap, the teammate)
+        deliberately stay on the raw `_run_turn` so they're never gated."""
         if not background:
             if not await self._destructive_ok(text):
                 return                               # user declined a destructive-looking command
-            await self._maybe_fresh_context(ws, text)    # topic change → new chat before the turn
         if lane_tag is not None:
             self.bus.transcript("user", text, final=True, ws=lane_tag)
         ws.last_command = text
@@ -3423,57 +3382,23 @@ class Orchestrator:
         await self._run_user_turn(self.focused_ws, text, echo_user=echo_user)
 
     async def _destructive_ok(self, text: str) -> bool:
-        """Under permission='bypass', flag a command that looks destructive/irreversible and, if
-        so, require a spoken confirm. Prefers laya's smart_gate when it's ready; laya has been
-        removed so smart_gate is permanently None in production — falls back to a plain keyword
-        match so this guard (forced on for remote+bypass users, see server/app.py) isn't a silent
-        no-op. Returns True to proceed, False if the user declined."""
+        """Under permission='bypass', flag a command that looks destructive/irreversible by a plain
+        keyword match and, if so, require a spoken confirm — so this guard (forced on for
+        remote+bypass users, see server/app.py) isn't a silent no-op. Returns True to proceed,
+        False if the user declined."""
         v = self.settings.voice
         if not (getattr(v, "destructive_guard", False)
                 and self.settings.brain.permission == "bypass" and self._loop is not None):
             return True
-        source = "laya"
-        if self.smart_gate is not None and self.smart_gate.ready:
-            try:
-                p = await self._loop.run_in_executor(None, self.smart_gate.is_destructive, text)
-            except Exception:
-                p = None
-            if p is None or p < 0.55:
-                return True
-            detail = f"p={p:.2f}"
-        else:
-            if not _DESTRUCTIVE_TEXT_RE.search(text):
-                return True
-            source, detail = "keyword fallback", "no laya"
-        print(f"[otto] destructive guard ({source}, {detail}) — confirming: {text!r}",
+        if not _DESTRUCTIVE_TEXT_RE.search(text):
+            return True
+        print(f"[otto] destructive guard (keyword match) — confirming: {text!r}",
               file=sys.stderr, flush=True)
         ok = await self.confirm(f"That sounds destructive — {text}. Should I go ahead?")
         if not ok:
             self.bus.transcript("assistant", "Okay, I won't do that.", final=True)
             self._voice_out("Okay, I won't do that.")
         return ok
-
-    async def _maybe_fresh_context(self, ws: Workspace, text: str) -> None:
-        """If this command clearly starts a NEW topic (laya says it doesn't continue the current
-        one), rebind the focused workspace to a fresh chat so a stale thread can't bleed into the
-        answer. Durable memory is re-injected on the new chat's first turn."""
-        v = self.settings.voice
-        if not (getattr(v, "auto_fresh_context", False) and self.smart_gate is not None
-                and self.smart_gate.ready and self._loop is not None
-                and getattr(ws, "last_command", "") and ws.session_id):
-            return
-        try:
-            cont = await self._loop.run_in_executor(
-                None, self.smart_gate.is_continuation, text, ws.last_command)
-        except Exception:
-            cont = None
-        if cont is not None and cont < 0.35:
-            print(f"[otto] topic change (cont={cont:.2f}) — fresh context for: {text!r}",
-                  file=sys.stderr, flush=True)
-            try:
-                await ws.rebind(self.settings, new_chat=True)
-            except Exception as e:
-                print(f"[otto] fresh-context rebind failed: {e!r}", file=sys.stderr, flush=True)
 
     async def _run_turn(self, ws: Workspace, text: str, *, echo_user: bool = True,
                         research: bool = False, background: bool = False) -> None:

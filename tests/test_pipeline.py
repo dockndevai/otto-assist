@@ -3065,8 +3065,8 @@ def test_echo_blocking_relaxes_cooldown_when_speaker_enrolled():
 
 
 def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
-    """Regression: with speaker-ID ON but laya removed and hands_free_verify OFF, a recognized
-    speaker's command must NOT be dropped by the (now-guarded) cloud 'is this a command?' verify."""
+    """Regression: with speaker-ID ON but hands_free_verify OFF, a recognized speaker's command
+    must NOT be dropped by the (now-guarded) cloud 'is this a command?' verify."""
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
@@ -3075,7 +3075,6 @@ def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
         st.hands_free_verify = False          # no cloud verify requested
         st.refine = False
         st.speaker_verify = True
-        orch.smart_gate = None                # laya removed
         class FakeSpeaker:
             ready = True; has_voiceprint = True
             def match(self, audio, sr): return ("ankit", 0.9)
@@ -3503,23 +3502,21 @@ def test_run_user_turn_skips_interactive_guards_in_background():
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
-        calls = {"destructive": 0, "fresh": 0, "turn": []}
+        calls = {"destructive": 0, "turn": []}
         async def fake_destructive(text): calls["destructive"] += 1; return True
-        async def fake_fresh(ws, text): calls["fresh"] += 1
         async def fake_run_turn(ws, text, *, echo_user=True, research=False, background=False):
             calls["turn"].append((text, background))
         orch._destructive_ok = fake_destructive
-        orch._maybe_fresh_context = fake_fresh
         orch._run_turn = fake_run_turn
 
-        # foreground turn → full guards, then run (not backgrounded)
+        # foreground turn → full guard, then run (not backgrounded)
         await orch._run_user_turn(orch.focused_ws, "delete everything")
-        assert calls["destructive"] == 1 and calls["fresh"] == 1
+        assert calls["destructive"] == 1
         assert calls["turn"][-1] == ("delete everything", False)
 
-        # background lane → guards skipped (no racing confirm); the turn still runs, silently
+        # background lane → guard skipped (no racing confirm); the turn still runs, silently
         await orch._run_user_turn(orch.focused_ws, "rm -rf build", background=True)
-        assert calls["destructive"] == 1 and calls["fresh"] == 1   # unchanged — not re-invoked
+        assert calls["destructive"] == 1   # unchanged — not re-invoked
         assert calls["turn"][-1] == ("rm -rf build", True)
     asyncio.run(run())
 
@@ -3592,98 +3589,16 @@ def test_parallel_turn_runs_concurrently_with_focused():
     asyncio.run(run())
 
 
-# -- laya typed decisions: smart-gate, follow-up threshold, guards -------------
-
-class _FakeGate:
-    """Stand-in for SmartGate with canned typed-decision scores (no laya model needed)."""
-    def __init__(self, *, ready=True, score=1.0, real=1.0, destructive=0.0, continuation=1.0):
-        self.ready = ready
-        self._score, self._real, self._destructive, self._cont = (
-            score, real, destructive, continuation)
-        self.calls = []
-    def score(self, text): self.calls.append(("score", text)); return self._score
-    def is_real_command(self, text): self.calls.append(("real", text)); return self._real
-    def is_destructive(self, text): self.calls.append(("destr", text)); return self._destructive
-    def is_continuation(self, text, topic):
-        self.calls.append(("cont", text, topic)); return self._cont
-
-
-
-def test_dispatch_followup_relaxes_gate_threshold():
-    """A follow-up window no longer bypasses the gate — it lowers the bar: the same ambient-ish
-    utterance is dropped outside the window (0.32<0.55) but passes inside it (0.32>=0.30)."""
-    async def run():
-        orch = Orchestrator(load_settings(), EventBus())
-        orch._loop = asyncio.get_running_loop()
-        orch.smart_gate = _FakeGate(score=0.32)
-        st = orch.settings.voice.stt
-        st.smart_gate = True; st.smart_gate_threshold = 0.55; st.follow_up_threshold = 0.30
-        st.refine = False; orch._dictation = False
-        submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
-        orch._ack = lambda intent: None
-        await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=False)
-        assert submitted == []                          # stricter bar → dropped
-        await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=True)
-        assert submitted == ["ambient chatter"]         # relaxed bar → passes
-    asyncio.run(run())
-
-
-def test_dispatch_local_verify_drops_garbled_stt():
-    """When the addressing gate is off, the LOCAL laya command-verify drops clearly-garbled STT
-    (p<0.30) but lets a real command through — no cloud call."""
-    async def run():
-        orch = Orchestrator(load_settings(), EventBus())
-        orch._loop = asyncio.get_running_loop()
-        orch.settings.voice.stt.refine = False; orch._dictation = False
-        orch._ack = lambda intent: None
-        submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
-        orch.smart_gate = _FakeGate(real=0.1)
-        await orch._dispatch_async("the the uh xcode xcode", gate=True, local_verify=True)
-        assert submitted == []
-        orch.smart_gate = _FakeGate(real=0.9)
-        await orch._dispatch_async("open chrome", gate=True, local_verify=True)
-        assert submitted == ["open chrome"]
-    asyncio.run(run())
-
-
-def test_destructive_guard_confirms_and_can_cancel():
-    """Under permission='bypass', a destructive-looking command asks to confirm; 'no' cancels the
-    turn, 'yes' runs it."""
-    async def run():
-        orch = Orchestrator(load_settings(), EventBus())
-        orch._loop = asyncio.get_running_loop()
-        orch.smart_gate = _FakeGate(destructive=0.9)
-        orch.settings.voice.destructive_guard = True
-        orch.settings.voice.auto_fresh_context = False
-        orch.settings.brain.permission = "bypass"
-        orch._voice_out = lambda s: None
-        ran = []
-        async def fake_run_turn(ws, text, **k): ran.append(text)
-        orch._run_turn = fake_run_turn
-
-        async def deny(action): return False
-        orch.confirm = deny
-        await orch._handle_turn("delete all my branches")
-        assert ran == []                                # declined → nothing ran
-
-        async def allow(action): return True
-        orch.confirm = allow
-        await orch._handle_turn("delete all my branches")
-        assert ran == ["delete all my branches"]        # confirmed → ran
-    asyncio.run(run())
-
+# -- destructive-action guard --------------------------------------------------
 
 def test_destructive_guard_keyword_fallback_when_no_laya():
-    """Production has no laya: smart_gate stays None forever, so _destructive_ok must fall back to
-    the plain keyword/regex match rather than silently no-op'ing (the bug fixed in 50aeb40)."""
+    """Under permission='bypass', _destructive_ok flags destructive-looking commands by a plain
+    keyword/regex match and requires a spoken confirm, rather than silently no-op'ing (the bug
+    fixed in 50aeb40). 'no' cancels the turn, 'yes' runs it, non-matching text runs unprompted."""
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
-        orch.smart_gate = None
         orch.settings.voice.destructive_guard = True
-        orch.settings.voice.auto_fresh_context = False
         orch.settings.brain.permission = "bypass"
         orch._voice_out = lambda s: None
         ran = []
@@ -3702,36 +3617,6 @@ def test_destructive_guard_keyword_fallback_when_no_laya():
 
         await orch._handle_turn("what's the weather today")
         assert ran == ["delete all my branches", "what's the weather today"]  # no match → no confirm
-    asyncio.run(run())
-
-
-def test_auto_fresh_context_rebinds_on_topic_change():
-    """A clearly-unrelated command (laya continuation low) rebinds to a fresh chat before running;
-    a related follow-up does not."""
-    async def run():
-        orch = Orchestrator(load_settings(), EventBus())
-        orch._loop = asyncio.get_running_loop()
-        orch.settings.voice.auto_fresh_context = True
-        orch.settings.voice.destructive_guard = False
-        ws = orch.focused_ws
-        ws.last_command = "set the screensaver idle time"
-        ws.brain.session_id = "sess1"
-        rebinds = []
-        async def fake_rebind(settings, *, resume=None, new_chat=False): rebinds.append(new_chat)
-        ws.rebind = fake_rebind
-        ran = []
-        async def fake_run_turn(w, text, **k): ran.append(text)
-        orch._run_turn = fake_run_turn
-
-        orch.smart_gate = _FakeGate(continuation=0.1)   # unrelated topic
-        await orch._handle_turn("check if my disk has 100 gigs free")
-        assert rebinds == [True] and ran == ["check if my disk has 100 gigs free"]
-
-        orch.smart_gate = _FakeGate(continuation=0.9)   # a related follow-up
-        rebinds.clear(); ran.clear()
-        ws.last_command = "check if my disk has 100 gigs free"; ws.brain.session_id = "sess1"
-        await orch._handle_turn("and how much is used")
-        assert rebinds == [] and ran == ["and how much is used"]
     asyncio.run(run())
 
 
