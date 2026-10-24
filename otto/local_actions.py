@@ -92,6 +92,34 @@ def parse_clock_delay(text: str, now: datetime | None = None) -> float | None:
     return max(1.0, (target - now).total_seconds())
 
 
+def _vision_ocr(path: str) -> str | None:
+    """OCR an image with Apple's Vision framework. Returns the recognized text, or None when Vision
+    isn't available (pyobjc-framework-Vision not installed) so the caller can degrade gracefully."""
+    try:
+        import Quartz
+        import Vision
+        from Foundation import NSURL
+    except Exception:
+        return None
+    try:
+        src = Quartz.CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(path), None)
+        img = Quartz.CGImageSourceCreateImageAtIndex(src, 0, None) if src else None
+        if img is None:
+            return None
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(1)                      # accurate
+        Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(img, None) \
+            .performRequests_error_([req], None)
+        lines = []
+        for r in (req.results() or []):
+            cand = r.topCandidates_(1)
+            if cand and len(cand):
+                lines.append(cand[0].string())
+        return "\n".join(lines)
+    except Exception:
+        return None
+
+
 class LocalActions:
     """Deterministic router from an utterance to a direct Mac action (no engine)."""
 
@@ -122,6 +150,21 @@ class LocalActions:
     _RE_NEXT = re.compile(r"^(?:next|skip)(?:\s+(?:track|song))?\b", re.I)
     _RE_PREV = re.compile(r"^(?:previous|back)(?:\s+(?:track|song))?\b|^go back a (?:track|song)\b", re.I)
 
+    # --- screen / window / access (direct, permission-gated) ---
+    _RE_FRONT_APP = re.compile(r"\b(?:what app am i in|what(?:'?s| is) in front|what am i looking at|"
+                               r"what(?:'?s| is) the (?:front|active|current) app|which app is (?:open|active))\b", re.I)
+    _RE_WINDOWS = re.compile(r"\b(?:what windows are open|what'?s open|list (?:my )?windows|"
+                             r"which windows are open|what apps are open)\b", re.I)
+    _RE_MINIMIZE = re.compile(r"\bminimi[sz]e (?:this|the|my)?\s*window\b|\bminimi[sz]e (?:this|it)\b", re.I)
+    _RE_FULLSCREEN = re.compile(r"\b(?:full ?screen|maximi[sz]e)\s+(?:this|the|my|it)?\s*(?:window)?\b", re.I)
+    _RE_CLOSE_WIN = re.compile(r"\bclose (?:this|the|my|the current)\s+(?:window|tab)\b", re.I)
+    _RE_DARK_ON = re.compile(r"\b(?:dark mode on|turn on dark mode|switch to dark( mode)?|enable dark mode)\b", re.I)
+    _RE_DARK_OFF = re.compile(r"\b(?:dark mode off|turn off dark mode|switch to light( mode)?|light mode|enable light mode)\b", re.I)
+    _RE_OCR = re.compile(r"\b(?:read (?:the|my) screen|what does (?:it|the screen) say|read (?:this|it) (?:out|aloud)?|"
+                         r"what'?s (?:on|written on) (?:the|my) screen)\b", re.I)
+    _RE_CAPS = re.compile(r"\b(?:what access do you have|can you see my screen|check (?:my )?permissions|"
+                          r"what permissions do you have|do you have (?:accessibility|screen) access)\b", re.I)
+
     _APP_DIRS = ["/Applications", "/System/Applications", "/Applications/Utilities",
                  "/System/Applications/Utilities"]
     # Common spoken → real app-name aliases.
@@ -149,12 +192,34 @@ class LocalActions:
         def on(cat: str) -> bool:
             return cat in enabled
 
-        # --- info (time / date) ---
+        # --- info (time / date / access) ---
         if on("info"):
             if self._RE_TIME.search(t) and "timer" not in t.lower():
                 return ActionMatch(self._exec_time, "tell the time", "info")
             if self._RE_DATE.search(t):
                 return ActionMatch(self._exec_date, "tell the date", "info")
+            if self._RE_CAPS.search(t):
+                return ActionMatch(self._exec_capabilities, "check access", "info")
+
+        # --- screen / window / access (needs Accessibility / Screen Recording) ---
+        if on("screen"):
+            if self._RE_FRONT_APP.search(t):
+                return ActionMatch(self._exec_front_app, "say the active app", "screen")
+            if self._RE_WINDOWS.search(t):
+                return ActionMatch(self._exec_list_windows, "list open windows", "screen")
+            if self._RE_OCR.search(t):
+                return ActionMatch(self._exec_ocr, "read the screen", "screen")
+            if self._RE_MINIMIZE.search(t):
+                return ActionMatch(self._exec_minimize, "minimize the window", "screen")
+            if self._RE_FULLSCREEN.search(t):
+                return ActionMatch(self._exec_fullscreen, "full-screen the window", "screen")
+            if self._RE_CLOSE_WIN.search(t):
+                return ActionMatch(self._exec_close_window, "close the window", "screen",
+                                   consequential=True)
+            if self._RE_DARK_ON.search(t):
+                return ActionMatch(lambda: self._exec_dark_mode(True), "turn on dark mode", "screen")
+            if self._RE_DARK_OFF.search(t):
+                return ActionMatch(lambda: self._exec_dark_mode(False), "turn off dark mode", "screen")
 
         # --- timers / reminders ---
         if on("timers"):
@@ -285,6 +350,129 @@ class LocalActions:
         if args:
             argv += ["--", *args]
         return await self._run(*argv)
+
+    async def _run_capture(self, *argv: str) -> tuple[int, str]:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await proc.communicate()
+            return proc.returncode, (err or out or b"").decode(errors="replace")
+        except Exception as e:
+            return -1, str(e)
+
+    async def _osa_checked(self, script: list[str], pane: str, action_desc: str,
+                           *, ok_reply: str = "Done.") -> str:
+        """Run an osascript; on a permission error, open the right Settings pane and say so."""
+        argv = ["osascript"]
+        for ln in script:
+            argv += ["-e", ln]
+        rc, err = await self._run_capture(*argv)
+        if rc == 0:
+            return ok_reply
+        low = err.lower()
+        if any(k in low for k in ("-1743", "-25211", "not allow", "not authoriz", "assistive")):
+            try:
+                from . import capabilities
+                capabilities.open_pane_for(pane)
+            except Exception:
+                pass
+            return (f"I need {pane.replace('_', ' ')} access to {action_desc}. "
+                    "I opened the settings — grant it and try again.")
+        return f"Sorry — I couldn't {action_desc}."
+
+    # ---- screen / window / access --------------------------------------------
+    async def _exec_capabilities(self) -> str:
+        try:
+            from . import capabilities
+            return capabilities.summary()
+        except Exception:
+            return "I couldn't check my access right now."
+
+    async def _exec_front_app(self) -> str:
+        app = None
+        try:
+            from AppKit import NSWorkspace
+            a = NSWorkspace.sharedWorkspace().frontmostApplication()
+            app = a.localizedName() if a else None
+        except Exception:
+            app = None
+        if not app:
+            return "I couldn't tell which app is in front."
+        title = ""
+        rc, out = await self._run_capture(
+            "osascript", "-e",
+            'tell application "System Events" to tell (first process whose frontmost is true) '
+            'to get name of front window')
+        if rc == 0 and out.strip() and out.strip() != "missing value":
+            title = out.strip()
+        return f"You're in {app}" + (f" — “{title}”." if title else ".")
+
+    async def _exec_list_windows(self) -> str:
+        try:
+            import Quartz
+            opt = (Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements)
+            wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID) or []
+        except Exception:
+            return "I couldn't list the open windows."
+        names = []
+        for w in wins:
+            if w.get("kCGWindowLayer", 0) != 0:
+                continue
+            owner = (w.get("kCGWindowOwnerName") or "").strip()
+            name = (w.get("kCGWindowName") or "").strip()
+            if owner:
+                names.append(owner + (f" ({name})" if name else ""))
+        uniq = list(dict.fromkeys(names))[:6]
+        return ("Open: " + "; ".join(uniq)) if uniq else "No regular windows are open."
+
+    async def _exec_minimize(self) -> str:
+        return await self._osa_checked(
+            ['tell application "System Events" to tell (first process whose frontmost is true) '
+             'to set value of attribute "AXMinimized" of front window to true'],
+            "accessibility", "minimize the window", ok_reply="Minimized.")
+
+    async def _exec_fullscreen(self) -> str:
+        return await self._osa_checked(
+            ['tell application "System Events" to tell (first process whose frontmost is true) '
+             'to set value of attribute "AXFullScreen" of front window to true'],
+            "accessibility", "full-screen the window", ok_reply="Full screen.")
+
+    async def _exec_close_window(self) -> str:
+        return await self._osa_checked(
+            ['tell application "System Events" to keystroke "w" using command down'],
+            "accessibility", "close the window", ok_reply="Closed.")
+
+    async def _exec_dark_mode(self, on: bool) -> str:
+        val = "true" if on else "false"
+        return await self._osa_checked(
+            [f'tell application "System Events" to tell appearance preferences '
+             f'to set dark mode to {val}'],
+            "automation", ("turn on dark mode" if on else "turn off dark mode"),
+            ok_reply=("Dark mode on." if on else "Light mode on."))
+
+    async def _exec_ocr(self) -> str:
+        try:
+            from . import capabilities
+            if not capabilities.is_granted("screen_recording"):
+                capabilities.open_pane_for("screen_recording")
+                return "I need Screen Recording access to read the screen — I opened the settings."
+        except Exception:
+            pass
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "orrin-ocr.png")
+        if await self._run("screencapture", "-x", path) != 0:
+            return "I couldn't capture the screen."
+        text = _vision_ocr(path)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        if text is None:
+            return "Reading screen text needs the Vision add-on (pyobjc-framework-Vision)."
+        text = text.strip()
+        if not text:
+            return "I didn't find any readable text on the screen."
+        return "The screen says: " + text[:500] + ("…" if len(text) > 500 else "")
 
     async def _exec_time(self) -> str:
         return "It's " + datetime.now().strftime("%-I:%M %p").lstrip("0")

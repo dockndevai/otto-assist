@@ -37,6 +37,7 @@ voice = [
 app = [
     "rumps>=0.4",                    # menu bar UI
     "pyobjc-framework-WebKit>=10",   # in-app dashboard window (WKWebView) instead of a browser
+    "pyobjc-framework-Vision>=10",   # on-device OCR for the "read the screen" local action (optional)
 ]
 # Local neural voice (Kokoro) — optional, offline, no API key. Model files fetched separately
 # with `python -m otto.voice.fetch_kokoro`. espeak-ng ships bundled via espeakng-loader.
