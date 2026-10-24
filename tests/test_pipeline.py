@@ -1873,6 +1873,69 @@ def test_screen_actions_match(monkeypatch):
     assert la.match("refactor the auth module") is None        # real work → engine
 
 
+def _ui_router(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    from otto.local_actions import LocalActions
+    la = LocalActions(Orchestrator(load_settings(), EventBus()))
+    la.orch.settings.voice.actions_enabled = ["uicontrol"]
+    la.orch.settings.voice.ui_control = True
+    return la
+
+
+def test_uicontrol_actions_match(monkeypatch):
+    la = _ui_router(monkeypatch)
+    # clicks resolve to the uicontrol category; a destructive target is flagged consequential
+    assert la.match("click the Send button").category == "uicontrol"
+    assert la.match("click the Send button").consequential is True
+    assert la.match("tap Cancel").consequential is False
+    assert la.match("double-click the file icon").description == "double-click file"
+    assert la.match("right-click the link").description == "right-click link"
+    # key combos vs. a non-key "press" that should fall back to a click
+    assert la.match("press cmd+s").description == "press cmd+s"
+    assert la.match("hit escape").description == "press escape"
+    assert la.match("press the big red button").category == "uicontrol"   # not a key → click
+    assert la.match("press the big red button").description == "click big red"
+    # type / scroll / coordinates
+    assert la.match("type hello world").description == "type text"
+    assert la.match("scroll down").description == "scroll down"
+    assert la.match("click at 100, 200").description == "click at 100,200"
+    assert la.match("move the mouse to 300, 400").description == "move to 300,400"
+    # real work and non-UI verbs still fall through to the engine
+    assert la.match("delete the invoice") is None
+    assert la.match("refactor the auth module") is None
+
+
+def test_uicontrol_disabled_falls_through(monkeypatch):
+    la = _ui_router(monkeypatch)
+    la.orch.settings.voice.ui_control = False
+    assert la.match("click the Send button") is None
+
+
+def test_uicontrol_parse_combo_and_consequential():
+    from otto.uicontrol import parse_combo, is_consequential
+    assert parse_combo("cmd+s") == (1, ["Command"])
+    assert parse_combo("control c") == (8, ["Control"])
+    assert parse_combo("cmd+shift+4") == (21, ["Command", "Shift"])
+    assert parse_combo("enter") == (36, [])
+    assert parse_combo("escape") == (53, [])
+    assert parse_combo("") is None
+    assert parse_combo("the big red button") is None              # not a key → router falls back
+    assert is_consequential("Send message") and is_consequential("Delete forever")
+    assert not is_consequential("OK") and not is_consequential("Cancel")
+
+
+def test_uicontrol_cgevent_creation():
+    # The Quartz APIs resolve and build real events — but nothing is POSTED (no live input).
+    from otto.uicontrol import UIControl
+    u = UIControl()
+    q = u._quartz()
+    assert q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, (5, 5), q.kCGMouseButtonLeft) is not None
+    ke = q.CGEventCreateKeyboardEvent(None, 1, True)
+    q.CGEventKeyboardSetUnicodeString(ke, 1, "x")
+    assert ke is not None
+    assert q.CGEventCreateScrollWheelEvent(None, q.kCGScrollEventUnitLine, 2, -3, 0) is not None
+
+
 def test_capability_report_shape(monkeypatch):
     import otto.capabilities as cap
     monkeypatch.setattr(cap.preflight, "mic_authorization_status", lambda: "authorized")
