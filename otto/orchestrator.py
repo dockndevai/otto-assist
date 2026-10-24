@@ -283,6 +283,7 @@ class Orchestrator:
         }
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
+        self.local_actions = None  # local intent router (direct Mac actions); created in start()
         self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
         self.ears = None        # set in start() if voice input enabled
@@ -709,6 +710,12 @@ class Orchestrator:
             self.scheduler.start(self._loop)
         except Exception as e:
             print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
+        # Local intent router — handle simple Mac actions directly, no engine round-trip.
+        try:
+            from .local_actions import LocalActions
+            self.local_actions = LocalActions(self)
+        except Exception as e:
+            print(f"[otto] local actions init failed: {e!r}", file=sys.stderr, flush=True)
         # laya (the local typed-decision model) has been removed: its ~2.2 GB model was the biggest
         # memory hog and it dropped genuine conversational commands as "ambient". `self.smart_gate`
         # stays None, so the (guarded) gate branches downstream are permanently inert — hands-free
@@ -1999,6 +2006,44 @@ class Orchestrator:
         self._loop.create_task(self.clone_workspace(m.group("url"), m.group("branch")))
         return True
 
+    def _maybe_local_action(self, text: str) -> bool:
+        """If `text` is a simple Mac action the router recognizes, run it directly (no engine) and
+        return True. Consequential actions are gated on a spoken confirm. Returns False to fall
+        through to the brain."""
+        if not getattr(self.settings.voice, "local_router", True) or self.local_actions is None:
+            return False
+        try:
+            match = self.local_actions.match(text)
+        except Exception as e:
+            print(f"[otto] local-action match failed: {e!r}", file=sys.stderr, flush=True)
+            return False
+        if match is None:
+            return False
+        assert self._loop is not None
+        self._loop.create_task(self._run_local_action(text, match))
+        return True
+
+    async def _run_local_action(self, text: str, match) -> None:
+        """Execute a matched local action: show the request, confirm if consequential, run it, then
+        speak the result and emit a `local_action` event (handled on-device, no engine)."""
+        self.bus.transcript("user", text, final=True)
+        if match.consequential and getattr(self.settings.voice, "confirm_consequential", True):
+            if not await self.confirm(match.description):
+                self.bus.transcript("assistant", "Okay, I won't.", final=True)
+                self._voice_out("Okay, I won't.")
+                return
+        try:
+            reply = await match.executor()
+        except Exception as e:
+            print(f"[otto] local action {match.description!r} failed: {e!r}",
+                  file=sys.stderr, flush=True)
+            reply = f"Sorry — I couldn't {match.description}."
+        self.bus.publish({"type": "local_action", "description": match.description,
+                          "category": match.category, "engine": "local"})
+        if reply:
+            self.bus.transcript("assistant", reply, final=True)
+            self._voice_out(reply)
+
     def _maybe_chat_command(self, text: str) -> bool:
         """If `text` is a chat command, act on it and return True (input consumed)."""
         assert self._loop is not None
@@ -2239,6 +2284,10 @@ class Orchestrator:
             return
         # "clone <url>" — Otto sets up a new code space (clone → open as a workspace).
         if self._maybe_clone_command(text):
+            return
+        # Local intent router: simple Mac actions (open app, timer, media, lock, time…) run directly
+        # on the machine with NO engine round-trip. Unrecognized input falls through to the brain.
+        if self._maybe_local_action(text):
             return
         assert self._loop is not None
         # Workspace targeting: "in <name>, <command>" runs the command in another workspace
