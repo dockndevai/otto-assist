@@ -398,7 +398,11 @@ class VoiceConfig(BaseModel):
     confirm_consequential: bool = True
     # Which local-action categories the router may handle. Drop one to send those to the engine.
     actions_enabled: list[str] = Field(
-        default_factory=lambda: ["apps", "timers", "media", "system", "info", "screen"])
+        default_factory=lambda: ["apps", "timers", "media", "system", "info", "screen", "uicontrol"])
+    # Direct local UI automation (click/type/press-key/scroll synthesized in-process via CGEvent +
+    # AXUIElement, no engine round-trip). Master switch; also gated by the "uicontrol" category above
+    # and Accessibility permission. Only ever runs on an explicit user command.
+    ui_control: bool = True
     # On app open, if you don't say anything within a few seconds, Orrin greets you and gives a
     # short spoken briefing (last session recap + anything pending + one suggestion). Cancelled
     # the moment you speak or type. Fires once per launch, only for the focused project.

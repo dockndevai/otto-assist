@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from .uicontrol import is_consequential, parse_combo
+
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
 
@@ -29,7 +31,7 @@ Executor = Callable[[], Awaitable[str]]
 class ActionMatch:
     executor: Executor
     description: str          # human description, e.g. "open Safari"
-    category: str             # one of: apps / timers / media / system / info
+    category: str             # one of: apps / timers / media / system / info / screen / uicontrol
     consequential: bool = False
 
 
@@ -165,6 +167,17 @@ class LocalActions:
     _RE_CAPS = re.compile(r"\b(?:what access do you have|can you see my screen|check (?:my )?permissions|"
                           r"what permissions do you have|do you have (?:accessibility|screen) access)\b", re.I)
 
+    # --- direct UI automation (click / type / keys / scroll, synthesized in-process) ---
+    _RE_UI_MOVE_XY = re.compile(r"^move (?:the )?(?:mouse|cursor)(?:\s+to)?\s+\(?\s*(?P<x>\d+)\s*,\s*(?P<y>\d+)\s*\)?$", re.I)
+    _RE_UI_CLICK_XY = re.compile(r"^(?P<r>right[\s-]?)?(?:click|tap)(?:\s+at)?\s+\(?\s*(?P<x>\d+)\s*,\s*(?P<y>\d+)\s*\)?$", re.I)
+    _RE_UI_DBLCLICK = re.compile(r"^double[\s-]?click\s+(?:on\s+)?(?P<t>.+)$", re.I)
+    _RE_UI_RIGHTCLICK = re.compile(r"^(?:right[\s-]?click|secondary[\s-]?click)\s+(?:on\s+)?(?P<t>.+)$", re.I)
+    _RE_UI_KEY = re.compile(r"^(?:press|hit)\s+(?P<k>.+?)(?:\s+key)?$", re.I)
+    _RE_UI_CLICK = re.compile(r"^(?:click|tap|press|push)\s+(?:on\s+)?(?P<t>.+)$", re.I)
+    _RE_UI_TYPE = re.compile(r"^(?:type|enter|input)\s+(?:the\s+(?:text|word|words|phrase)\s+)?(?P<s>.+)$", re.I)
+    _RE_UI_SCROLL = re.compile(r"^scroll\s+(?P<dir>up|down|left|right)(?:\s+a\s+(?P<amt>bit|little|lot))?\b", re.I)
+    _UI_NOUNS = re.compile(r"\s+(button|link|icon|item|tab|menu item|menu|field|box|checkbox|toggle)$", re.I)
+
     _APP_DIRS = ["/Applications", "/System/Applications", "/Applications/Utilities",
                  "/System/Applications/Utilities"]
     # Common spoken → real app-name aliases.
@@ -180,6 +193,7 @@ class LocalActions:
     def __init__(self, orch: "Orchestrator") -> None:
         self.orch = orch
         self._apps_cache: tuple[float, dict[str, str]] = (0.0, {})
+        self._ui = None   # lazily-created UIControl (keeps Quartz import off the hot path)
 
     # ---- public API ----------------------------------------------------------
     def match(self, text: str) -> ActionMatch | None:
@@ -220,6 +234,46 @@ class LocalActions:
                 return ActionMatch(lambda: self._exec_dark_mode(True), "turn on dark mode", "screen")
             if self._RE_DARK_OFF.search(t):
                 return ActionMatch(lambda: self._exec_dark_mode(False), "turn off dark mode", "screen")
+
+        # --- direct UI automation (synthesizes real input; explicit command only) ---
+        if on("uicontrol") and getattr(self.orch.settings.voice, "ui_control", True):
+            mo = self._RE_UI_MOVE_XY.match(t)
+            if mo:
+                x, y = int(mo.group("x")), int(mo.group("y"))
+                return ActionMatch(lambda: self._exec_ui_move(x, y), f"move to {x},{y}", "uicontrol")
+            mo = self._RE_UI_CLICK_XY.match(t)
+            if mo:
+                x, y, right = int(mo.group("x")), int(mo.group("y")), bool(mo.group("r"))
+                return ActionMatch(lambda: self._exec_ui_click_xy(x, y, right=right),
+                                   f"click at {x},{y}", "uicontrol")
+            mo = self._RE_UI_DBLCLICK.match(t)
+            if mo:
+                tgt = self._clean_ui_target(mo.group("t"))
+                return ActionMatch(lambda: self._exec_ui_click(tgt, double=True),
+                                   f"double-click {tgt}", "uicontrol", consequential=is_consequential(tgt))
+            mo = self._RE_UI_RIGHTCLICK.match(t)
+            if mo:
+                tgt = self._clean_ui_target(mo.group("t"))
+                return ActionMatch(lambda: self._exec_ui_click(tgt, right=True),
+                                   f"right-click {tgt}", "uicontrol", consequential=is_consequential(tgt))
+            mo = self._RE_UI_KEY.match(t)
+            if mo and parse_combo(mo.group("k")) is not None:
+                combo = mo.group("k").strip()
+                return ActionMatch(lambda: self._exec_ui_key(combo), f"press {combo}", "uicontrol")
+            mo = self._RE_UI_CLICK.match(t)
+            if mo:
+                tgt = self._clean_ui_target(mo.group("t"))
+                return ActionMatch(lambda: self._exec_ui_click(tgt),
+                                   f"click {tgt}", "uicontrol", consequential=is_consequential(tgt))
+            mo = self._RE_UI_SCROLL.match(t)
+            if mo:
+                dx, dy, label = self._scroll_vector(mo.group("dir"), mo.group("amt"))
+                return ActionMatch(lambda: self._exec_ui_scroll(dx, dy, label),
+                                   f"scroll {label}", "uicontrol")
+            mo = self._RE_UI_TYPE.match(t)
+            if mo:
+                s = mo.group("s").strip().strip('"').strip("'")
+                return ActionMatch(lambda: self._exec_ui_type(s), "type text", "uicontrol")
 
         # --- timers / reminders ---
         if on("timers"):
@@ -473,6 +527,87 @@ class LocalActions:
         if not text:
             return "I didn't find any readable text on the screen."
         return "The screen says: " + text[:500] + ("…" if len(text) > 500 else "")
+
+    # ---- direct UI automation ------------------------------------------------
+    def _clean_ui_target(self, raw: str) -> str:
+        """Normalize a spoken click target: drop a leading article and a trailing UI noun so
+        'the Send button' matches an element titled 'Send'."""
+        s = re.sub(r"^(the|a|an|my)\s+", "", (raw or "").strip().strip(".!?"), flags=re.I).strip()
+        return self._UI_NOUNS.sub("", s).strip() or s
+
+    @staticmethod
+    def _scroll_vector(direction: str, amount: str | None) -> tuple[int, int, str]:
+        mag = {"bit": 2, "little": 2, "lot": 10}.get((amount or "").lower(), 5)
+        d = direction.lower()
+        dx, dy = {"up": (0, mag), "down": (0, -mag), "left": (mag, 0), "right": (-mag, 0)}[d]
+        return dx, dy, d
+
+    def _uic(self):
+        if self._ui is None:
+            from .uicontrol import UIControl
+            self._ui = UIControl()
+        return self._ui
+
+    async def _ui_run(self, fn, *a, **kw):
+        """Run a (blocking) CGEvent/AX call off the event loop."""
+        return await asyncio.get_running_loop().run_in_executor(None, lambda: fn(*a, **kw))
+
+    def _ui_guard(self) -> str | None:
+        """Return a spoken 'grant access' message if Accessibility is missing, else None."""
+        if self._uic().accessible():
+            return None
+        try:
+            from . import capabilities
+            capabilities.open_pane_for("accessibility")
+        except Exception:
+            pass
+        return ("I need Accessibility access to control the screen — I opened the settings. "
+                "Grant it and try again.")
+
+    async def _exec_ui_click(self, target: str, *, double: bool = False, right: bool = False) -> str:
+        if (g := self._ui_guard()):
+            return g
+        uic = self._uic()
+        el = await self._ui_run(uic.find_element, target)
+        if not el:
+            return f"I couldn't find “{target}” on screen."
+        x, y = el["center"]
+        await self._ui_run(lambda: uic.click(x, y, double=double, right=right))
+        verb = "Double-clicked" if double else ("Right-clicked" if right else "Clicked")
+        return f"{verb} {el['title']}."
+
+    async def _exec_ui_click_xy(self, x: int, y: int, *, right: bool = False) -> str:
+        if (g := self._ui_guard()):
+            return g
+        uic = self._uic()
+        await self._ui_run(lambda: uic.click(x, y, right=right))
+        return f"{'Right-clicked' if right else 'Clicked'} at {x}, {y}."
+
+    async def _exec_ui_move(self, x: int, y: int) -> str:
+        if (g := self._ui_guard()):
+            return g
+        await self._ui_run(self._uic().move, x, y)
+        return f"Moved to {x}, {y}."
+
+    async def _exec_ui_type(self, s: str) -> str:
+        if (g := self._ui_guard()):
+            return g
+        if not s:
+            return "Nothing to type."
+        await self._ui_run(self._uic().type_text, s)
+        return "Typed “" + (s if len(s) <= 40 else s[:40] + "…") + "”."
+
+    async def _exec_ui_key(self, combo: str) -> str:
+        if (g := self._ui_guard()):
+            return g
+        ok = await self._ui_run(self._uic().key, combo)
+        return f"Pressed {combo}." if ok else f"I don't know the key “{combo}”."
+
+    async def _exec_ui_scroll(self, dx: int, dy: int, label: str) -> str:
+        if (g := self._ui_guard()):
+            return g
+        await self._ui_run(self._uic().scroll, dx, dy)
+        return f"Scrolled {label}."
 
     async def _exec_time(self) -> str:
         return "It's " + datetime.now().strftime("%-I:%M %p").lstrip("0")
