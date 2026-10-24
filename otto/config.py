@@ -398,7 +398,7 @@ class VoiceConfig(BaseModel):
     confirm_consequential: bool = True
     # Which local-action categories the router may handle. Drop one to send those to the engine.
     actions_enabled: list[str] = Field(
-        default_factory=lambda: ["apps", "timers", "media", "system", "info"])
+        default_factory=lambda: ["apps", "timers", "media", "system", "info", "screen"])
     # On app open, if you don't say anything within a few seconds, Orrin greets you and gives a
     # short spoken briefing (last session recap + anything pending + one suggestion). Cancelled
     # the moment you speak or type. Fires once per launch, only for the focused project.

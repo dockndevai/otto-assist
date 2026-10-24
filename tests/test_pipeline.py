@@ -1949,6 +1949,44 @@ def test_native_ears_stdio_framing():
     assert ("rec_stop",) in ev
     assert ("final", "open the repo") in ev
     assert ne.last_audio == pcm
+# ---- Local system/screen actions + capabilities + latency -----------------
+def test_screen_actions_match(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    from otto.local_actions import LocalActions
+    la = LocalActions(Orchestrator(load_settings(), EventBus()))
+    la.orch.settings.voice.actions_enabled = ["screen", "info", "system", "apps"]
+    assert la.match("what app am I in").category == "screen"
+    assert la.match("what windows are open").category == "screen"
+    assert la.match("what access do you have").category == "info"
+    m = la.match("close this window")
+    assert m.category == "screen" and m.consequential is True
+    assert la.match("dark mode on").description == "turn on dark mode"
+    assert la.match("read the screen").description == "read the screen"
+    assert la.match("refactor the auth module") is None        # real work → engine
+
+
+def test_capability_report_shape(monkeypatch):
+    import otto.capabilities as cap
+    monkeypatch.setattr(cap.preflight, "mic_authorization_status", lambda: "authorized")
+    monkeypatch.setattr(cap.preflight, "accessibility_trusted", lambda: True)
+    monkeypatch.setattr(cap.preflight, "input_monitoring_status", lambda: "denied")
+    monkeypatch.setattr(cap.preflight, "screen_recording_status", lambda: "authorized")
+    monkeypatch.setattr(cap, "automation_status", lambda: "unknown")
+    rep = cap.capability_report()
+    assert rep["microphone"]["granted"] is True
+    assert rep["accessibility"]["granted"] is True
+    assert rep["input_monitoring"]["granted"] is False and rep["input_monitoring"]["status"] == "denied"
+    assert rep["screen_recording"]["granted"] is True
+    assert rep["automation"]["status"] == "unknown"
+    s = cap.summary(rep)
+    assert "Microphone" in s and "Input Monitoring" in s       # names both granted + missing
+
+
+def test_latency_measure_shape():
+    from otto.latency import measure
+    m = measure(lambda: None, n=5)
+    assert set(m) >= {"p50", "p95", "min", "max", "mean", "n"}
+    assert m["n"] == 5 and m["p50"] >= 0 and m["max"] >= m["min"]
 
 
 # ---- First-run permissions + preflight health check -----------------------
