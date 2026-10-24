@@ -1882,32 +1882,40 @@ def test_store_tasks_lifecycle(tmp_path):
 
 
 def test_store_decisions_and_resume_digest(tmp_path):
+    from otto.memory_commands import MemoryCommands
     from otto.store import Store
     s = Store(tmp_path / "t.db")
     s.record_turn("/p", "let's talk about caching", "ok")
     s.add_decision("/p", "Use Redis for the cache", source="explicit")
     s.add_task("/p", "benchmark redis")
-    rd = s.resume_digest("/p")
+    rd = MemoryCommands(s).resume_digest("/p")
     assert "Redis" in rd and "benchmark redis" in rd and "Last time" in rd
-    assert Store(tmp_path / "empty.db").resume_digest("/other") == ""
+    assert MemoryCommands(Store(tmp_path / "empty.db")).resume_digest("/other") == ""
+
+
+def test_memory_commands_handle(tmp_path):
+    from otto.memory_commands import MemoryCommands
+    from otto.store import Store
+    mc = MemoryCommands(Store(tmp_path / "t.db"))
+    assert mc.handle("add a task to ship the installer", "/p") == "Added to your tasks: ship the installer."
+    assert "ship the installer" in mc.handle("what are my open tasks", "/p")
+    assert mc.handle("mark ship the installer done", "/p") == "Marked done: ship the installer."
+    assert "no open tasks" in mc.handle("what are my open tasks", "/p").lower()
+    assert mc.handle("refactor the auth module", "/p") is None     # real work → not a memory command
 
 
 def test_memory_command_routing(monkeypatch, tmp_path):
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
     async def run():
+        from otto.memory_commands import MemoryCommands
         from otto.store import Store
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
         orch.store = Store(tmp_path / "t.db")
-        handled = []
-        orch._handle_turn = lambda t, **k: handled.append(t)
+        orch.memory_commands = MemoryCommands(orch.store)
         assert orch._maybe_memory_command("add a task to ship the installer") is True
         assert orch.store.list_tasks(orch.focused, "open")[0]["text"] == "ship the installer"
-        assert orch._maybe_memory_command("what are my open tasks") is True
-        assert orch._maybe_memory_command("mark ship the installer done") is True
-        assert orch.store.list_tasks(orch.focused, "open") == []       # task closed
         assert orch._maybe_memory_command("refactor the auth module") is False   # real work → brain
-        assert handled == []                                           # nothing hit the brain
     asyncio.run(run())
 
 

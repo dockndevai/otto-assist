@@ -271,10 +271,13 @@ class Orchestrator:
         # SQLite system of record (searchable transcripts + decisions/tasks/preferences + resume
         # digest), additive on top of the flat-file memory. Off → the store is simply unused.
         self.store = None
+        self.memory_commands = None
         if getattr(settings.memory, "store", True):
             try:
+                from .memory_commands import MemoryCommands
                 from .store import Store
                 self.store = Store(OTTO_HOME / "orrin.db")
+                self.memory_commands = MemoryCommands(self.store)
             except Exception as e:
                 print(f"[otto] store init failed: {e!r}", file=sys.stderr, flush=True)
         self.history = History(self.memory, lambda: self.focused)
@@ -2134,60 +2137,17 @@ class Orchestrator:
             self.bus.transcript("assistant", reply, final=True)
             self._voice_out(reply)
 
-    # -- memory: tasks / decisions / resume (local, no engine round-trip) --
-    _RE_RESUME = re.compile(r"\b(?:continue where we left off|where did we leave off|where were we|"
-                            r"pick up where we left off|catch me up|recap where we were)\b", re.I)
-    _RE_TASKS_LIST = re.compile(r"\b(?:what are my|list my|show my|do i have any|what'?s on my)\s+"
-                                r"(?:open\s+)?(?:tasks?|to-?dos?|to-?do list|list|plate)\b", re.I)
-    _RE_TASK_ADD_A = re.compile(r"^(?:add (?:a )?task|note (?:a )?task)(?:\s+(?:to|:))?\s+(?P<task>.+)$", re.I)
-    _RE_TASK_ADD_B = re.compile(r"^(?:add|put)\s+(?P<task>.+?)\s+(?:to my (?:tasks?|list|to-?do list)|"
-                                r"on my (?:list|to-?do list))\.?$", re.I)
-    _RE_TASK_DONE = re.compile(r"^(?:mark|cross off|tick off|check off)\s+(?P<task>.+?)\s+"
-                               r"(?:as\s+)?(?:done|complete|completed|off(?:\s+my\s+list)?)\.?$", re.I)
-    _RE_DECIDE_Q = re.compile(r"\bwhat did we (?:decide|agree|settle|conclude)\b"
-                              r"(?:\s+(?:about|on|regarding)\s+(?P<topic>.+?))?\??$", re.I)
-
     def _maybe_memory_command(self, text: str) -> bool:
-        """Local (no-engine) tasks/decisions/resume queries against the SQLite system of record."""
-        if self.store is None:
+        """Local (no-engine) tasks/decisions/resume queries, answered from the SQLite store. The
+        parsing + reply composition live in otto/memory_commands.py; here we only speak the result."""
+        if self.memory_commands is None:
             return False
-        t = text.strip()
-        proj = self.focused
-        reply = None
-        mo = self._RE_TASK_ADD_A.match(t) or self._RE_TASK_ADD_B.match(t)
-        if mo:
-            task = mo.group("task").strip(" .")
-            if task:
-                self.store.add_task(proj, task)
-                reply = f"Added to your tasks: {task}."
-        elif (mo := self._RE_TASK_DONE.match(t)):
-            task = mo.group("task").strip(" .")
-            done = self.store.set_task_status(proj, task, "done")
-            reply = (f"Marked done: {done['text']}." if done
-                     else f"I couldn't find an open task matching {task}.")
-        elif self._RE_TASKS_LIST.search(t):
-            tasks = self.store.list_tasks(proj, "open")
-            reply = ("You have no open tasks." if not tasks
-                     else "Open tasks: " + "; ".join(x["text"] for x in tasks[:8]))
-        elif self._RE_RESUME.search(t):
-            reply = self.store.resume_digest(proj) or "Nothing saved yet for this project."
-        elif (mo := self._RE_DECIDE_Q.search(t)):
-            topic = (mo.group("topic") or "").strip(" .?")
-            decs = self.store.recent_decisions(proj, 3)
-            hits = self.store.search_transcript(topic, proj, 2) if topic else []
-            parts = []
-            if decs:
-                parts.append("Decisions: " + "; ".join(d["text"] for d in decs))
-            if hits:
-                parts.append("Earlier you said: " + "; ".join((h.get("user") or "")[:60] for h in hits))
-            reply = (" ".join(parts) if parts
-                     else (f"I don't have a record about {topic}." if topic else "No decisions recorded yet."))
-        else:
+        reply = self.memory_commands.handle(text, self.focused)
+        if reply is None:
             return False
         self.bus.transcript("user", text, final=True)
-        if reply:
-            self.bus.transcript("assistant", reply, final=True)
-            self._voice_out(reply)
+        self.bus.transcript("assistant", reply, final=True)
+        self._voice_out(reply)
         return True
 
     def _maybe_chat_command(self, text: str) -> bool:
@@ -3550,10 +3510,10 @@ class Orchestrator:
                         pre = (ov + "\n\n" + pre) if pre else ov
                 # "Continue where we left off": on the first turn of a session, prepend a short
                 # resume digest (last topic + recent decisions + open tasks) from the store.
-                if (self.store is not None and getattr(self.settings.memory, "resume_digest", True)
+                if (self.memory_commands is not None and getattr(self.settings.memory, "resume_digest", True)
                         and not research and getattr(ws, "_last_preamble", None) is None):
                     try:
-                        rd = self.store.resume_digest(p)
+                        rd = self.memory_commands.resume_digest(p)
                     except Exception:
                         rd = ""
                     if rd:
@@ -3669,12 +3629,11 @@ class Orchestrator:
                     if self._loop is not None and not research:
                         self._loop.create_task(
                             self.memory.capture(p, text, reply, session_id=ws.session_id))
-                    # Record the turn in the searchable system of record (transcript history).
-                    if self.store is not None and not research:
-                        try:
-                            self.store.record_turn(p, text, reply, session_id=ws.session_id)
-                        except Exception:
-                            pass
+                    # Record the turn in the searchable system of record — off the voice path (a
+                    # blocking sqlite write must not stall TTS/barge-in on the loop).
+                    if self.store is not None and self._loop is not None and not research:
+                        self._loop.run_in_executor(
+                            None, self.store.record_turn, p, text, reply, ws.session_id)
                 if research:
                     # Idle research runs unattended — a quiet, throttled note, not the loud
                     # "finished" nudge, and only when it actually concluded something.

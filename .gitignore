@@ -44,3 +44,6 @@ rec/
 
 # Playwright MCP runtime dir (browser tooling)
 .playwright-mcp/
+
+# Local promo drafts (not for the public repo)
+promo/
