@@ -325,6 +325,14 @@ class VoiceConfig(BaseModel):
     stt: STTConfig = Field(default_factory=STTConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     hotkey: HotkeyConfig = Field(default_factory=HotkeyConfig)
+    # Turn-taking: instead of committing a turn the instant speech stops, hold an unfinished thought
+    # ("…I think…", "one second") and fold in corrections ("wait, actually…"), so Orrin doesn't act
+    # on half a sentence. `hold_seconds` is the continuation window after an unfinished fragment;
+    # `max_hold_seconds` caps how long one turn can keep extending. silence_seconds stays the inner
+    # VAD timer; this is the outer semantic gate.
+    turn_taking: bool = True
+    hold_seconds: float = 3.0
+    max_hold_seconds: float = 12.0
     # Local intent router: handle simple Mac actions (open/quit apps, timers/alarms/reminders,
     # media + volume, lock/sleep, screenshot, time/date) DIRECTLY on the machine — no Claude/Cursor
     # round-trip — for speed. Anything it doesn't recognize falls through to the engine unchanged.

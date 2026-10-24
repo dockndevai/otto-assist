@@ -283,6 +283,10 @@ class Orchestrator:
         }
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
+        self.turn_taker = None  # dialogue-state gate (unfinished thoughts / corrections / holds)
+        self._turn_flush_handle = None   # continuation-window timer for a held turn
+        self._held_hands_free = False    # mode to re-dispatch a held turn with
+        self._hold_started = 0.0         # when the current held turn began (max-hold cap)
         self.local_actions = None  # local intent router (direct Mac actions); created in start()
         self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
@@ -710,6 +714,13 @@ class Orchestrator:
             self.scheduler.start(self._loop)
         except Exception as e:
             print(f"[otto] scheduler init failed: {e!r}", file=sys.stderr, flush=True)
+        # Turn-taking: hold unfinished thoughts / fold in corrections instead of committing on a
+        # fixed silence timer.
+        try:
+            from .voice.turntaking import TurnTaker
+            self.turn_taker = TurnTaker(self.settings.voice)
+        except Exception as e:
+            print(f"[otto] turn-taker init failed: {e!r}", file=sys.stderr, flush=True)
         # Local intent router — handle simple Mac actions directly, no engine round-trip.
         try:
             from .local_actions import LocalActions
@@ -2373,6 +2384,10 @@ class Orchestrator:
         running turn. Wired to the 'stop' word (heard in a gap), the dashboard Stop button, and
         the push-to-talk hotkey. Reliable regardless of the mic (button/hotkey don't need it)."""
         print(f"[otto] interrupt ({reason})", file=sys.stderr, flush=True)
+        # Drop any half-spoken held thought — "stop" means abandon it, don't flush it later.
+        self._cancel_turn_flush()
+        if self.turn_taker is not None:
+            self.turn_taker.reset()
         self._speak_done = True
         self._speech_buf = ""
         self._cancel_briefing()            # a Stop during the startup greeting halts it too
@@ -2799,21 +2814,79 @@ class Orchestrator:
             self._status("idle", "Ready")
 
     # -- voice command dispatch (refine + dictation) ----------------------
+    def _arm_turn_flush(self) -> None:
+        """(Re)start the continuation window for a held turn; dispatch what's buffered when it
+        expires. Capped at max_hold_seconds so a turn can't be extended forever."""
+        if self._loop is None:
+            return
+        now = time.monotonic()
+        if self._turn_flush_handle is not None:
+            self._turn_flush_handle.cancel()
+        else:
+            self._hold_started = now        # first hold of this turn
+        hold = float(getattr(self.settings.voice, "hold_seconds", 3.0))
+        cap = float(getattr(self.settings.voice, "max_hold_seconds", 12.0))
+        remaining_cap = cap - (now - self._hold_started)
+        delay = max(0.2, min(hold, remaining_cap))
+        self._turn_flush_handle = self._loop.call_later(delay, self._flush_turn)
+
+    def _cancel_turn_flush(self) -> None:
+        if self._turn_flush_handle is not None:
+            self._turn_flush_handle.cancel()
+            self._turn_flush_handle = None
+
+    def _flush_turn(self) -> None:
+        """Continuation window expired — dispatch the accumulated held turn."""
+        self._turn_flush_handle = None
+        if self.turn_taker is None:
+            return
+        text = self.turn_taker.flush()
+        if text:
+            print(f"[otto] turn window closed — dispatching: {text!r}", file=sys.stderr, flush=True)
+            self._dispatch_voice_command(text, hands_free=self._held_hands_free, _held=True)
+
     def _dispatch_voice_command(self, text: str, deliberate: bool = False,
-                                hands_free: bool = False) -> None:
+                                hands_free: bool = False, _held: bool = False) -> None:
         """Route a heard command through the anti-hallucination filter, optional refine, then
         dictation or Claude.
 
         `deliberate` (push-to-talk) skips the noise filter entirely. Otherwise the free
         heuristic drops obvious junk; on the `hands_free` path (always-listen / follow-up) a
         model gate also rejects grammatical-but-nonsensical hallucinations. Fast synchronous
-        path when nothing async is needed (unchanged latency for wake-word/PTT)."""
+        path when nothing async is needed (unchanged latency for wake-word/PTT).
+
+        `_held` is set when re-dispatching a buffered turn after the continuation window — it
+        skips the turn-taking gate so the accumulated thought isn't re-held."""
         stt = self.settings.voice.stt
         if not deliberate and stt.filter_hallucinations:
             from .voice.noise import is_noise
             if is_noise(text):
                 print(f"[otto] dropped noise: {text!r}", file=sys.stderr, flush=True)
                 return
+        # Turn-taking gate: decide if this is a COMPLETE turn, an unfinished thought to keep
+        # listening for, a correction to fold in, or a request to recover a lost thought. Only on
+        # natural-speech paths (not deliberate push-to-talk, not verbatim dictation).
+        if (self.turn_taker is not None and not _held and not deliberate and not self._dictation
+                and getattr(self.settings.voice, "turn_taking", True)):
+            decision = self.turn_taker.offer(text)
+            if decision.kind == "recover":
+                self._cancel_turn_flush()
+                reply = decision.text and f"You were saying: {decision.text}" or \
+                    "You hadn't said anything yet."
+                self.bus.transcript("assistant", reply, final=True)
+                self._voice_out(reply)
+                return
+            if decision.kind == "hold":
+                self._held_hands_free = hands_free
+                preview = self.turn_taker.preview()
+                if preview:
+                    self.bus.transcript("user", preview, final=False)   # show we're still listening
+                self._status("listening", "Listening…")
+                self._arm_turn_flush()
+                print(f"[otto] holding (unfinished): {preview!r}", file=sys.stderr, flush=True)
+                return
+            self._cancel_turn_flush()
+            text = decision.text        # dispatch the full accumulated turn
         # Semantic gate on the hands-free path (always-listen / follow-up) — the noisiest,
         # lowest-intent context. After a deliberate wake word we stay snappy (no model call);
         # any junk that still slips through is caught by the dead-reply suppression on output.

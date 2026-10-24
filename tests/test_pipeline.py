@@ -1559,6 +1559,105 @@ def test_targeted_turn_routing(monkeypatch):
     asyncio.run(run())
 
 
+# ---- Turn-taking / dialogue-state gate -------------------------------------
+def test_turntaker_holds_unfinished_then_dispatches():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    assert tt.offer("check the platform project, I think").kind == "hold"
+    d = tt.offer("the clickhouse backup is still a problem")
+    assert d.kind == "dispatch"
+    assert "platform project" in d.text and "clickhouse backup" in d.text
+
+
+def test_turntaker_hold_phrase_then_complete():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    assert tt.offer("one second").kind == "hold"
+    d = tt.offer("open chrome")
+    assert d.kind == "dispatch" and d.text == "open chrome"   # "one second" isn't folded in as content
+
+
+def test_turntaker_correction_merges():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    assert tt.offer("deploy the app and").kind == "hold"       # trailing "and" → unfinished
+    d = tt.offer("actually just show me the diff")
+    assert d.kind == "dispatch" and "diff" in d.text
+
+
+def test_turntaker_reset_drops_buffer():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    assert tt.offer("remind me to call bob and").kind == "hold"
+    assert tt.offer("scratch that").kind == "hold"             # buffer cleared
+    d = tt.offer("remind me to call alice at five")
+    assert d.kind == "dispatch" and "bob" not in d.text and "alice" in d.text
+
+
+def test_turntaker_recover():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    tt.offer("check the deployment and")                       # held
+    d = tt.offer("what was I saying")
+    assert d.kind == "recover" and "deployment" in d.text
+
+
+def test_turntaker_flush_returns_buffer():
+    from otto.voice.turntaking import TurnTaker
+    tt = TurnTaker()
+    tt.offer("set a reminder to")                              # held (trailing "to")
+    assert "reminder" in tt.flush()
+    assert tt.flush() == ""                                    # cleared
+
+
+def test_dispatch_holds_unfinished_not_brain(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.voice.turntaking import TurnTaker
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.turn_taker = TurnTaker(orch.settings.voice)
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+        orch._dispatch_voice_command("deploy the app and")     # unfinished → held, no brain
+        assert sent == [] and orch._turn_flush_handle is not None
+        orch._dispatch_voice_command("show me the diff")       # completes → dispatch the whole turn
+        assert len(sent) == 1 and "deploy the app" in sent[0] and "diff" in sent[0]
+        assert orch._turn_flush_handle is None
+        orch._cancel_turn_flush()
+    asyncio.run(run())
+
+
+def test_flush_dispatches_buffered_turn(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.voice.turntaking import TurnTaker
+        orch = Orchestrator(load_settings(), EventBus())
+        orch._loop = asyncio.get_running_loop()
+        orch.turn_taker = TurnTaker(orch.settings.voice)
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+        orch._dispatch_voice_command("set a reminder to")      # held
+        assert sent == []
+        orch._flush_turn()                                     # continuation window expired
+        assert sent == ["set a reminder to"]
+    asyncio.run(run())
+
+
+def test_turn_taking_disabled_dispatches_immediately(monkeypatch):
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    async def run():
+        from otto.voice.turntaking import TurnTaker
+        orch = Orchestrator(load_settings(), EventBus())
+        orch.settings.voice.turn_taking = False
+        orch._loop = asyncio.get_running_loop()
+        orch.turn_taker = TurnTaker(orch.settings.voice)
+        sent = []
+        orch.submit_user_input = lambda t: sent.append(t)
+        orch._dispatch_voice_command("deploy the app and")     # gate off → dispatched as-is
+        assert sent == ["deploy the app and"]
+
+
 # ---- Local intent router (direct Mac actions, no engine round-trip) --------
 def test_parse_duration():
     from otto.local_actions import parse_duration
