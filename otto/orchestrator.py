@@ -268,6 +268,18 @@ class Orchestrator:
         # summaries + saved documents per project, injected into every turn and learned from
         # automatically. The dashboard history lives inside it too, one log per project.
         self.memory = Memory(OTTO_HOME / "memory", settings)
+        # SQLite system of record (searchable transcripts + decisions/tasks/preferences + resume
+        # digest), additive on top of the flat-file memory. Off → the store is simply unused.
+        self.store = None
+        self.memory_commands = None
+        if getattr(settings.memory, "store", True):
+            try:
+                from .memory_commands import MemoryCommands
+                from .store import Store
+                self.store = Store(OTTO_HOME / "orrin.db")
+                self.memory_commands = MemoryCommands(self.store)
+            except Exception as e:
+                print(f"[otto] store init failed: {e!r}", file=sys.stderr, flush=True)
         self.history = History(self.memory, lambda: self.focused)
         # Move any pre-existing flat history into the per-project store (once).
         self.history.migrate_legacy(OTTO_HOME / "history.jsonl", str(settings.project_path))
@@ -2125,6 +2137,19 @@ class Orchestrator:
             self.bus.transcript("assistant", reply, final=True)
             self._voice_out(reply)
 
+    def _maybe_memory_command(self, text: str) -> bool:
+        """Local (no-engine) tasks/decisions/resume queries, answered from the SQLite store. The
+        parsing + reply composition live in otto/memory_commands.py; here we only speak the result."""
+        if self.memory_commands is None:
+            return False
+        reply = self.memory_commands.handle(text, self.focused)
+        if reply is None:
+            return False
+        self.bus.transcript("user", text, final=True)
+        self.bus.transcript("assistant", reply, final=True)
+        self._voice_out(reply)
+        return True
+
     def _maybe_chat_command(self, text: str) -> bool:
         """If `text` is a chat command, act on it and return True (input consumed)."""
         assert self._loop is not None
@@ -2365,6 +2390,9 @@ class Orchestrator:
             return
         # "use cursor / switch to aider / run this with claude" — change the focused project's engine.
         if self._maybe_engine_command(text):
+            return
+        # Tasks / decisions / "continue where we left off" — answered locally from the store.
+        if self._maybe_memory_command(text):
             return
         # "clone <url>" — Otto sets up a new code space (clone → open as a workspace).
         if self._maybe_clone_command(text):
@@ -3480,6 +3508,17 @@ class Orchestrator:
                     ov = self.memory.overview()
                     if ov:
                         pre = (ov + "\n\n" + pre) if pre else ov
+                # "Continue where we left off": on the first turn of a session, prepend a short
+                # resume digest (last topic + recent decisions + open tasks) from the store.
+                if (self.memory_commands is not None and getattr(self.settings.memory, "resume_digest", True)
+                        and not research and getattr(ws, "_last_preamble", None) is None):
+                    try:
+                        rd = self.memory_commands.resume_digest(p)
+                    except Exception:
+                        rd = ""
+                    if rd:
+                        block = "[Where we left off]\n" + rd + "\n[end]"
+                        pre = (block + "\n\n" + pre) if pre else block
                 if pre and pre != getattr(ws, "_last_preamble", None):
                     send_text = pre + text
                     ws._last_preamble = pre
@@ -3590,6 +3629,11 @@ class Orchestrator:
                     if self._loop is not None and not research:
                         self._loop.create_task(
                             self.memory.capture(p, text, reply, session_id=ws.session_id))
+                    # Record the turn in the searchable system of record — off the voice path (a
+                    # blocking sqlite write must not stall TTS/barge-in on the loop).
+                    if self.store is not None and self._loop is not None and not research:
+                        self._loop.run_in_executor(
+                            None, self.store.record_turn, p, text, reply, ws.session_id)
                 if research:
                     # Idle research runs unattended — a quiet, throttled note, not the loud
                     # "finished" nudge, and only when it actually concluded something.
@@ -3742,6 +3786,13 @@ class Orchestrator:
         approved = decision == "yes"
         self.bus.publish({"type": "approval_decided", "action": action,
                           "answer": answer, "decision": decision, "approved": approved})
+        # Record the decision as a durable, queryable fact ("what did we decide about X").
+        if self.store is not None:
+            try:
+                self.store.add_decision(self.focused, f"{'Approved' if approved else 'Declined'}: {action}",
+                                        source="approval")
+            except Exception:
+                pass
         return approved
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:

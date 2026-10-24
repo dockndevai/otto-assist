@@ -33,6 +33,10 @@ history.jsonl
 
 # Persistent memory store (also written to the repo root during tests via conftest's OTTO_HOME)
 /memory/
+# SQLite system of record (+ WAL/shm sidecars)
+orrin.db
+orrin.db-wal
+orrin.db-shm
 rec/
 
 # built mobile APK deliverables
@@ -40,3 +44,6 @@ rec/
 
 # Playwright MCP runtime dir (browser tooling)
 .playwright-mcp/
+
+# Local promo drafts (not for the public repo)
+promo/
