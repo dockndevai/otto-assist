@@ -40,3 +40,6 @@ rec/
 
 # Playwright MCP runtime dir (browser tooling)
 .playwright-mcp/
+
+# Swift native audio helper build output
+native/orrin-audio/.build/

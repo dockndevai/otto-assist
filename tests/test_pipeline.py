@@ -1857,6 +1857,40 @@ def test_local_router_disabled_falls_through(monkeypatch):
     asyncio.run(run())
 
 
+# ---- Native AEC audio front-end (Bundle B) ---------------------------------
+def test_native_ears_binary_available():
+    from otto.voice.native_ears import NativeEars, helper_binary_path
+    if helper_binary_path() is None:
+        import pytest
+        pytest.skip("orrin-audio helper not built (needs `swift build` in native/orrin-audio)")
+    assert NativeEars.available() is True
+
+
+def test_native_ears_stdio_framing():
+    import io
+    import threading
+    import types
+    from otto.voice.native_ears import NativeEars
+    ne = NativeEars.__new__(NativeEars)                    # bypass __init__ (no mic/binary needed)
+    ne._loop = types.SimpleNamespace(call_soon_threadsafe=lambda cb: cb())   # run posts inline
+    ne._stop = threading.Event()
+    ev = []
+    ne._on_speech_start = lambda: ev.append(("speech_start",))
+    ne._on_recording_stop = lambda: ev.append(("rec_stop",))
+    ne._on_final = lambda t: ev.append(("final", t))
+    ne._on_realtime = None
+    ne._on_health = lambda s: ev.append(("health", s))
+    ne._transcribe = lambda pcm: "open the repo" if pcm else ""
+    pcm = b"\x01\x02\x03\x04"
+    stream = b'{"type":"speech_start"}\n{"type":"utterance","bytes":4}\n' + pcm
+    ne._proc = types.SimpleNamespace(stdout=io.BytesIO(stream))
+    ne._read_loop()
+    assert ("speech_start",) in ev
+    assert ("rec_stop",) in ev
+    assert ("final", "open the repo") in ev
+    assert ne.last_audio == pcm
+
+
 # ---- First-run permissions + preflight health check -----------------------
 def test_preflight_check_microphone_statuses(monkeypatch):
     from otto import preflight

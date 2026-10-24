@@ -173,6 +173,11 @@ class STTConfig(BaseModel):
     # does recording/VAD/wake, but the captured audio is transcribed with MLX instead. Falls back to
     # faster-whisper automatically if mlx-whisper or the model isn't available (never goes mute).
     transcriber: Literal["faster-whisper", "mlx"] = "faster-whisper"
+    # Native audio front-end: capture through the `orrin-audio` helper (AVAudioEngine +
+    # VoiceProcessingIO acoustic echo cancellation) instead of RealtimeSTT. The AEC removes Orrin's
+    # own voice from the mic, so it runs FULL-DUPLEX on the built-in speakers (barge-in) instead of
+    # muting the mic while speaking. Off by default; needs the compiled helper (build native/orrin-audio).
+    native_audio: bool = False
     # MLX Whisper model ids (Hugging Face). English-only default is small; the multilingual/Hinglish
     # path (voice.language non-English) uses the fast large-v3-turbo. Downloaded once on first use.
     mlx_model: str = "mlx-community/whisper-small.en-mlx"

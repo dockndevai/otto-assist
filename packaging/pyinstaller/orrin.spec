@@ -65,6 +65,16 @@ try:
 except Exception as e:
     print(f"[orrin.spec] MLX not bundled ({e}) — packaged app will use faster-whisper")
 
+# Native audio helper (Bundle B): bundle the compiled orrin-audio at the bundle root so
+# helper_binary_path() (otto/voice/native_ears.py) finds it via sys._MEIPASS. build.sh compiles it;
+# build.sh's inside-out codesign pass signs it like every other Mach-O.
+_orrin_audio = os.path.join("native", "orrin-audio", ".build", "release", "orrin-audio")
+if os.path.exists(_orrin_audio):
+    binaries.append((_orrin_audio, "."))
+    print(f"[orrin.spec] bundled native audio helper: {_orrin_audio}")
+else:
+    print("[orrin.spec] native audio helper not built — packaged app uses RealtimeSTT")
+
 # Our own package data: the dashboard web assets + menu-bar icons.
 datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
 
