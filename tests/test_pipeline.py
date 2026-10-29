@@ -476,7 +476,7 @@ def test_ptt_bypasses_wake_word():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         seen = {}
-        orch.submit_user_input = lambda t: seen.setdefault("cmd", t)  # capture
+        orch.submit_user_input = lambda t, voice_ack=None: seen.setdefault("cmd", t)  # capture
         # Without arming, a non-wake utterance is ignored.
         orch._on_voice_final("what is the time")
         assert "cmd" not in seen
@@ -495,7 +495,7 @@ def test_wake_greeting_and_echo_filter():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         seen = {}
-        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        orch.submit_user_input = lambda t, voice_ack=None: seen.__setitem__("cmd", t)
         # bare wake -> greet + await (a real greeting, not just "yes")
         orch._enter_awaiting_command()
         assert orch._awaiting_command and orch._last_ack in __import__("otto.orchestrator", fromlist=["_WAKE_ACKS"])._WAKE_ACKS
@@ -579,7 +579,7 @@ def test_casual_talk_replies_locally_without_claude():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         sent, said = [], []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._voice_out = lambda t: said.append(t)
         orch._dispatch_voice_command("how are you", deliberate=True)
         assert sent == []                       # never bothered Claude
@@ -603,7 +603,7 @@ def test_efficientword_falls_back_to_phrase_when_listener_absent():
         orch.settings.voice.stt.wake_words = "hey otto"
         orch._eff = None                        # listener failed to load / not bundled
         seen = {}
-        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        orch.submit_user_input = lambda t, voice_ack=None: seen.__setitem__("cmd", t)
         orch._voice_out = lambda t: None
         orch._on_voice_final("hey otto open my email")
         assert seen.get("cmd") == "open my email"
@@ -1770,7 +1770,7 @@ def test_dispatch_holds_unfinished_not_brain(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("deploy the app and")     # unfinished → held, no brain
         assert sent == [] and orch._turn_flush_handle is not None
         orch._dispatch_voice_command("show me the diff")       # completes → dispatch the whole turn
@@ -1788,7 +1788,7 @@ def test_flush_dispatches_buffered_turn(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("set a reminder to")      # held
         assert sent == []
         orch._flush_turn()                                     # continuation window expired
@@ -1805,7 +1805,7 @@ def test_turn_taking_disabled_dispatches_immediately(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("deploy the app and")     # gate off → dispatched as-is
         assert sent == ["deploy the app and"]
 
@@ -2677,7 +2677,7 @@ def test_sleep_and_wake_hands_free(monkeypatch):
         orch.settings.voice.stt.wakeword_backend = "phrase"
         orch.settings.voice.stt.wake_words = "otto"
         submitted = []
-        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        monkeypatch.setattr(orch, "submit_user_input", lambda t, voice_ack=None: submitted.append(t))
         # sleep-command recognition (with/without a leading wake word or greeting)
         assert orch._is_sleep_command("stop listening")
         assert orch._is_sleep_command("otto stop listening")
@@ -2712,7 +2712,7 @@ def test_half_duplex_suppresses_self_echo(monkeypatch):
         orch.settings.voice.stt.always_listen = True
         orch.mouth = _Mouth()
         submitted = []
-        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        monkeypatch.setattr(orch, "submit_user_input", lambda t, voice_ack=None: submitted.append(t))
         # speaking a line pushes the mute window out; input is dropped during it
         orch._voice_out("Here is a spoken reply that takes a moment to say out loud.")
         assert orch._output_suppressing() is True
@@ -3316,7 +3316,7 @@ def test_voice_command_dispatch_routing(monkeypatch):
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
 
         # refine off, dictation off → text goes to Claude unchanged
         orch.settings.voice.stt.refine = False
@@ -3517,7 +3517,7 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         orch.settings.voice.stt.hands_free_verify = True
         orch.settings.voice.stt.refine = False
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
 
         # heuristic: obvious junk dropped, never reaches the brain
         orch._dispatch_voice_command("you", hands_free=True)   # heuristic filler → dropped
@@ -3602,7 +3602,7 @@ def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
             def match(self, audio, sr): return ("ankit", 0.9)
         orch.speaker = FakeSpeaker()
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         # if the cloud verify were (wrongly) consulted it would reject and drop — it must NOT be.
         import otto.voice.noise as noise
         async def reject(text, model="haiku"): return False
@@ -4142,7 +4142,7 @@ def test_dispatch_followup_relaxes_gate_threshold():
         st.smart_gate = True; st.smart_gate_threshold = 0.55; st.follow_up_threshold = 0.30
         st.refine = False; orch._dictation = False
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
         orch._ack = lambda intent: None
         await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=False)
         assert submitted == []                          # stricter bar → dropped
@@ -4160,7 +4160,7 @@ def test_dispatch_local_verify_drops_garbled_stt():
         orch.settings.voice.stt.refine = False; orch._dictation = False
         orch._ack = lambda intent: None
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
         orch.smart_gate = _FakeGate(real=0.1)
         await orch._dispatch_async("the the uh xcode xcode", gate=True, local_verify=True)
         assert submitted == []
@@ -4318,7 +4318,7 @@ def test_speaker_gate_drops_unregistered_voice():
         orch.settings.voice.stt.speaker_active = []
         orch._ack = lambda intent: None
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
 
         class _Ears: pass
         ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000; ears.sample_rate = 16000
@@ -4608,3 +4608,151 @@ def test_dashboard_smoke_optional():
     if r.returncode == 2:
         pytest.skip(f"dashboard smoke prerequisites missing: {r.stderr.strip()[:200]}")
     assert r.returncode == 0, (r.stdout + r.stderr)
+
+
+# ---- Conversational turn manager (acks / context / correction / concise / milestones) ----------
+def test_classify_task_by_intent():
+    from otto.voice.acks import classify_task, LOOKUP, DEBUG, CODE, LONG
+    assert classify_task("what's the time") == LOOKUP
+    assert classify_task("why is the build failing") == DEBUG
+    assert classify_task("refactor the auth function") == CODE
+    assert classify_task("trace where the token flows in the code") == CODE
+    assert classify_task("redesign the whole dashboard") == LONG
+    assert classify_task("audit everything for security") == LONG
+
+
+def test_ack_selector_varies_and_by_task():
+    import random
+    from otto.voice.acks import AckSelector, CODE, _PHRASES
+    sel = AckSelector(history=3, request_aware_rate=0.0, rng=random.Random(1))
+    picks = [sel.choose(CODE) for _ in range(8)]
+    assert all(p in _PHRASES[CODE] for p in picks)          # chosen from the right pool
+    for i in range(len(picks)):                             # no phrase repeats within the last 3
+        assert picks[i] not in picks[max(0, i - 3):i]
+
+
+def test_ack_selector_request_aware_echo():
+    import random
+    from otto.voice.acks import AckSelector
+    sel = AckSelector(request_aware_rate=1.0, rng=random.Random(0))
+    assert sel.choose("code", "trace the audio path") in (
+        "I'll trace where that flows.", "I'm following the data flow now.", "I'll trace that path.")
+    sel2 = AckSelector(request_aware_rate=1.0, rng=random.Random(0))
+    assert sel2.choose("code", "compare the two approaches") in (
+        "I'll compare the two approaches.", "I'll weigh the options.")
+
+
+def test_ack_phrases_are_concise():
+    from otto.voice.acks import _PHRASES, _REQUEST_AWARE
+    for pool in list(_PHRASES.values()) + [p for _, p in _REQUEST_AWARE]:
+        for phrase in pool:
+            assert len(phrase.split()) < 8, phrase           # voice-concise: under 8 words
+
+
+def test_conv_follow_up_context():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    cm.note_user("trace the audio path through the orchestrator")
+    assert cm.topic                                          # a topic was captured
+    assert cm.is_follow_up("and the second one?") is True
+    assert cm.is_follow_up("what about the mute logic") is True
+    assert cm.is_follow_up("open the calendar app") is False
+    # a bare follow-up gets the topic folded in; a self-contained one is untouched
+    assert "follow-up about" in cm.contextualize("and the second one?")
+    assert cm.contextualize("trace the audio path again") == "trace the audio path again"
+
+
+def test_conv_finished_speaking_and_correction():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    # delay until finished: an unfinished thought holds, the completion dispatches the whole turn
+    assert cm.offer("open the").kind == "hold"
+    d = cm.offer("auth module and run the tests.")
+    assert d.kind == "dispatch" and "open the auth module" in d.text
+    # self-correction: fold an "actually…" amend into a held thought
+    cm2 = ConversationManager()
+    assert cm2.offer("set a timer for ten minutes and").kind == "hold"   # trailing "and" → unfinished
+    d2 = cm2.offer("actually make it five.")
+    assert d2.kind == "dispatch" and "five" in d2.text and "ten minutes" in d2.text
+
+
+def test_conv_interruption():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    cm.offer("open the")                                     # something held
+    assert cm.holding is True
+    cm.interrupt()
+    assert cm.interrupted is True and cm.holding is False     # barge-in drops the held thought
+    cm.resume()
+    assert cm.interrupted is False
+
+
+def test_conv_fast_vs_long():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    assert cm.is_long("redesign the whole dashboard") is True
+    assert cm.is_long("what's the time") is False
+
+
+def test_conv_concise_voice_first():
+    from otto.voice.conversation import ConversationManager
+    long = "First sentence here. Second one follows. Third should be dropped. Fourth too."
+    assert ConversationManager.concise(long, max_sentences=2) == \
+        "First sentence here. Second one follows."
+    assert ConversationManager.concise("Short answer.") == "Short answer."
+    capped = ConversationManager.concise("x" * 300, max_sentences=5, max_chars=50)
+    assert len(capped) <= 52 and capped.endswith("…")
+
+
+def test_conv_milestone_real_not_filler():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    assert cm.milestone("Read", "otto/auth.py") == "Reading otto/auth.py"
+    assert cm.milestone("Bash", "pytest -q") == "Running pytest -q"
+    assert cm.milestone("TodoWrite", "updating list") is None    # bookkeeping → not a milestone
+    assert cm.milestone("Read", "") is None                       # no concrete target → no vague step
+    assert cm.is_filler_tool("TodoWrite") is True
+    assert cm.is_filler_tool("Read") is False
+
+
+def test_no_ack_on_instant_route_but_ack_on_engine(monkeypatch):
+    import asyncio
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch._loop = asyncio.new_event_loop()
+    orch.settings.voice.parallel_dispatch = False
+    acks = []
+    monkeypatch.setattr(orch, "_speak_ack", lambda intent="command", text="": acks.append(text))
+    for name in ("_maybe_chat_command", "_maybe_engine_command",
+                 "_maybe_memory_command", "_maybe_clone_command"):
+        monkeypatch.setattr(orch, name, lambda t: False)
+    monkeypatch.setattr(orch, "_autonomy_command", lambda t: None)
+    async def _noop(*a, **k):
+        return None
+    monkeypatch.setattr(orch, "_handle_turn", _noop)
+    try:
+        monkeypatch.setattr(orch, "_maybe_local_action", lambda t: True)   # instant → no ack
+        orch.submit_user_input("open safari", voice_ack="command")
+        monkeypatch.setattr(orch, "_maybe_local_action", lambda t: False)  # engine → ack
+        orch.submit_user_input("refactor the auth module", voice_ack="command")
+    finally:
+        pending = asyncio.all_tasks(orch._loop)
+        if pending:
+            orch._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        orch._loop.close()
+    assert acks == ["refactor the auth module"]
+
+
+def test_concise_cap_limits_spoken_reply(monkeypatch):
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.ears = None
+    orch.voice_muted = False
+    spoken = []
+    orch.mouth = types.SimpleNamespace(speak=lambda t: spoken.append(t), is_playing=lambda: False)
+    orch.settings.voice.tts.concise_voice = True
+    orch.settings.voice.tts.concise_chars = 40
+    orch.settings.voice.tts.max_spoken_chars = 600
+    orch._emit_speech("word " * 60)                          # a runaway reply
+    assert spoken and len(spoken[0]) <= 45 and spoken[0].endswith("…")

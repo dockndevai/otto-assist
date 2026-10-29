@@ -330,6 +330,11 @@ class TTSConfig(BaseModel):
     # bite; keep it generous so a normal concise reply is spoken in full (not truncated). 0
     # disables the cap. Markdown/URLs/code are stripped from speech regardless.
     max_spoken_chars: int = 600
+    # Concise voice replies (default on): speak only the first couple of sentences aloud (capped at
+    # concise_chars), while the dashboard still shows the full text. Keeps spoken answers short and
+    # voice-first. Set False to speak replies in full up to max_spoken_chars.
+    concise_voice: bool = True
+    concise_chars: int = 280
     # Latency: speak the FIRST complete sentence as soon as the model emits it (while it's still
     # generating the rest), then speak the remainder at end of turn — so audio starts sooner. One
     # extra clip, not per-sentence (which synthesized choppy). Off = single clip at end (old way).

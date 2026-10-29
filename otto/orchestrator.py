@@ -308,6 +308,7 @@ class Orchestrator:
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
         self.turn_taker = None  # dialogue-state gate (unfinished thoughts / corrections / holds)
+        self.conversation = None  # conversational turn manager (acks / topic / concise / milestones)
         self._turn_flush_handle = None   # continuation-window timer for a held turn
         self._held_hands_free = False    # mode to re-dispatch a held turn with
         self._hold_started = 0.0         # when the current held turn began (max-hold cap)
@@ -492,13 +493,24 @@ class Orchestrator:
     # responsive (Jarvis-style "On it"), and the wait for Claude's real reply isn't dead air.
     # The ack is chosen to fit the intent: an action gets "On it.", a question gets a
     # thinking beat, so it sounds like it actually understood you rather than a canned bark.
-    _ACKS_DO = ("On it.", "Right away.", "Sure thing.", "Got it.", "Okay—", "Consider it done.")
-    _ACKS_ASK = ("Let me check.", "One sec.", "Looking into it.", "Let me see.", "Checking.")
+    def _conv(self):
+        """The conversational turn manager (varied acks, topic/context, concise replies,
+        milestones). Lazily created; reuses the live TurnTaker when one exists."""
+        if self.conversation is None:
+            from .voice.conversation import ConversationManager
+            self.conversation = ConversationManager(
+                self.settings.voice, turn_taker=self.turn_taker)
+        return self.conversation
 
-    def _ack(self, intent: str = "command") -> None:
-        import random
-        pool = self._ACKS_ASK if intent == "question" else self._ACKS_DO
-        self._voice_out(random.choice(pool))
+    def _speak_ack(self, intent: str = "command", text: str = "") -> None:
+        """Speak a short, varied acknowledgement chosen by task type (and occasionally the request),
+        so there's no dead air before the engine replies. Only called on the engine path — instant
+        local actions / memory answers skip it and begin immediately."""
+        try:
+            phrase = self._conv().acknowledge(text, intent)
+        except Exception:
+            phrase = "On it."
+        self._voice_out(phrase)
 
     # -- media ducking: pause the user's music/video while listening after the wake word ------
     def _media_playpause(self) -> None:
@@ -983,6 +995,14 @@ class Orchestrator:
             self.turn_taker = TurnTaker(self.settings.voice)
         except Exception as e:
             print(f"[otto] turn-taker init failed: {e!r}", file=sys.stderr, flush=True)
+        # Conversational turn manager — composes the turn-taker with varied acks, topic/context,
+        # concise replies and real milestones.
+        try:
+            from .voice.conversation import ConversationManager
+            self.conversation = ConversationManager(
+                self.settings.voice, turn_taker=self.turn_taker)
+        except Exception as e:
+            print(f"[otto] conversation manager init failed: {e!r}", file=sys.stderr, flush=True)
         # Local intent router — handle simple Mac actions directly, no engine round-trip.
         try:
             from .local_actions import LocalActions
@@ -2671,8 +2691,10 @@ class Orchestrator:
                 await self._close_parallel_ws()
 
     # -- input routing -----------------------------------------------------
-    def submit_user_input(self, text: str) -> None:
-        """Entry point for both typed and spoken input."""
+    def submit_user_input(self, text: str, voice_ack: str | None = None) -> None:
+        """Entry point for both typed and spoken input. `voice_ack` (the dispatch intent) is set only
+        on the voice path; a short spoken acknowledgement is then said ONLY if the request reaches
+        the engine — instant local actions / memory answers below return first and skip it."""
         text = (text or "").strip()
         if not text:
             return
@@ -2716,6 +2738,15 @@ class Orchestrator:
         # on the machine with NO engine round-trip. Unrecognized input falls through to the brain.
         if self._maybe_local_action(text):
             return
+        # Everything above returned already — from here it's an engine turn (has latency). Track the
+        # topic for follow-ups, and speak ONE short acknowledgement on the voice path (never for the
+        # instant routes above, which answer/act immediately).
+        try:
+            self._conv().note_user(text)
+        except Exception:
+            pass
+        if voice_ack is not None:
+            self._speak_ack(voice_ack, text)
         assert self._loop is not None
         # Workspace targeting: "in <name>, <command>" runs the command in another workspace
         # (opening it if needed), concurrently, in the background. Only the focused workspace
@@ -2805,6 +2836,8 @@ class Orchestrator:
         self._cancel_turn_flush()
         if self.turn_taker is not None:
             self.turn_taker.reset()
+        if self.conversation is not None:
+            self.conversation.interrupt()   # mark the turn interrupted + drop the held thought
         self._speak_done = True
         self._speech_buf = ""
         self._cancel_briefing()            # a Stop during the startup greeting halts it too
@@ -3382,7 +3415,7 @@ class Orchestrator:
                 self._enter_awaiting_command(greet=False, follow_up=True)
                 return
         if not stt.refine and not self._dictation and not need_gate:
-            self._ack(intent); self.submit_user_input(text)   # fast path — ack, no model calls
+            self.submit_user_input(text, voice_ack=intent)   # fast path (ack only on the engine route)
             return
         if self._loop is not None:
             self._loop.create_task(self._dispatch_async(
@@ -3479,7 +3512,7 @@ class Orchestrator:
             except Exception as e:
                 self.notify("Dictation error", str(e))
             return
-        self._ack(intent); self.submit_user_input(text)   # acknowledge, then run the turn
+        self.submit_user_input(text, voice_ack=intent)   # ack only if it reaches the engine
 
     _DICTATION_ON = {"start dictation", "start dictating", "dictation mode",
                      "dictation on", "start typing", "type what i say"}
@@ -3951,6 +3984,11 @@ class Orchestrator:
                         pass
                 ws.state = "idle"
                 ws.last_reply = reply
+                if reply and focused:
+                    try:
+                        self._conv().note_reply(reply)   # keep topic/context for the next follow-up
+                    except Exception:
+                        pass
                 if reply:
                     self.bus.transcript("assistant", reply, final=True, ws=tag)
                     # Learn from the exchange in the background (records the turn + folds any
@@ -4063,7 +4101,15 @@ class Orchestrator:
         if re.sub(r"[^\w\s]", "", s).strip().lower() in _DEAD_REPLIES:
             print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
-        cap = self.settings.voice.tts.max_spoken_chars or 0
+        tts = self.settings.voice.tts
+        cap = tts.max_spoken_chars or 0
+        # Concise by default: a smaller effective cap so spoken answers stay voice-first short
+        # (the dashboard keeps the full text). The first sentence has already streamed, so this
+        # trims the remainder, yielding a brief spoken reply.
+        if getattr(tts, "concise_voice", True):
+            cc = int(getattr(tts, "concise_chars", 280) or 0)
+            if cc:
+                cap = min(cap, cc) if cap else cc
         if cap:
             remaining = cap - self._spoken_chars
             if remaining <= 0:
@@ -4075,6 +4121,11 @@ class Orchestrator:
         self._spoken_chars += len(s) + 1
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
+        try:
+            if self._conv().is_filler_tool(name):   # bookkeeping (TodoWrite/Think…) isn't a milestone
+                return
+        except Exception:
+            pass
         if name == "Task":
             self.bus.tool_use("subagent", detail, ws=ws)
         elif name.startswith("mcp__"):
