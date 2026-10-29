@@ -328,6 +328,7 @@ class Orchestrator:
         self._shutting_down = False  # set at the top of stop() — no recorder may start after this
         self._route_task = None      # background output-route refresh task
         self._utterance_gen = 0      # bumps on each finalized voice utterance (stale-verify guard)
+        self._playback_epoch = 0     # bumps on each interrupt (discards a now-moot delayed Stop verify)
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
         self._eff = None        # EfficientWord-Net custom wake-word listener
@@ -864,12 +865,13 @@ class Orchestrator:
             return "verify" if enrolled else "drop"
         return "accept"
 
-    async def _stop_if_speaker_matches(self, text: str, audio, sr, gen: int) -> None:
+    async def _stop_if_speaker_matches(self, text: str, audio, sr, gen: int, epoch: int) -> None:
         ok = await self._speaker_matches_user(audio, sr)
-        # Bind to the playback/turn generation: if a newer utterance finalized while we were
-        # verifying, this stop is stale — discard it (never act on an outdated decision).
-        if gen != self._utterance_gen:
-            print(f"[otto] stop verify stale (newer utterance arrived) — ignored: {text!r}",
+        # Bind to the utterance generation AND the playback epoch: if a newer utterance finalized,
+        # or any interrupt already fired, while we were verifying, this stop is stale — discard it
+        # (never act on an outdated decision).
+        if gen != self._utterance_gen or epoch != self._playback_epoch:
+            print(f"[otto] stop verify stale (newer utterance/interrupt) — ignored: {text!r}",
                   file=sys.stderr, flush=True)
             return
         if ok:
@@ -1975,17 +1977,24 @@ class Orchestrator:
 
     async def stop(self) -> None:
         self._shutting_down = True   # from here on, no recorder may (re)start
-        # Cancel + await an in-flight native→RealtimeSTT fallback so it can't start a recorder
-        # after shutdown has begun.
-        for task_attr in ("_fallback_task", "_route_task"):
-            task = getattr(self, task_attr, None)
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            setattr(self, task_attr, None)
+        # AWAIT (don't cancel) an in-flight native→RealtimeSTT fallback: we need the native helper
+        # CONFIRMED stopped before shutdown returns, so its audio tap is truly gone. _shutting_down
+        # already prevents the fallback from starting a new recorder. asyncio.shield keeps the
+        # fallback running even if stop() itself is cancelled.
+        if self._fallback_task is not None and not self._fallback_task.done():
+            try:
+                await asyncio.shield(self._fallback_task)
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._fallback_task = None
+        # The route-refresh loop is a plain background task with no shutdown ordering — cancel it.
+        if self._route_task is not None and not self._route_task.done():
+            self._route_task.cancel()
+            try:
+                await self._route_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._route_task = None
         # Stop the recorder OFF the event loop — NativeEars.stop() blocks on terminate/kill/join.
         ears, self.ears = self.ears, None
         if ears is not None:
@@ -2774,6 +2783,7 @@ class Orchestrator:
         running turn. Wired to the 'stop' word (heard in a gap), the dashboard Stop button, and
         the push-to-talk hotkey. Reliable regardless of the mic (button/hotkey don't need it)."""
         print(f"[otto] interrupt ({reason})", file=sys.stderr, flush=True)
+        self._playback_epoch += 1   # any delayed Stop verification bound to an earlier epoch is moot
         # Drop any half-spoken held thought — "stop" means abandon it, don't flush it later.
         self._cancel_turn_flush()
         if self.turn_taker is not None:
@@ -2823,11 +2833,12 @@ class Orchestrator:
             if decision == "accept":
                 self.interrupt_now("voice")
             elif decision == "verify" and self._loop is not None:
-                # Snapshot THIS utterance's audio + generation NOW — the off-loop verify must not
-                # read the mutable ears.last_audio later (a newer utterance would overwrite it).
+                # Snapshot THIS utterance's audio + generation + playback epoch NOW — the off-loop
+                # verify must not read the mutable ears.last_audio later (a newer utterance would
+                # overwrite it), and binds to the playback it was meant to interrupt.
                 audio, sr = self._utterance_audio()
-                gen = self._utterance_gen
-                self._loop.create_task(self._stop_if_speaker_matches(text, audio, sr, gen))
+                gen, epoch = self._utterance_gen, self._playback_epoch
+                self._loop.create_task(self._stop_if_speaker_matches(text, audio, sr, gen, epoch))
             else:
                 print(f"[otto] spoken stop not trusted during playback (use Stop button): {text!r}",
                       file=sys.stderr, flush=True)

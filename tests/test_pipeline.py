@@ -2224,9 +2224,8 @@ def test_stop_verify_discarded_when_newer_utterance_arrives(monkeypatch):
 
     async def run():
         orch._loop = asyncio.get_running_loop()
-        snap_audio, snap_sr, snap_gen = b"UTTER_A", 16000, orch._utterance_gen
-        task = orch._loop.create_task(
-            orch._stop_if_speaker_matches("stop", snap_audio, snap_sr, snap_gen))
+        snap = (b"UTTER_A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
         await asyncio.sleep(0)                 # let the verify start + enter the match
         orch._utterance_gen += 1               # a NEWER utterance finalizes mid-verification
         gate.set()
@@ -2234,6 +2233,26 @@ def test_stop_verify_discarded_when_newer_utterance_arrives(monkeypatch):
     asyncio.run(run())
     assert match_audio.get("seen") == b"UTTER_A"   # verified the snapshot, not later audio
     assert interrupts == []                        # stale → did NOT interrupt
+
+
+def test_stop_verify_discarded_when_playback_epoch_advances(monkeypatch):
+    """If any interrupt fires (epoch advances) before the Stop verify completes, it's discarded."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    orch.speaker = types.SimpleNamespace(match=lambda a, s: ("ankit", 0.95))
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap = (b"A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
+        orch._playback_epoch += 1              # an interrupt happened meanwhile → epoch advances
+        await task
+    asyncio.run(run())
+    assert interrupts == []                    # moot → did NOT interrupt
 
 
 def test_shutdown_during_fallback_starts_no_recorder(monkeypatch):
@@ -2263,6 +2282,50 @@ def test_shutdown_during_fallback_starts_no_recorder(monkeypatch):
     asyncio.run(run())
     assert started == []                        # fallback must NOT have started a recorder
     assert orch._shutting_down is True and orch.ears is None
+
+
+def test_shutdown_awaits_blocked_native_stop(monkeypatch):
+    """stop() must AWAIT (shield, not cancel) the in-flight fallback: if the native stop is blocked,
+    shutdown does not return early — it waits until the helper is confirmed stopped."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    stopped = {"entered": False, "returned": False}
+    def _blocking_stop():
+        stopped["entered"] = True
+        gate.wait(2.0)                          # hold until the test releases it
+        stopped["returned"] = True
+        return True                             # confirmed reap
+    orch.ears.stop = _blocking_stop
+    started = []
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): started.append("ctor")
+        def start(self): started.append("start")
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")   # schedule fallback
+        for _ in range(200):                     # wait until the executor enters the blocked stop
+            if stopped["entered"]:
+                break
+            await asyncio.sleep(0.01)
+        assert stopped["entered"] and not stopped["returned"]
+        stop_task = orch._loop.create_task(orch.stop())
+        for _ in range(4):
+            await asyncio.sleep(0)               # let stop() set _shutting_down + reach the shield
+        assert orch._shutting_down is True
+        assert stop_task.done() is False         # shutdown is BLOCKED on the native stop, not early
+        assert not stopped["returned"]           # native stop still running
+        gate.set()                               # release the native stop
+        await stop_task                          # now shutdown can complete
+        assert stopped["returned"] is True       # confirmed stopped before shutdown returned
+    asyncio.run(run())
+    assert started == []                         # no recorder started despite the fallback running
+    assert orch.ears is None
 
 
 def _speaking_orch(monkeypatch, mode):
