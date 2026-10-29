@@ -324,7 +324,10 @@ class Orchestrator:
         self._native_state = "off"   # off | starting | ready_aec | ready_noaec | failed
         self._aec_ok: bool | None = None
         self._ears_swapping = False  # guards the native→RealtimeSTT fallback (one swap, one owner)
+        self._fallback_task = None   # the in-flight async fallback task (coordinated with stop())
+        self._shutting_down = False  # set at the top of stop() — no recorder may start after this
         self._route_task = None      # background output-route refresh task
+        self._utterance_gen = 0      # bumps on each finalized voice utterance (stale-verify guard)
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
         self._eff = None        # EfficientWord-Net custom wake-word listener
@@ -705,14 +708,14 @@ class Orchestrator:
         """Native helper trouble (timeout/exit/error) — DISTINCT from a dead mic. Claim the swap
         synchronously (so a concurrent/late event bails) and run the fallback OFF the event loop.
         Ignore duplicates once already failed/off or a swap is in flight."""
-        if self._native_state in ("failed", "off") or self._ears_swapping:
+        if self._shutting_down or self._native_state in ("failed", "off") or self._ears_swapping:
             return
         print(f"[otto] native ears failed ({reason}) — falling back to RealtimeSTT",
               file=sys.stderr, flush=True)
         self._native_state = "failed"
         self._ears_swapping = True          # claimed here; cleared in the coroutine's finally
         if self._loop is not None:
-            self._loop.create_task(self._fallback_to_realtimestt(reason))
+            self._fallback_task = self._loop.create_task(self._fallback_to_realtimestt(reason))
         else:
             self._ears_swapping = False     # no loop (shouldn't happen) → nothing scheduled
 
@@ -742,6 +745,12 @@ class Orchestrator:
                             "Couldn't reclaim the microphone from the native helper — "
                             "please restart Orrin.")
                 self._recompute_audio_mode()
+                return
+            # Shutdown may have begun while we were stopping the helper — never start a recorder
+            # after Orchestrator.stop() has been entered.
+            if self._shutting_down:
+                print("[otto] shutdown in progress — not starting RealtimeSTT after fallback",
+                      file=sys.stderr, flush=True)
                 return
             # 2) Only now, with the native helper confirmed gone, bring up RealtimeSTT.
             try:
@@ -820,15 +829,12 @@ class Orchestrator:
         return bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
                     and self.speaker.ready and self.speaker.has_voiceprint)
 
-    async def _speaker_matches_user(self) -> bool:
-        """True only if speaker-verify is enrolled AND the last utterance matches an ACTIVE enrolled
-        voice. Runs the match OFF the event loop and honors `speaker_active`, exactly like the normal
-        command gate. Fail-closed (False) when speaker-ID isn't available — transcript matching alone
-        is never treated as proof a spoken stop came from you."""
-        if not self._speaker_echo_guard():
-            return False
-        audio, sr = self._utterance_audio()
-        if audio is None:
+    async def _speaker_matches_user(self, audio, sr) -> bool:
+        """True only if speaker-verify is enrolled AND the given (pre-snapshotted) utterance audio
+        matches an ACTIVE enrolled voice. Runs the match OFF the event loop and honors
+        `speaker_active`, exactly like the normal command gate. Fail-closed (False) when speaker-ID
+        isn't available — transcript matching alone is never treated as proof a spoken stop was you."""
+        if not self._speaker_echo_guard() or audio is None:
             return False
         try:
             m = await self._loop.run_in_executor(None, self.speaker.match, audio, sr)
@@ -858,8 +864,15 @@ class Orchestrator:
             return "verify" if enrolled else "drop"
         return "accept"
 
-    async def _stop_if_speaker_matches(self, text: str) -> None:
-        if await self._speaker_matches_user():
+    async def _stop_if_speaker_matches(self, text: str, audio, sr, gen: int) -> None:
+        ok = await self._speaker_matches_user(audio, sr)
+        # Bind to the playback/turn generation: if a newer utterance finalized while we were
+        # verifying, this stop is stale — discard it (never act on an outdated decision).
+        if gen != self._utterance_gen:
+            print(f"[otto] stop verify stale (newer utterance arrived) — ignored: {text!r}",
+                  file=sys.stderr, flush=True)
+            return
+        if ok:
             self.interrupt_now("voice")
         else:
             print(f"[otto] spoken stop didn't match your voice — ignored (use Stop button): {text!r}",
@@ -1961,15 +1974,28 @@ class Orchestrator:
         self._enter_awaiting_command(greet=self.settings.voice.stt.wake_greeting)
 
     async def stop(self) -> None:
-        if self._route_task is not None and not self._route_task.done():
-            self._route_task.cancel()
+        self._shutting_down = True   # from here on, no recorder may (re)start
+        # Cancel + await an in-flight native→RealtimeSTT fallback so it can't start a recorder
+        # after shutdown has begun.
+        for task_attr in ("_fallback_task", "_route_task"):
+            task = getattr(self, task_attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            setattr(self, task_attr, None)
+        # Stop the recorder OFF the event loop — NativeEars.stop() blocks on terminate/kill/join.
+        ears, self.ears = self.ears, None
+        if ears is not None:
             try:
-                await self._route_task
-            except (asyncio.CancelledError, Exception):
+                if self._loop is not None:
+                    await self._loop.run_in_executor(None, ears.stop)
+                else:
+                    ears.stop()
+            except Exception:
                 pass
-            self._route_task = None
-        if self.ears:
-            self.ears.stop()
         if self._ptt:
             self._ptt.stop()
         if self._eff:
@@ -2780,6 +2806,9 @@ class Orchestrator:
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
             return
+        # Each finalized utterance bumps the generation — a pending async Stop verification binds to
+        # the gen it was scheduled under and is discarded if a newer utterance arrives first.
+        self._utterance_gen += 1
         # Log every heard utterance (transcript-level captures), even ones we ignore below —
         # useful for reviewing mis-hears in always-listen.
         try:
@@ -2794,7 +2823,11 @@ class Orchestrator:
             if decision == "accept":
                 self.interrupt_now("voice")
             elif decision == "verify" and self._loop is not None:
-                self._loop.create_task(self._stop_if_speaker_matches(text))   # off-loop speaker check
+                # Snapshot THIS utterance's audio + generation NOW — the off-loop verify must not
+                # read the mutable ears.last_audio later (a newer utterance would overwrite it).
+                audio, sr = self._utterance_audio()
+                gen = self._utterance_gen
+                self._loop.create_task(self._stop_if_speaker_matches(text, audio, sr, gen))
             else:
                 print(f"[otto] spoken stop not trusted during playback (use Stop button): {text!r}",
                       file=sys.stderr, flush=True)

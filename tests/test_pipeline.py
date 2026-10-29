@@ -2193,14 +2193,76 @@ def test_speaker_matches_user_offloop_and_active(monkeypatch):
 
     async def run():
         orch._loop = asyncio.get_running_loop()
+        audio, sr = orch._utterance_audio()
         stt.speaker_active = ["ankit"]
-        ok1 = await orch._speaker_matches_user()
+        ok1 = await orch._speaker_matches_user(audio, sr)
         stt.speaker_active = ["someone-else"]        # not the matched name → reject
-        ok2 = await orch._speaker_matches_user()
+        ok2 = await orch._speaker_matches_user(audio, sr)
         return ok1, ok2
     ok1, ok2 = asyncio.run(run())
     assert ok1 is True and ok2 is False
     assert rec.get("thread") and rec["thread"] != main_thread   # match ran off the event loop
+
+
+def test_stop_verify_discarded_when_newer_utterance_arrives(monkeypatch):
+    """A later utterance arriving before Stop verification completes makes the stop stale: the
+    verify must use the SNAPSHOT audio (not mutable ears.last_audio) and NOT interrupt."""
+    import threading
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    match_audio = {}
+    gate = threading.Event()
+    def _match(audio, sr):
+        match_audio["seen"] = bytes(audio) if isinstance(audio, (bytes, bytearray)) else audio
+        gate.wait(1.0)                         # hold the match until a newer utterance lands
+        return ("ankit", 0.95)
+    orch.speaker = types.SimpleNamespace(match=_match)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap_audio, snap_sr, snap_gen = b"UTTER_A", 16000, orch._utterance_gen
+        task = orch._loop.create_task(
+            orch._stop_if_speaker_matches("stop", snap_audio, snap_sr, snap_gen))
+        await asyncio.sleep(0)                 # let the verify start + enter the match
+        orch._utterance_gen += 1               # a NEWER utterance finalizes mid-verification
+        gate.set()
+        await task
+    asyncio.run(run())
+    assert match_audio.get("seen") == b"UTTER_A"   # verified the snapshot, not later audio
+    assert interrupts == []                        # stale → did NOT interrupt
+
+
+def test_shutdown_during_fallback_starts_no_recorder(monkeypatch):
+    """If shutdown begins while a native fallback is stopping the helper, no recorder may start."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    def _slow_stop():
+        gate.wait(1.0)                         # hold the native shutdown so stop() can interleave
+        return True
+    orch.ears.stop = _slow_stop
+    started = []
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): started.append("ctor")
+        def start(self): started.append("start")
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")  # schedules the (slow) fallback task
+        await asyncio.sleep(0)                  # let it enter the off-loop native stop
+        gate.set()                              # let the native stop finish
+        await orch.stop()                       # shutdown cancels/awaits the fallback
+    asyncio.run(run())
+    assert started == []                        # fallback must NOT have started a recorder
+    assert orch._shutting_down is True and orch.ears is None
 
 
 def _speaking_orch(monkeypatch, mode):
