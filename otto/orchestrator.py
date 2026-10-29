@@ -457,6 +457,14 @@ class Orchestrator:
         # the Mac (talking to an empty room when you're remote). The local dashboard doesn't count.
         if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
             return
+        # A playback that starts while nothing is playing begins a NEW playback turn — bump the
+        # epoch so a delayed spoken-Stop verification bound to an earlier turn can't interrupt it
+        # (e.g. a later reply or a background-workspace notification spoken by another path).
+        try:
+            if not self.mouth.is_playing():
+                self._playback_epoch += 1
+        except Exception:
+            pass
         self.mouth.speak(t)
         # Remember what we just said so the mic re-hearing it (speaker echo) can be dropped even
         # after the timed mute window closes. Keep the last few, ~30s.
@@ -1980,12 +1988,21 @@ class Orchestrator:
         # AWAIT (don't cancel) an in-flight native→RealtimeSTT fallback: we need the native helper
         # CONFIRMED stopped before shutdown returns, so its audio tap is truly gone. _shutting_down
         # already prevents the fallback from starting a new recorder. asyncio.shield keeps the
-        # fallback running even if stop() itself is cancelled.
+        # fallback running even if stop() itself is cancelled — and if stop() DOES get cancelled, we
+        # keep awaiting the shielded fallback until the mic is reclaimed, THEN propagate the cancel
+        # (never return/raise while native-mic cleanup is still running).
         if self._fallback_task is not None and not self._fallback_task.done():
-            try:
-                await asyncio.shield(self._fallback_task)
-            except (asyncio.CancelledError, Exception):
-                pass
+            pending_cancel: asyncio.CancelledError | None = None
+            while not self._fallback_task.done():
+                try:
+                    await asyncio.shield(self._fallback_task)
+                except asyncio.CancelledError as ce:
+                    pending_cancel = ce          # don't abandon mic cleanup — finish it first
+                except Exception:
+                    break                        # fallback finished (possibly with an error)
+            self._fallback_task = None
+            if pending_cancel is not None:
+                raise pending_cancel
         self._fallback_task = None
         # The route-refresh loop is a plain background task with no shutdown ordering — cancel it.
         if self._route_task is not None and not self._route_task.done():

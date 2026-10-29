@@ -2328,6 +2328,93 @@ def test_shutdown_awaits_blocked_native_stop(monkeypatch):
     assert orch.ears is None
 
 
+def test_shutdown_cancel_awaits_cleanup_then_propagates(monkeypatch):
+    """If stop() is cancelled while native shutdown is blocked, the mic is still reclaimed (the
+    shielded fallback is awaited to completion) BEFORE CancelledError propagates."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    stopped = {"entered": False, "returned": False}
+    def _blocking_stop():
+        stopped["entered"] = True
+        gate.wait(2.0)
+        stopped["returned"] = True
+        return True
+    orch.ears.stop = _blocking_stop
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): pass
+        def start(self): pass
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")
+        for _ in range(200):
+            if stopped["entered"]:
+                break
+            await asyncio.sleep(0.01)
+        stop_task = orch._loop.create_task(orch.stop())
+        for _ in range(4):
+            await asyncio.sleep(0)               # let stop() reach the shield-await
+        stop_task.cancel()                       # cancel stop() mid native-shutdown
+        for _ in range(4):
+            await asyncio.sleep(0)               # deliver the cancellation
+        assert not stopped["returned"]           # cleanup NOT abandoned — still awaiting the helper
+        assert not stop_task.done()              # cancellation did NOT propagate early
+        gate.set()                               # release the native stop
+        cancelled = False
+        try:
+            await stop_task
+        except asyncio.CancelledError:
+            cancelled = True
+        assert cancelled                         # cancellation propagated AFTER cleanup
+        assert stopped["returned"] is True       # mic reclaimed before the cancel surfaced
+    asyncio.run(run())
+
+
+def test_voice_out_bumps_playback_epoch(monkeypatch):
+    """A fresh TTS turn (nothing currently playing) bumps the playback epoch; a continuation does not."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.voice_muted = False
+    orch.ears = None
+    playing = {"v": False}
+    orch.mouth = types.SimpleNamespace(is_playing=lambda: playing["v"], speak=lambda t: None)
+    e0 = orch._playback_epoch
+    orch._voice_out("hello")                     # fresh → bump
+    assert orch._playback_epoch == e0 + 1
+    playing["v"] = True
+    orch._voice_out("more of the same reply")    # continuation → no bump
+    assert orch._playback_epoch == e0 + 1
+
+
+def test_stop_verify_discarded_when_new_playback_starts(monkeypatch):
+    """A delayed verified Stop must not interrupt a LATER playback begun by another path."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.voice_muted = False
+    orch.ears = None
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    orch.speaker = types.SimpleNamespace(match=lambda a, s: ("ankit", 0.95))
+    orch.mouth = types.SimpleNamespace(is_playing=lambda: False, speak=lambda t: None)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap = (b"A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
+        orch._voice_out("a new reply from another path")   # new playback turn → epoch advances
+        await task
+    asyncio.run(run())
+    assert interrupts == []                      # moot → did NOT interrupt the new playback
+
+
 def _speaking_orch(monkeypatch, mode):
     import types
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
