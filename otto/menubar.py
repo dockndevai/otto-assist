@@ -43,7 +43,7 @@ _STATE_LABELS = {
     "thinking": "● Thinking…",
     "speaking": "● Speaking…",
     "working": "● Working…",
-    "sleeping": "☾ Sleeping — say “Otto”",
+    "sleeping": "☾ Sleeping",   # the wake-word hint is appended at render (it's configurable)
 }
 
 
@@ -491,9 +491,21 @@ class OttoApp(rumps.App):
 
     # -- menu (main thread) ------------------------------------------------
     @rumps.timer(1)
+    def _wake_word(self) -> str:
+        """The spoken wake word for UI hints — the configured trigger (last word of `wake_words`),
+        capitalized; defaults to 'Otto'. Reflects that the wake word is user-configurable."""
+        try:
+            words = (getattr(self.settings.voice.stt, "wake_words", "") or "").split()
+            return (words[-1] if words else "otto").capitalize()
+        except Exception:
+            return "Otto"
+
     def _tick(self, _) -> None:
         try:
-            self.status_item.title = _STATE_LABELS.get(self.orch.state, self.orch.state)
+            label = _STATE_LABELS.get(self.orch.state, self.orch.state)
+            if self.orch.state == "sleeping":
+                label = f"{label} — say “{self._wake_word()}”"
+            self.status_item.title = label
             # Swap the colored logo to match the live state (grey idle, colors when active).
             name = "muted" if self.orch.mic_muted else _STATE_ICON.get(self.orch.state, "idle")
             if self._has_icon:
