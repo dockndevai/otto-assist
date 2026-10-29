@@ -24,18 +24,19 @@ class WorkspaceContext:
     """AssistantContext bound to one workspace; forwards tool callbacks to the orchestrator
     tagged with the workspace path."""
 
-    def __init__(self, orch: Any, project: str) -> None:
+    def __init__(self, orch: Any, project: str, ws: Any = None) -> None:
         self.orch = orch
         self.project = project
+        self.ws = ws   # the owning Workspace — gives ask_user/confirm a real identity to key on
 
     async def say(self, text: str) -> None:
         await self.orch._ws_say(self.project, text)
 
     async def ask_user(self, question: str) -> str:
-        return await self.orch._ws_ask_user(self.project, question)
+        return await self.orch._ws_ask_user(self.ws, question)
 
     async def confirm(self, action: str) -> bool:
-        return await self.orch._ws_confirm(self.project, action)
+        return await self.orch._ws_confirm(self.ws, action)
 
     def render_canvas(self, content: str, fmt: str = "html") -> None:
         self.orch._ws_render(self.project, content, fmt)
@@ -90,7 +91,7 @@ class Workspace:
         # Autonomous write mode (the background teammate / steward, #71/#72): edits + safe git/test
         # + PR-create on a feature branch, gated by the autonomy allowlist in the brain.
         self.write_mode = write_mode
-        self.ctx = WorkspaceContext(orch, project)
+        self.ctx = WorkspaceContext(orch, project, self)
         # Engine-agnostic: the factory picks Claude (SDK) or any configured CLI agent for this cwd.
         self.engine, self.brain = make_brain(
             self.ctx, settings, cwd=project, resume=resume, new_chat=new_chat,

@@ -2690,6 +2690,12 @@ class Orchestrator:
         # input is only ever directed at the focused workspace's question, so resolve its slot
         # specifically — a concurrent background-workspace question (own slot) is untouched.
         fut = self._pending_answers.get(id(self.focused_ws))
+        if fut is None and len(self._pending_answers) == 1:
+            # Focus moved (e.g. menubar's direct focus_workspace()) after the question was asked,
+            # so the asking workspace's slot no longer matches id(self.focused_ws). With only one
+            # question outstanding there's no ambiguity about who it's for — answer it rather than
+            # let it time out after 120s.
+            fut = next(iter(self._pending_answers.values()))
         if fut is not None and not fut.done():
             self.bus.transcript("user", text, final=True)
             fut.set_result(text)
@@ -2874,7 +2880,10 @@ class Orchestrator:
         # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
-        if self._pending_answers:
+        # Scoped to the FOCUSED workspace's own slot — a background workspace's pending question
+        # must not swallow/echo-guard input meant for the focused one (same scoping as
+        # submit_user_input's lookup above).
+        if id(self.focused_ws) in self._pending_answers:
             if self._echo_blocking() or self._is_self_echo(text):  # mic tail of Orrin speaking the question
                 print(f"[otto] ignoring echo while awaiting answer: {text!r}",
                       file=sys.stderr, flush=True)
