@@ -702,32 +702,48 @@ class Orchestrator:
         self._recompute_audio_mode()
 
     def _on_native_failed(self, reason: str) -> None:
-        """Native helper trouble (timeout/exit/error) — DISTINCT from a dead mic. Fall back to
-        RealtimeSTT. Ignore duplicates/late events once already failed or off."""
-        if self._native_state in ("failed", "off"):
+        """Native helper trouble (timeout/exit/error) — DISTINCT from a dead mic. Claim the swap
+        synchronously (so a concurrent/late event bails) and run the fallback OFF the event loop.
+        Ignore duplicates once already failed/off or a swap is in flight."""
+        if self._native_state in ("failed", "off") or self._ears_swapping:
             return
         print(f"[otto] native ears failed ({reason}) — falling back to RealtimeSTT",
               file=sys.stderr, flush=True)
         self._native_state = "failed"
-        self._fallback_to_realtimestt(reason)
+        self._ears_swapping = True          # claimed here; cleared in the coroutine's finally
+        if self._loop is not None:
+            self._loop.create_task(self._fallback_to_realtimestt(reason))
+        else:
+            self._ears_swapping = False     # no loop (shouldn't happen) → nothing scheduled
 
-    def _fallback_to_realtimestt(self, reason: str) -> None:
-        """Stop the native helper FULLY, then start RealtimeSTT — never two live mic owners. A real
-        mic failure (on_health 'deaf') is surfaced ONLY if the fallback recorder also fails."""
-        if self._ears_swapping:
-            return
-        self._ears_swapping = True
+    async def _fallback_to_realtimestt(self, reason: str) -> None:
+        """Stop the native helper FULLY (off-loop), confirm it's reaped, THEN start RealtimeSTT —
+        never two live mic owners. If the helper can't be confirmed dead, do NOT start another
+        recorder (we'd risk two mic owners); surface it instead. A real mic failure (on_health
+        'deaf') is raised only if the fallback recorder itself fails to start."""
         try:
-            old = self.ears
-            # 1) Stop + await the native helper so no audio tap is still live.
+            old, self.ears = self.ears, None
+            self._native_audio = False
+            # 1) Stop + CONFIRM the native helper is gone (process reaped + reader threads exited),
+            #    off the event loop so the terminate/kill/join waits never block it.
+            confirmed = True
             if old is not None:
                 try:
-                    old.stop()
+                    confirmed = bool(await self._loop.run_in_executor(None, old.stop))
                 except Exception as e:
+                    confirmed = False
                     print(f"[otto] native stop during fallback: {e!r}", file=sys.stderr, flush=True)
-            self.ears = None
-            self._native_audio = False
-            # 2) Only now bring up RealtimeSTT.
+            if not confirmed:
+                # Can't prove the native tap is dead → refuse to open a second recorder.
+                print("[otto] native helper not confirmed stopped — NOT starting RealtimeSTT",
+                      file=sys.stderr, flush=True)
+                self._status("error", "Voice input stopped")
+                self.notify("Voice input stopped",
+                            "Couldn't reclaim the microphone from the native helper — "
+                            "please restart Orrin.")
+                self._recompute_audio_mode()
+                return
+            # 2) Only now, with the native helper confirmed gone, bring up RealtimeSTT.
             try:
                 from .voice.stt import Ears
                 ne = Ears(
@@ -740,7 +756,7 @@ class Orchestrator:
                     on_realtime=self._on_voice_partial,
                     on_health=self._on_stt_health,
                 )
-                ne.start()
+                await self._loop.run_in_executor(None, ne.start)
                 self.ears = ne
             except Exception as e:
                 self.ears = None
@@ -804,38 +820,50 @@ class Orchestrator:
         return bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
                     and self.speaker.ready and self.speaker.has_voiceprint)
 
-    def _stop_passes_speaker(self) -> bool:
-        """True only if speaker-verify is enrolled AND the last utterance matches YOUR voice.
-        Fail-closed (False) when speaker-ID isn't available — transcript matching alone is NOT
-        treated as proof a spoken stop came from you."""
+    async def _speaker_matches_user(self) -> bool:
+        """True only if speaker-verify is enrolled AND the last utterance matches an ACTIVE enrolled
+        voice. Runs the match OFF the event loop and honors `speaker_active`, exactly like the normal
+        command gate. Fail-closed (False) when speaker-ID isn't available — transcript matching alone
+        is never treated as proof a spoken stop came from you."""
         if not self._speaker_echo_guard():
             return False
+        audio, sr = self._utterance_audio()
+        if audio is None:
+            return False
         try:
-            audio, sr = self._utterance_audio()
-            if audio is None:
-                return False
-            m = self.speaker.match(audio, sr)
-            if not m:
-                return False
-            _, score = m
-            return float(score) >= float(getattr(self.settings.voice.stt, "speaker_threshold", 0.55))
+            m = await self._loop.run_in_executor(None, self.speaker.match, audio, sr)
         except Exception:
             return False
+        if not m:
+            return False
+        name, sim = m
+        stt = self.settings.voice.stt
+        thr = float(getattr(stt, "speaker_threshold", 0.55))
+        active = [n.lower() for n in getattr(stt, "speaker_active", []) or []]
+        return bool(sim >= thr and (not active or name.lower() in active))
 
-    def _stop_command_allowed(self) -> bool:
-        """Policy for a SPOKEN stop (the button/hotkey path always interrupts, bypassing this). In a
-        silence gap → genuine → accept. While Orrin is actually speaking: headset → accept (no echo
-        path; require a speaker match if enrolled); full_duplex_aec → require a verified speaker,
-        else drop (residual echo can read as 'stop' — use the Stop button); half_duplex/degraded →
+    def _stop_decision(self) -> str:
+        """Classify a SPOKEN stop (the button/hotkey path always interrupts, bypassing this):
+        'accept' (interrupt now), 'drop' (ignore — use the Stop button), or 'verify' (interrupt only
+        if an off-loop speaker match confirms it's you). In a silence gap → accept. While Orrin is
+        actually speaking: headset → verify if enrolled, else accept (no echo path); full_duplex_aec
+        → verify if enrolled, else drop (residual echo can read as 'stop'); half_duplex/degraded →
         the mic was muted during playback, so a stop here is a genuine gap utterance → accept."""
         if not self._output_suppressing():
-            return True
-        mode = self.audio_mode
-        if mode == _AUDIO_FULL_HEADSET:
-            return self._stop_passes_speaker() if self._speaker_echo_guard() else True
-        if mode == _AUDIO_FULL_AEC:
-            return self._stop_passes_speaker()
-        return True
+            return "accept"
+        enrolled = self._speaker_echo_guard()
+        if self.audio_mode == _AUDIO_FULL_HEADSET:
+            return "verify" if enrolled else "accept"
+        if self.audio_mode == _AUDIO_FULL_AEC:
+            return "verify" if enrolled else "drop"
+        return "accept"
+
+    async def _stop_if_speaker_matches(self, text: str) -> None:
+        if await self._speaker_matches_user():
+            self.interrupt_now("voice")
+        else:
+            print(f"[otto] spoken stop didn't match your voice — ignored (use Stop button): {text!r}",
+                  file=sys.stderr, flush=True)
 
     def _echo_blocking(self) -> bool:
         """Capture-time echo guard. During ACTUAL playback (or its 1.5s tail) the mic hears a mix of
@@ -1933,6 +1961,13 @@ class Orchestrator:
         self._enter_awaiting_command(greet=self.settings.voice.stt.wake_greeting)
 
     async def stop(self) -> None:
+        if self._route_task is not None and not self._route_task.done():
+            self._route_task.cancel()
+            try:
+                await self._route_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._route_task = None
         if self.ears:
             self.ears.stop()
         if self._ptt:
@@ -2755,8 +2790,11 @@ class Orchestrator:
         # speaking is gated by AudioMode (echo can read as "stop"): in full-duplex AEC it needs a
         # verified speaker, else it's dropped and the Stop button / hotkey is the guaranteed path.
         if self._is_stop_command(text):
-            if self._stop_command_allowed():
+            decision = self._stop_decision()
+            if decision == "accept":
                 self.interrupt_now("voice")
+            elif decision == "verify" and self._loop is not None:
+                self._loop.create_task(self._stop_if_speaker_matches(text))   # off-loop speaker check
             else:
                 print(f"[otto] spoken stop not trusted during playback (use Stop button): {text!r}",
                       file=sys.stderr, flush=True)

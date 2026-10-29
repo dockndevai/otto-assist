@@ -112,16 +112,19 @@ class NativeEars:
         self._ready_timer.daemon = True
         self._ready_timer.start()
 
-    def stop(self) -> None:
-        """Deliberate shutdown. Joins the helper + reader so no native audio tap is still live when
-        this returns (single-mic-owner invariant on fallback). Marks the stop expected so a late
-        exit/error from the reader loop can't fire on_native_failed."""
+    def stop(self) -> bool:
+        """Deliberate shutdown. Returns True ONLY when the helper process is confirmed reaped AND
+        both reader threads have exited — so the caller can guarantee no native audio tap is still
+        live before starting another recorder (single-mic-owner invariant). Marks the stop expected
+        so a late exit/error from the reader loop can't fire on_native_failed. BLOCKS (terminate →
+        wait → kill → join); run it off the event loop."""
         self._expected_stop = True
         self._stop.set()
         if self._ready_timer is not None:
             self._ready_timer.cancel()
         self._send({"cmd": "quit"})
         p, self._proc = self._proc, None
+        reaped = True
         if p is not None:
             try:
                 p.terminate()
@@ -134,12 +137,21 @@ class NativeEars:
                     p.kill()
                 except Exception:
                     pass
+                try:
+                    p.wait(timeout=2.0)
+                except Exception:
+                    pass
+            reaped = (p.poll() is not None)   # confirm the process actually exited
+        threads_done = True
         for th in (self._reader, self._stderr_reader):
             if th is not None and th.is_alive():
                 try:
                     th.join(timeout=3.0)
                 except Exception:
                     pass
+                if th.is_alive():
+                    threads_done = False      # a reader thread is still running → NOT confirmed
+        return bool(reaped and threads_done)
 
     def set_mic(self, on: bool) -> None:
         self._send({"cmd": "unmute" if on else "mute"})
