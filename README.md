@@ -11,8 +11,8 @@ always-on loop) that plugs into the **Claude Code already installed on your Mac*
 you *talk* to it. Your MCP servers, subagents, skills, and `CLAUDE.md` — all of it, now by
 voice, on a live dashboard.
 
-> **Orrin** is the app you install. **"Otto"** is the wake word — who you call across the
-> room. The name is yours to change.
+> **Orrin** is the app you install. **"Otto"** is the default wake word — who you call across the
+> room — and it's configurable: change it in **Settings → Wake word**.
 >
 > The standalone signed-app build is in [packaging/pyinstaller/BUILD.md](packaging/pyinstaller/BUILD.md)
 > and [SIGNING.md](packaging/pyinstaller/SIGNING.md). **Open source under the [MIT License](LICENSE).**
