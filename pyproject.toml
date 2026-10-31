@@ -1,6 +1,6 @@
 [project]
 name = "otto-assist"
-version = "0.2.33"
+version = "0.2.34"
 description = "Orrin — a realtime, voice-driven macOS assistant around Claude Code / Cursor (wake word configurable, default 'Otto')."
 requires-python = ">=3.11"
 license = { text = "MIT" }
