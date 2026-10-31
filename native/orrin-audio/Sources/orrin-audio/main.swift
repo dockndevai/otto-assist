@@ -84,9 +84,12 @@ func handleFrame(_ ptr: UnsafePointer<Int16>, _ count: Int) {
 // ---- audio engine -----------------------------------------------------------
 let engine = AVAudioEngine()
 let input = engine.inputNode
+var aecEnabled = false
 do {
     try input.setVoiceProcessingEnabled(true)   // <-- enables VoiceProcessingIO AEC
+    aecEnabled = true
 } catch {
+    aecEnabled = false
     logErr("[orrin-audio] voice processing unavailable: \(error) — continuing without AEC")
 }
 
@@ -117,8 +120,9 @@ input.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { (buf, _) in
 do {
     engine.prepare()
     try engine.start()
-    emit("{\"type\":\"ready\"}")
-    logErr("[orrin-audio] started (in=\(inFmt.sampleRate)Hz -> 16000Hz, AEC on)")
+    // The AEC-readiness handshake: Python enables full-duplex ONLY when aec is true.
+    emit("{\"type\":\"ready\",\"aec\":\(aecEnabled)}")
+    logErr("[orrin-audio] started (in=\(inFmt.sampleRate)Hz -> 16000Hz, AEC \(aecEnabled ? "on" : "OFF"))")
 } catch {
     logErr("[orrin-audio] engine failed: \(error)")
     emit("{\"type\":\"error\",\"msg\":\"engine start failed\"}")

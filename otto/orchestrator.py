@@ -260,6 +260,18 @@ def _parse_confirmation(answer: str) -> str:
     return "unclear"
 
 
+# ---- AudioMode: the single authority for mic / echo / barge-in behavior ----------------------
+# half_duplex          — mic physically muted while Orrin speaks (safe default / fail-closed state)
+# full_duplex_headset  — mic stays live during TTS; output route is acoustically isolated (headset)
+# full_duplex_aec      — mic stays live during TTS; native helper confirmed AEC (aec=true)
+# degraded             — wanted full-duplex but a precondition failed; runs half-duplex + a warning
+_AUDIO_HALF_DUPLEX = "half_duplex"
+_AUDIO_FULL_HEADSET = "full_duplex_headset"
+_AUDIO_FULL_AEC = "full_duplex_aec"
+_AUDIO_DEGRADED = "degraded"
+_AUDIO_FULL_DUPLEX = (_AUDIO_FULL_HEADSET, _AUDIO_FULL_AEC)
+
+
 class Orchestrator:
     def __init__(self, settings: Settings, bus: EventBus) -> None:
         self.settings = settings
@@ -296,6 +308,7 @@ class Orchestrator:
         self.mouth = None       # set in start() if voice output enabled
         self.scheduler = None   # proactive reminders/timers; created in start()
         self.turn_taker = None  # dialogue-state gate (unfinished thoughts / corrections / holds)
+        self.conversation = None  # conversational turn manager (acks / topic / concise / milestones)
         self._turn_flush_handle = None   # continuation-window timer for a held turn
         self._held_hands_free = False    # mode to re-dispatch a held turn with
         self._hold_started = 0.0         # when the current held turn began (max-hold cap)
@@ -303,12 +316,28 @@ class Orchestrator:
         self.smart_gate = None  # fast local "is this for Orrin?" gate for hands-free listen
         self.speaker = None     # "is this MY voice?" verifier for hands-free (set in start())
         self.ears = None        # set in start() if voice input enabled
-        self._native_audio = False   # native AEC front-end active → full-duplex (no mic muting)
+        self._native_audio = False   # native AEC ears selected (full-duplex gated on AEC handshake)
+        # AudioMode: the single authority for mic/echo/barge-in behavior. Fails closed to
+        # half_duplex; full_duplex_aec is reachable ONLY via a confirmed aec=true handshake.
+        self.audio_mode = _AUDIO_HALF_DUPLEX
+        self._audio_mode_reason = ""
+        self._last_audio_mode_pub: tuple[str, str] | None = None   # (mode, reason) dedup for events
+        self._native_state = "off"   # off | starting | ready_aec | ready_noaec | failed
+        self._aec_ok: bool | None = None
+        self._ears_swapping = False  # guards the native→RealtimeSTT fallback (one swap, one owner)
+        self._fallback_task = None   # the in-flight async fallback task (coordinated with stop())
+        self._shutting_down = False  # set at the top of stop() — no recorder may start after this
+        self._route_task = None      # background output-route refresh task
+        self._utterance_gen = 0      # bumps on each finalized voice utterance (stale-verify guard)
+        self._playback_epoch = 0     # bumps on each interrupt (discards a now-moot delayed Stop verify)
         self._ptt = None
         self._external_ptt = False  # menu bar installs the global hotkey on the main thread
         self._eff = None        # EfficientWord-Net custom wake-word listener
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._pending_answer: asyncio.Future[str] | None = None
+        # Keyed by id(workspace) so a focused-turn ask_user/confirm and a concurrent
+        # background-workspace one (even on the same project) get independent slots instead of
+        # clobbering a single shared future.
+        self._pending_answers: dict[int, "asyncio.Future[str]"] = {}
         self.remote_clients = 0      # authenticated phone clients currently connected (WS)
         self._speech_buf = ""
         self._spoken_chars = 0       # chars spoken so far this turn (for the spoken-length cap)
@@ -429,6 +458,14 @@ class Orchestrator:
         # the Mac (talking to an empty room when you're remote). The local dashboard doesn't count.
         if self.remote_clients > 0 and self.settings.voice.tts.mute_when_remote:
             return
+        # A playback that starts while nothing is playing begins a NEW playback turn — bump the
+        # epoch so a delayed spoken-Stop verification bound to an earlier turn can't interrupt it
+        # (e.g. a later reply or a background-workspace notification spoken by another path).
+        try:
+            if not self.mouth.is_playing():
+                self._playback_epoch += 1
+        except Exception:
+            pass
         self.mouth.speak(t)
         # Remember what we just said so the mic re-hearing it (speaker echo) can be dropped even
         # after the timed mute window closes. Keep the last few, ~30s.
@@ -456,13 +493,24 @@ class Orchestrator:
     # responsive (Jarvis-style "On it"), and the wait for Claude's real reply isn't dead air.
     # The ack is chosen to fit the intent: an action gets "On it.", a question gets a
     # thinking beat, so it sounds like it actually understood you rather than a canned bark.
-    _ACKS_DO = ("On it.", "Right away.", "Sure thing.", "Got it.", "Okay—", "Consider it done.")
-    _ACKS_ASK = ("Let me check.", "One sec.", "Looking into it.", "Let me see.", "Checking.")
+    def _conv(self):
+        """The conversational turn manager (varied acks, topic/context, concise replies,
+        milestones). Lazily created; reuses the live TurnTaker when one exists."""
+        if self.conversation is None:
+            from .voice.conversation import ConversationManager
+            self.conversation = ConversationManager(
+                self.settings.voice, turn_taker=self.turn_taker)
+        return self.conversation
 
-    def _ack(self, intent: str = "command") -> None:
-        import random
-        pool = self._ACKS_ASK if intent == "question" else self._ACKS_DO
-        self._voice_out(random.choice(pool))
+    def _speak_ack(self, intent: str = "command", text: str = "") -> None:
+        """Speak a short, varied acknowledgement chosen by task type (and occasionally the request),
+        so there's no dead air before the engine replies. Only called on the engine path — instant
+        local actions / memory answers skip it and begin immediately."""
+        try:
+            phrase = self._conv().acknowledge(text, intent)
+        except Exception:
+            phrase = "On it."
+        self._voice_out(phrase)
 
     # -- media ducking: pause the user's music/video while listening after the wake word ------
     def _media_playpause(self) -> None:
@@ -599,22 +647,182 @@ class Orchestrator:
 
     def _barge_in_active(self) -> bool:
         """Should the mic stay LIVE while Orrin speaks (so voice "stop" cuts in mid-sentence)?
-        True if barge-in is forced on, OR auto-barge-in is enabled AND the output route is
-        acoustically safe (headphones/AirPods/external — the mic can't hear Orrin). On the
-        built-in speakers this returns False, so we stay half-duplex and never loop (#56).
-        The native AEC front-end cancels Orrin's own voice acoustically, so it's always safe."""
-        if self._native_audio:
-            return True
+        Reads the single AudioMode authority — true only in a full-duplex mode."""
+        return self.audio_mode in _AUDIO_FULL_DUPLEX
+
+    # ---- AudioMode: single source of truth for mic/echo behavior -------------
+    def _route_class(self) -> str:
+        """Cached output-route classification (NON-BLOCKING); UNKNOWN until the first refresh."""
+        try:
+            from . import audio
+            return audio.classify_output_route()
+        except Exception:
+            return "unknown"
+
+    def _resolve_audio_mode(self) -> tuple[str, str]:
+        """Pure resolver → (mode, reason). Fails closed to half_duplex. full_duplex is reachable
+        ONLY via an isolated route (headset) or a confirmed aec=true native handshake; forced
+        barge-in never overrides an echoing/unknown route."""
+        if self._native_state == "ready_aec":
+            return _AUDIO_FULL_AEC, ""
+        if self._native_state == "ready_noaec":
+            return _AUDIO_DEGRADED, "aec_disabled"      # native still records; half-duplex policy
+        if self._native_state == "starting":
+            return _AUDIO_HALF_DUPLEX, "aec_pending"     # conservative until the handshake lands
+        # Route path (native off, or native failed → now on RealtimeSTT).
         stt = self.settings.voice.stt
-        if stt.barge_in:
-            return True
-        if getattr(stt, "barge_in_auto", False):
+        want_fd = bool(getattr(stt, "barge_in", False) or getattr(stt, "barge_in_auto", False))
+        route = self._route_class()
+        from . import audio
+        if want_fd and route == audio.ISOLATED:
+            return _AUDIO_FULL_HEADSET, ("forced" if getattr(stt, "barge_in", False) else "auto")
+        if self._native_state == "failed" and route in (audio.ECHOING, audio.UNKNOWN):
+            return _AUDIO_DEGRADED, "native_failed"
+        if want_fd and route in (audio.ECHOING, audio.UNKNOWN):
+            return _AUDIO_HALF_DUPLEX, "route_not_isolated"
+        return _AUDIO_HALF_DUPLEX, ""
+
+    def _recompute_audio_mode(self) -> None:
+        """Recompute + store the mode; publish an `audio_mode` event (and a one-time half-duplex
+        warning) ONLY when the (mode, reason) pair changes — so recomputes don't spam the stream."""
+        mode, reason = self._resolve_audio_mode()
+        self.audio_mode = mode
+        self._audio_mode_reason = reason
+        pair = (mode, reason)
+        if pair == self._last_audio_mode_pub:
+            return
+        self._last_audio_mode_pub = pair
+        try:
+            route_name = ""
             try:
                 from . import audio
-                return audio.output_is_external()
+                route_name = audio.output_route_name()
             except Exception:
-                return False
-        return False
+                pass
+            self.bus.publish({"type": "audio_mode", "mode": mode, "reason": reason,
+                              "route": route_name})
+            if reason == "route_not_isolated" and getattr(self.settings.voice.stt, "barge_in", False):
+                self.bus.notify(
+                    "Barge-in unavailable",
+                    "Barge-in is on, but the output route isn't acoustically isolated "
+                    f"({route_name or 'unknown'}) — staying half-duplex to avoid self-hearing.")
+            elif reason in ("aec_disabled", "native_failed"):
+                self.bus.notify(
+                    "Echo cancellation unavailable",
+                    "Native echo cancellation isn't active — running half-duplex "
+                    "(use headphones, or the Stop button to interrupt).")
+        except Exception:
+            pass
+
+    def _on_aec_ready(self, aec: bool) -> None:
+        """Native AEC handshake landed. Ignore if native isn't the starting recorder (late echo
+        after a fallback). aec=true → full_duplex_aec; aec=false → degraded (keep native)."""
+        if self._native_state != "starting":
+            return
+        self._aec_ok = bool(aec)
+        self._native_state = "ready_aec" if aec else "ready_noaec"
+        print(f"[otto] native AEC handshake: aec={aec} → {self._native_state}",
+              file=sys.stderr, flush=True)
+        self._recompute_audio_mode()
+
+    def _on_native_failed(self, reason: str) -> None:
+        """Native helper trouble (timeout/exit/error) — DISTINCT from a dead mic. Claim the swap
+        synchronously (so a concurrent/late event bails) and run the fallback OFF the event loop.
+        Ignore duplicates once already failed/off or a swap is in flight."""
+        if self._shutting_down or self._native_state in ("failed", "off") or self._ears_swapping:
+            return
+        print(f"[otto] native ears failed ({reason}) — falling back to RealtimeSTT",
+              file=sys.stderr, flush=True)
+        self._native_state = "failed"
+        self._ears_swapping = True          # claimed here; cleared in the coroutine's finally
+        if self._loop is not None:
+            self._fallback_task = self._loop.create_task(self._fallback_to_realtimestt(reason))
+        else:
+            self._ears_swapping = False     # no loop (shouldn't happen) → nothing scheduled
+
+    async def _fallback_to_realtimestt(self, reason: str) -> None:
+        """Stop the native helper FULLY (off-loop), confirm it's reaped, THEN start RealtimeSTT —
+        never two live mic owners. If the helper can't be confirmed dead, do NOT start another
+        recorder (we'd risk two mic owners); surface it instead. A real mic failure (on_health
+        'deaf') is raised only if the fallback recorder itself fails to start."""
+        try:
+            old, self.ears = self.ears, None
+            self._native_audio = False
+            # 1) Stop + CONFIRM the native helper is gone (process reaped + reader threads exited),
+            #    off the event loop so the terminate/kill/join waits never block it.
+            confirmed = True
+            if old is not None:
+                try:
+                    confirmed = bool(await self._loop.run_in_executor(None, old.stop))
+                except Exception as e:
+                    confirmed = False
+                    print(f"[otto] native stop during fallback: {e!r}", file=sys.stderr, flush=True)
+            if not confirmed:
+                # Can't prove the native tap is dead → refuse to open a second recorder.
+                print("[otto] native helper not confirmed stopped — NOT starting RealtimeSTT",
+                      file=sys.stderr, flush=True)
+                self._status("error", "Voice input stopped")
+                self.notify("Voice input stopped",
+                            "Couldn't reclaim the microphone from the native helper — "
+                            "please restart Orrin.")
+                self._recompute_audio_mode()
+                return
+            # Shutdown may have begun while we were stopping the helper — never start a recorder
+            # after Orchestrator.stop() has been entered.
+            if self._shutting_down:
+                print("[otto] shutdown in progress — not starting RealtimeSTT after fallback",
+                      file=sys.stderr, flush=True)
+                return
+            # 2) Only now, with the native helper confirmed gone, bring up RealtimeSTT.
+            try:
+                from .voice.stt import Ears
+                ne = Ears(
+                    self.settings, self._loop,
+                    on_final=self._on_voice_final,
+                    on_partial=lambda t: self.bus.transcript("user", t, final=False),
+                    on_speech_start=self._on_speech_start,
+                    on_wake=self._on_speech_start,
+                    on_recording_stop=self._on_recording_stop,
+                    on_realtime=self._on_voice_partial,
+                    on_health=self._on_stt_health,
+                )
+                await self._loop.run_in_executor(None, ne.start)
+                self.ears = ne
+            except Exception as e:
+                self.ears = None
+                print(f"[otto] RealtimeSTT fallback failed: {e!r}", file=sys.stderr, flush=True)
+                self._on_stt_health("deaf")   # the fallback recorder also failed → real mic failure
+                return
+            self._recompute_audio_mode()
+        finally:
+            self._ears_swapping = False
+
+    def _arm_route_refresh(self) -> None:
+        """Prewarm the route cache now (off any speech path) and keep it fresh in the background,
+        recomputing the mode when the route changes — so system_profiler never blocks a decision."""
+        if self._loop is None:
+            return
+
+        async def _loop_refresh() -> None:
+            from . import audio
+            while True:
+                try:
+                    before = audio.classify_output_route()
+                    await self._loop.run_in_executor(None, lambda: audio.refresh_route(force=True))
+                    if audio.classify_output_route() != before:
+                        self._recompute_audio_mode()
+                except Exception:
+                    pass
+                await asyncio.sleep(4.0)
+
+        try:
+            # prewarm immediately, then recompute
+            self._loop.run_in_executor(None, lambda: __import__(
+                "otto.audio", fromlist=["refresh_route"]).refresh_route(force=True))
+            if self._route_task is None or self._route_task.done():
+                self._route_task = self._loop.create_task(_loop_refresh())
+        except Exception:
+            pass
 
     def _output_suppressing(self) -> bool:
         """True while Otto is speaking (or in the cooldown after) — drop mic input then. Anchored
@@ -641,6 +849,56 @@ class Orchestrator:
         stt = self.settings.voice.stt
         return bool(getattr(stt, "speaker_verify", False) and self.speaker is not None
                     and self.speaker.ready and self.speaker.has_voiceprint)
+
+    async def _speaker_matches_user(self, audio, sr) -> bool:
+        """True only if speaker-verify is enrolled AND the given (pre-snapshotted) utterance audio
+        matches an ACTIVE enrolled voice. Runs the match OFF the event loop and honors
+        `speaker_active`, exactly like the normal command gate. Fail-closed (False) when speaker-ID
+        isn't available — transcript matching alone is never treated as proof a spoken stop was you."""
+        if not self._speaker_echo_guard() or audio is None:
+            return False
+        try:
+            m = await self._loop.run_in_executor(None, self.speaker.match, audio, sr)
+        except Exception:
+            return False
+        if not m:
+            return False
+        name, sim = m
+        stt = self.settings.voice.stt
+        thr = float(getattr(stt, "speaker_threshold", 0.55))
+        active = [n.lower() for n in getattr(stt, "speaker_active", []) or []]
+        return bool(sim >= thr and (not active or name.lower() in active))
+
+    def _stop_decision(self) -> str:
+        """Classify a SPOKEN stop (the button/hotkey path always interrupts, bypassing this):
+        'accept' (interrupt now), 'drop' (ignore — use the Stop button), or 'verify' (interrupt only
+        if an off-loop speaker match confirms it's you). In a silence gap → accept. While Orrin is
+        actually speaking: headset → verify if enrolled, else accept (no echo path); full_duplex_aec
+        → verify if enrolled, else drop (residual echo can read as 'stop'); half_duplex/degraded →
+        the mic was muted during playback, so a stop here is a genuine gap utterance → accept."""
+        if not self._output_suppressing():
+            return "accept"
+        enrolled = self._speaker_echo_guard()
+        if self.audio_mode == _AUDIO_FULL_HEADSET:
+            return "verify" if enrolled else "accept"
+        if self.audio_mode == _AUDIO_FULL_AEC:
+            return "verify" if enrolled else "drop"
+        return "accept"
+
+    async def _stop_if_speaker_matches(self, text: str, audio, sr, gen: int, epoch: int) -> None:
+        ok = await self._speaker_matches_user(audio, sr)
+        # Bind to the utterance generation AND the playback epoch: if a newer utterance finalized,
+        # or any interrupt already fired, while we were verifying, this stop is stale — discard it
+        # (never act on an outdated decision).
+        if gen != self._utterance_gen or epoch != self._playback_epoch:
+            print(f"[otto] stop verify stale (newer utterance/interrupt) — ignored: {text!r}",
+                  file=sys.stderr, flush=True)
+            return
+        if ok:
+            self.interrupt_now("voice")
+        else:
+            print(f"[otto] spoken stop didn't match your voice — ignored (use Stop button): {text!r}",
+                  file=sys.stderr, flush=True)
 
     def _echo_blocking(self) -> bool:
         """Capture-time echo guard. During ACTUAL playback (or its 1.5s tail) the mic hears a mix of
@@ -737,6 +995,14 @@ class Orchestrator:
             self.turn_taker = TurnTaker(self.settings.voice)
         except Exception as e:
             print(f"[otto] turn-taker init failed: {e!r}", file=sys.stderr, flush=True)
+        # Conversational turn manager — composes the turn-taker with varied acks, topic/context,
+        # concise replies and real milestones.
+        try:
+            from .voice.conversation import ConversationManager
+            self.conversation = ConversationManager(
+                self.settings.voice, turn_taker=self.turn_taker)
+        except Exception as e:
+            print(f"[otto] conversation manager init failed: {e!r}", file=sys.stderr, flush=True)
         # Local intent router — handle simple Mac actions directly, no engine round-trip.
         try:
             from .local_actions import LocalActions
@@ -996,7 +1262,7 @@ class Orchestrator:
                 and not self._sleeping
                 and not self._awaiting_command
                 and not self._follow_up_active
-                and not (self._pending_answer is not None and not self._pending_answer.done())
+                and not self._pending_answers
                 and self.focused_ws.state == "idle"
                 and not self._research_running)
 
@@ -1009,7 +1275,7 @@ class Orchestrator:
                 and (sleeping_ok or not self._sleeping)
                 and not self._awaiting_command
                 and not self._follow_up_active
-                and not (self._pending_answer is not None and not self._pending_answer.done())
+                and not self._pending_answers
                 and self.focused_ws.state == "idle"
                 and not self._research_running)
 
@@ -1518,19 +1784,19 @@ class Orchestrator:
         try:
             # Native AEC front-end (opt-in) if its helper is built; else RealtimeSTT.
             EarsClass = None
+            native = False
             if getattr(v.stt, "native_audio", False):
                 from .voice.native_ears import NativeEars
                 if NativeEars.available():
                     EarsClass = NativeEars
-                    self._native_audio = True
+                    native = True
                 else:
                     print("[otto] native_audio on but orrin-audio helper not found — using RealtimeSTT",
                           file=sys.stderr, flush=True)
             if EarsClass is None:
                 from .voice.stt import Ears
                 EarsClass = Ears
-            self.ears = EarsClass(
-                self.settings, self._loop,
+            kwargs = dict(
                 on_final=self._on_voice_final,
                 on_partial=lambda t: self.bus.transcript("user", t, final=False),
                 on_speech_start=self._on_speech_start,
@@ -1539,7 +1805,21 @@ class Orchestrator:
                 on_realtime=self._on_voice_partial,
                 on_health=self._on_stt_health,
             )
+            if native:
+                # Native path: full-duplex stays OFF (half_duplex) until the AEC handshake confirms.
+                self._native_audio = True
+                self._native_state = "starting"
+                self._aec_ok = None
+                kwargs["on_ready"] = self._on_aec_ready
+                kwargs["on_native_failed"] = self._on_native_failed
+            else:
+                self._native_audio = False
+                self._native_state = "off"
+            self.ears = EarsClass(self.settings, self._loop, **kwargs)
             self.ears.start()
+            # Keep the output-route cache warm (off the speech path) and resolve the initial mode.
+            self._arm_route_refresh()
+            self._recompute_audio_mode()
             # Global push-to-talk. Under the menu-bar app the hotkey is owned there and
             # installed on the MAIN thread (NSEvent), because pynput's macOS input-source
             # calls run off the main thread and hard-abort (SIGTRAP) the packaged app. Here we
@@ -1724,8 +2004,44 @@ class Orchestrator:
         self._enter_awaiting_command(greet=self.settings.voice.stt.wake_greeting)
 
     async def stop(self) -> None:
-        if self.ears:
-            self.ears.stop()
+        self._shutting_down = True   # from here on, no recorder may (re)start
+        # AWAIT (don't cancel) an in-flight native→RealtimeSTT fallback: we need the native helper
+        # CONFIRMED stopped before shutdown returns, so its audio tap is truly gone. _shutting_down
+        # already prevents the fallback from starting a new recorder. asyncio.shield keeps the
+        # fallback running even if stop() itself is cancelled — and if stop() DOES get cancelled, we
+        # keep awaiting the shielded fallback until the mic is reclaimed, THEN propagate the cancel
+        # (never return/raise while native-mic cleanup is still running).
+        if self._fallback_task is not None and not self._fallback_task.done():
+            pending_cancel: asyncio.CancelledError | None = None
+            while not self._fallback_task.done():
+                try:
+                    await asyncio.shield(self._fallback_task)
+                except asyncio.CancelledError as ce:
+                    pending_cancel = ce          # don't abandon mic cleanup — finish it first
+                except Exception:
+                    break                        # fallback finished (possibly with an error)
+            self._fallback_task = None
+            if pending_cancel is not None:
+                raise pending_cancel
+        self._fallback_task = None
+        # The route-refresh loop is a plain background task with no shutdown ordering — cancel it.
+        if self._route_task is not None and not self._route_task.done():
+            self._route_task.cancel()
+            try:
+                await self._route_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._route_task = None
+        # Stop the recorder OFF the event loop — NativeEars.stop() blocks on terminate/kill/join.
+        ears, self.ears = self.ears, None
+        if ears is not None:
+            try:
+                if self._loop is not None:
+                    await self._loop.run_in_executor(None, ears.stop)
+                else:
+                    ears.stop()
+            except Exception:
+                pass
         if self._ptt:
             self._ptt.stop()
         if self._eff:
@@ -2375,8 +2691,10 @@ class Orchestrator:
                 await self._close_parallel_ws()
 
     # -- input routing -----------------------------------------------------
-    def submit_user_input(self, text: str) -> None:
-        """Entry point for both typed and spoken input."""
+    def submit_user_input(self, text: str, voice_ack: str | None = None) -> None:
+        """Entry point for both typed and spoken input. `voice_ack` (the dispatch intent) is set only
+        on the voice path; a short spoken acknowledgement is then said ONLY if the request reaches
+        the engine — instant local actions / memory answers below return first and skip it."""
         text = (text or "").strip()
         if not text:
             return
@@ -2390,10 +2708,13 @@ class Orchestrator:
             self.bus.transcript("user", text, final=True)
             self.set_autonomous(_auto)
             return
-        # If the agent is waiting on an ask_user answer, this input is that answer.
-        if self._pending_answer and not self._pending_answer.done():
+        # If the agent is waiting on an ask_user answer, this input is that answer. Voice/text
+        # input is only ever directed at the focused workspace's question, so resolve its slot
+        # specifically — a concurrent background-workspace question (own slot) is untouched.
+        fut = self._pending_answers.get(id(self.focused_ws))
+        if fut is not None and not fut.done():
             self.bus.transcript("user", text, final=True)
-            self._pending_answer.set_result(text)
+            fut.set_result(text)
             return
         # Built-in self-test: renders a sample chart end-to-end without the model.
         if text.strip().lower() == "/demo":
@@ -2417,6 +2738,15 @@ class Orchestrator:
         # on the machine with NO engine round-trip. Unrecognized input falls through to the brain.
         if self._maybe_local_action(text):
             return
+        # Everything above returned already — from here it's an engine turn (has latency). Track the
+        # topic for follow-ups, and speak ONE short acknowledgement on the voice path (never for the
+        # instant routes above, which answer/act immediately).
+        try:
+            self._conv().note_user(text)
+        except Exception:
+            pass
+        if voice_ack is not None:
+            self._speak_ack(voice_ack, text)
         assert self._loop is not None
         # Workspace targeting: "in <name>, <command>" runs the command in another workspace
         # (opening it if needed), concurrently, in the background. Only the focused workspace
@@ -2501,10 +2831,13 @@ class Orchestrator:
         running turn. Wired to the 'stop' word (heard in a gap), the dashboard Stop button, and
         the push-to-talk hotkey. Reliable regardless of the mic (button/hotkey don't need it)."""
         print(f"[otto] interrupt ({reason})", file=sys.stderr, flush=True)
+        self._playback_epoch += 1   # any delayed Stop verification bound to an earlier epoch is moot
         # Drop any half-spoken held thought — "stop" means abandon it, don't flush it later.
         self._cancel_turn_flush()
         if self.turn_taker is not None:
             self.turn_taker.reset()
+        if self.conversation is not None:
+            self.conversation.interrupt()   # mark the turn interrupted + drop the held thought
         self._speak_done = True
         self._speech_buf = ""
         self._cancel_briefing()            # a Stop during the startup greeting halts it too
@@ -2533,17 +2866,32 @@ class Orchestrator:
     def _on_voice_final(self, text: str) -> None:
         if self.mic_muted:
             return
+        # Each finalized utterance bumps the generation — a pending async Stop verification binds to
+        # the gen it was scheduled under and is discarded if a newer utterance arrives first.
+        self._utterance_gen += 1
         # Log every heard utterance (transcript-level captures), even ones we ignore below —
         # useful for reviewing mis-hears in always-listen.
         try:
             self.memory.record_capture(self.focused, text, source="voice")
         except Exception:
             pass
-        # "stop" / "wait" / "cancel" — halt immediately, in any mode. (Heard whenever the mic is
-        # on, i.e. in the gap after Orrin's speech or while it's working — during actual playback
-        # the mic is muted, so use the Stop button or the hotkey for a hard mid-sentence cut.)
+        # "stop" / "wait" / "cancel" — halt immediately. A spoken stop while Orrin is actually
+        # speaking is gated by AudioMode (echo can read as "stop"): in full-duplex AEC it needs a
+        # verified speaker, else it's dropped and the Stop button / hotkey is the guaranteed path.
         if self._is_stop_command(text):
-            self.interrupt_now("voice")
+            decision = self._stop_decision()
+            if decision == "accept":
+                self.interrupt_now("voice")
+            elif decision == "verify" and self._loop is not None:
+                # Snapshot THIS utterance's audio + generation + playback epoch NOW — the off-loop
+                # verify must not read the mutable ears.last_audio later (a newer utterance would
+                # overwrite it), and binds to the playback it was meant to interrupt.
+                audio, sr = self._utterance_audio()
+                gen, epoch = self._utterance_gen, self._playback_epoch
+                self._loop.create_task(self._stop_if_speaker_matches(text, audio, sr, gen, epoch))
+            else:
+                print(f"[otto] spoken stop not trusted during playback (use Stop button): {text!r}",
+                      file=sys.stderr, flush=True)
             return
         # Hands-free dictation toggle ("start/stop dictation") — whole-utterance match.
         if self._is_dictation_command(text):
@@ -2559,7 +2907,7 @@ class Orchestrator:
         # Orrin asked a question (ask_user/confirm) and is waiting: take this utterance as the
         # answer directly — NO wake word needed, in any mode. Ignore the echo of the question
         # itself (mic may still catch the tail of Orrin speaking it).
-        if self._pending_answer is not None and not self._pending_answer.done():
+        if self._pending_answers:
             if self._echo_blocking() or self._is_self_echo(text):  # mic tail of Orrin speaking the question
                 print(f"[otto] ignoring echo while awaiting answer: {text!r}",
                       file=sys.stderr, flush=True)
@@ -3067,7 +3415,7 @@ class Orchestrator:
                 self._enter_awaiting_command(greet=False, follow_up=True)
                 return
         if not stt.refine and not self._dictation and not need_gate:
-            self._ack(intent); self.submit_user_input(text)   # fast path — ack, no model calls
+            self.submit_user_input(text, voice_ack=intent)   # fast path (ack only on the engine route)
             return
         if self._loop is not None:
             self._loop.create_task(self._dispatch_async(
@@ -3164,7 +3512,7 @@ class Orchestrator:
             except Exception as e:
                 self.notify("Dictation error", str(e))
             return
-        self._ack(intent); self.submit_user_input(text)   # acknowledge, then run the turn
+        self.submit_user_input(text, voice_ack=intent)   # ack only if it reaches the engine
 
     _DICTATION_ON = {"start dictation", "start dictating", "dictation mode",
                      "dictation on", "start typing", "type what i say"}
@@ -3636,6 +3984,11 @@ class Orchestrator:
                         pass
                 ws.state = "idle"
                 ws.last_reply = reply
+                if reply and focused:
+                    try:
+                        self._conv().note_reply(reply)   # keep topic/context for the next follow-up
+                    except Exception:
+                        pass
                 if reply:
                     self.bus.transcript("assistant", reply, final=True, ws=tag)
                     # Learn from the exchange in the background (records the turn + folds any
@@ -3668,7 +4021,7 @@ class Orchestrator:
                     window = float(fu) if (fu and fu > 0) else (20.0 if is_question else 0.0)
                     if (window > 0 and reply and not self._sleeping
                             and not self._dictation
-                            and not (self._pending_answer and not self._pending_answer.done())):
+                            and not self._pending_answers):
                         self._expecting_answer = is_question
                         self._enter_awaiting_command(greet=False, follow_up=True, timeout=window)
                     else:
@@ -3748,7 +4101,15 @@ class Orchestrator:
         if re.sub(r"[^\w\s]", "", s).strip().lower() in _DEAD_REPLIES:
             print(f"[otto] not speaking dead reply: {s!r}", file=sys.stderr, flush=True)
             return
-        cap = self.settings.voice.tts.max_spoken_chars or 0
+        tts = self.settings.voice.tts
+        cap = tts.max_spoken_chars or 0
+        # Concise by default: a smaller effective cap so spoken answers stay voice-first short
+        # (the dashboard keeps the full text). The first sentence has already streamed, so this
+        # trims the remainder, yielding a brief spoken reply.
+        if getattr(tts, "concise_voice", True):
+            cc = int(getattr(tts, "concise_chars", 280) or 0)
+            if cc:
+                cap = min(cap, cc) if cap else cc
         if cap:
             remaining = cap - self._spoken_chars
             if remaining <= 0:
@@ -3760,6 +4121,11 @@ class Orchestrator:
         self._spoken_chars += len(s) + 1
 
     def _announce_tool(self, name: str, detail: str, ws: str | None = None) -> None:
+        try:
+            if self._conv().is_filler_tool(name):   # bookkeeping (TodoWrite/Think…) isn't a milestone
+                return
+        except Exception:
+            pass
         if name == "Task":
             self.bus.tool_use("subagent", detail, ws=ws)
         elif name.startswith("mcp__"):
@@ -3778,13 +4144,17 @@ class Orchestrator:
         if self.mouth and not self.voice_muted:
             self.mouth.speak(question)
         assert self._loop is not None
-        self._pending_answer = self._loop.create_future()
+        # Keyed to whichever workspace is focused right now — if focus changes while this is
+        # pending, the old slot isn't clobbered by a new question asked on the new focus.
+        key = id(self.focused_ws)
+        fut = self._loop.create_future()
+        self._pending_answers[key] = fut
         try:
-            return await asyncio.wait_for(self._pending_answer, timeout=120)
+            return await asyncio.wait_for(fut, timeout=120)
         except asyncio.TimeoutError:
             return "(no response)"
         finally:
-            self._pending_answer = None
+            self._pending_answers.pop(key, None)
 
     async def confirm(self, action: str) -> bool:
         """Gate a consequential action on a spoken/typed yes/no. Parses strictly (a refusal is
@@ -3950,22 +4320,23 @@ class Orchestrator:
         self.bus.publish({"type": "reminder_cancelled", "id": rec["id"]})
         return f"cancelled: {rec.get('message', rec['id'])}"
 
-    async def _ws_ask_user(self, project: str, question: str) -> str:
-        if project == self.focused:
+    async def _ws_ask_user(self, ws: "Workspace", question: str) -> str:
+        # Identity check, not a project-path comparison: a background "meanwhile" workspace on
+        # the SAME project as focus is still not the focused workspace, and must not share its
+        # voice/text answer slot.
+        if ws is self.focused_ws:
             return await self.ask_user(question)
-        name = self.workspaces[project].name if project in self.workspaces else project
-        self.notify(f"{name} needs your input", question)
+        self.notify(f"{ws.name} needs your input", question)
         return ("The user isn't watching this workspace right now. If you can proceed with a "
                 "sensible default, do so; otherwise stop and leave this for when they focus it.")
 
-    async def _ws_confirm(self, project: str, action: str) -> bool:
-        if project == self.focused:
+    async def _ws_confirm(self, ws: "Workspace", action: str) -> bool:
+        if ws is self.focused_ws:
             return await self.confirm(action)
         # A background workspace can't get a spoken yes/no — decline and flag it. (With the
         # permission setting on "auto", this path isn't reached; consequential actions there
         # are auto-approved, so background workspaces run fully unattended.)
-        name = self.workspaces[project].name if project in self.workspaces else project
-        self.notify(f"{name} needs approval", f"It wants to {action}. Focus it to approve.")
+        self.notify(f"{ws.name} needs approval", f"It wants to {action}. Focus it to approve.")
         return False
 
     def notify(self, title: str, body: str = "") -> None:

@@ -476,7 +476,7 @@ def test_ptt_bypasses_wake_word():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         seen = {}
-        orch.submit_user_input = lambda t: seen.setdefault("cmd", t)  # capture
+        orch.submit_user_input = lambda t, voice_ack=None: seen.setdefault("cmd", t)  # capture
         # Without arming, a non-wake utterance is ignored.
         orch._on_voice_final("what is the time")
         assert "cmd" not in seen
@@ -495,7 +495,7 @@ def test_wake_greeting_and_echo_filter():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         seen = {}
-        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        orch.submit_user_input = lambda t, voice_ack=None: seen.__setitem__("cmd", t)
         # bare wake -> greet + await (a real greeting, not just "yes")
         orch._enter_awaiting_command()
         assert orch._awaiting_command and orch._last_ack in __import__("otto.orchestrator", fromlist=["_WAKE_ACKS"])._WAKE_ACKS
@@ -579,7 +579,7 @@ def test_casual_talk_replies_locally_without_claude():
         orch._loop = asyncio.get_running_loop()
         orch.settings.voice.stt.wakeword_backend = "phrase"
         sent, said = [], []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._voice_out = lambda t: said.append(t)
         orch._dispatch_voice_command("how are you", deliberate=True)
         assert sent == []                       # never bothered Claude
@@ -603,7 +603,7 @@ def test_efficientword_falls_back_to_phrase_when_listener_absent():
         orch.settings.voice.stt.wake_words = "hey otto"
         orch._eff = None                        # listener failed to load / not bundled
         seen = {}
-        orch.submit_user_input = lambda t: seen.__setitem__("cmd", t)
+        orch.submit_user_input = lambda t, voice_ack=None: seen.__setitem__("cmd", t)
         orch._voice_out = lambda t: None
         orch._on_voice_final("hey otto open my email")
         assert seen.get("cmd") == "open my email"
@@ -1024,35 +1024,76 @@ def test_idle_research_queue_and_quiescence(tmp_path, monkeypatch):
 
 
 def test_output_route_classification(monkeypatch):
-    """#56: built-in speakers are an echo path (not safe for barge-in); headphones/external are."""
+    """Allowlist: only personal listening devices are ISOLATED (full-duplex safe); speakers,
+    displays, Bluetooth speakers and unknown routes are ECHOING / UNKNOWN (fail closed)."""
     from otto import audio
-    def route(name): monkeypatch.setattr(audio, "_default_output_name", lambda: name)
-    for internal in ("MacBook Pro Speakers", "Built-in Output", "Speakers", "Internal Speakers"):
-        route(internal); assert audio.output_is_external(force=True) is False, internal
-    for external in ("AirPods Pro", "Sony WH-1000XM5", "External Headphones", "Studio Display"):
-        route(external); assert audio.output_is_external(force=True) is True, external
-    route(None); assert audio.output_is_external(force=True) is False   # unknown → conservative
+    def route(name, transport=""):
+        monkeypatch.setattr(audio, "_default_output", lambda: (name, transport))
+        return audio.refresh_route(force=True)
+    for echoing in ("MacBook Pro Speakers", "Built-in Output", "Speakers", "Studio Display", "JBL Flip 6"):
+        assert route(echoing) == audio.ECHOING, echoing
+    for isolated in ("AirPods Pro", "Sony WH-1000XM5", "External Headphones", "Bose QC45 Headset"):
+        assert route(isolated) == audio.ISOLATED, isolated
+    assert route(None) == audio.UNKNOWN                      # unknown → conservative
+    assert route("Dell U2720", "coreaudio_device_transport_hdmi") == audio.ECHOING
+    assert audio.classify_output_route() == audio.ECHOING    # cached, non-blocking
 
 
-def test_barge_in_auto_only_when_safe(monkeypatch):
-    """#56: barge-in auto-enables on a safe (external) route and stays off on built-in speakers,
-    so mid-speech voice 'stop' works on headphones without an echo loop on the laptop speaker."""
+def _mode_orch(monkeypatch, route_class, *, native_state="off", barge_in=False, barge_in_auto=True):
     from otto import audio
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    monkeypatch.setattr(audio, "classify_output_route", lambda: route_class)
+    monkeypatch.setattr(audio, "output_route_name", lambda: "test-route")
     orch = Orchestrator(load_settings(), EventBus())
-    stt = orch.settings.voice.stt
-    # forced on always wins
-    stt.barge_in = True;  stt.barge_in_auto = False
-    assert orch._barge_in_active() is True
-    # auto: follows the output route
-    stt.barge_in = False; stt.barge_in_auto = True
-    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: True)
-    assert orch._barge_in_active() is True          # headphones/external → safe → on
-    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: False)
-    assert orch._barge_in_active() is False         # built-in speakers → half-duplex
-    # auto disabled → never barge-in unless forced
-    stt.barge_in_auto = False
-    monkeypatch.setattr(audio, "output_is_external", lambda *a, **k: True)
-    assert orch._barge_in_active() is False
+    orch._native_state = native_state
+    orch.settings.voice.stt.barge_in = barge_in
+    orch.settings.voice.stt.barge_in_auto = barge_in_auto
+    orch._recompute_audio_mode()
+    return orch
+
+
+def test_audio_mode_route_based(monkeypatch):
+    from otto import audio
+    assert _mode_orch(monkeypatch, audio.ISOLATED).audio_mode == "full_duplex_headset"
+    assert _mode_orch(monkeypatch, audio.ECHOING).audio_mode == "half_duplex"
+    assert _mode_orch(monkeypatch, audio.UNKNOWN).audio_mode == "half_duplex"
+    # auto off → half-duplex even on a headset
+    assert _mode_orch(monkeypatch, audio.ISOLATED, barge_in_auto=False).audio_mode == "half_duplex"
+
+
+def test_forced_barge_in_requires_isolated_route(monkeypatch):
+    """Safety: barge_in=True must NOT force full-duplex on an echoing/unknown route."""
+    from otto import audio
+    assert _mode_orch(monkeypatch, audio.ISOLATED, barge_in=True).audio_mode == "full_duplex_headset"
+    o_echo = _mode_orch(monkeypatch, audio.ECHOING, barge_in=True)
+    assert o_echo.audio_mode == "half_duplex" and o_echo._audio_mode_reason == "route_not_isolated"
+    o_unk = _mode_orch(monkeypatch, audio.UNKNOWN, barge_in=True)
+    assert o_unk.audio_mode == "half_duplex" and o_unk._barge_in_active() is False
+
+
+def test_barge_in_active_only_fullduplex_modes(monkeypatch):
+    from otto import audio
+    assert _mode_orch(monkeypatch, audio.ISOLATED)._barge_in_active() is True
+    assert _mode_orch(monkeypatch, audio.ECHOING)._barge_in_active() is False
+    # native AEC states
+    o = _mode_orch(monkeypatch, audio.ECHOING, native_state="ready_aec")
+    assert o.audio_mode == "full_duplex_aec" and o._barge_in_active() is True
+    o = _mode_orch(monkeypatch, audio.ECHOING, native_state="ready_noaec")
+    assert o.audio_mode == "degraded" and o._barge_in_active() is False
+    o = _mode_orch(monkeypatch, audio.ECHOING, native_state="starting")
+    assert o.audio_mode == "half_duplex" and o._barge_in_active() is False
+
+
+def test_audio_mode_event_deduped(monkeypatch):
+    from otto import audio
+    orch = _mode_orch(monkeypatch, audio.ECHOING, barge_in=True)
+    events = []
+    monkeypatch.setattr(orch.bus, "publish", lambda ev: events.append(ev))
+    orch._recompute_audio_mode(); orch._recompute_audio_mode(); orch._recompute_audio_mode()
+    assert [e for e in events if e.get("type") == "audio_mode"] == []   # unchanged → no re-publish
+    monkeypatch.setattr(audio, "classify_output_route", lambda: audio.ISOLATED)
+    orch._recompute_audio_mode()
+    assert any(e.get("type") == "audio_mode" for e in events)           # changed → one publish
 
 
 def test_self_echo_guard():
@@ -1729,7 +1770,7 @@ def test_dispatch_holds_unfinished_not_brain(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("deploy the app and")     # unfinished → held, no brain
         assert sent == [] and orch._turn_flush_handle is not None
         orch._dispatch_voice_command("show me the diff")       # completes → dispatch the whole turn
@@ -1747,7 +1788,7 @@ def test_flush_dispatches_buffered_turn(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("set a reminder to")      # held
         assert sent == []
         orch._flush_turn()                                     # continuation window expired
@@ -1764,7 +1805,7 @@ def test_turn_taking_disabled_dispatches_immediately(monkeypatch):
         orch._loop = asyncio.get_running_loop()
         orch.turn_taker = TurnTaker(orch.settings.voice)
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         orch._dispatch_voice_command("deploy the app and")     # gate off → dispatched as-is
         assert sent == ["deploy the app and"]
 
@@ -1934,21 +1975,500 @@ def test_native_ears_stdio_framing():
     ne = NativeEars.__new__(NativeEars)                    # bypass __init__ (no mic/binary needed)
     ne._loop = types.SimpleNamespace(call_soon_threadsafe=lambda cb: cb())   # run posts inline
     ne._stop = threading.Event()
+    ne._expected_stop = True           # suppress the loop-end native-failure callback in this unit
+    ne._failed_fired = False
+    ne._ready_seen = False
+    ne._ready_timer = None
+    ne.aec_ok = None
     ev = []
     ne._on_speech_start = lambda: ev.append(("speech_start",))
     ne._on_recording_stop = lambda: ev.append(("rec_stop",))
     ne._on_final = lambda t: ev.append(("final", t))
     ne._on_realtime = None
     ne._on_health = lambda s: ev.append(("health", s))
+    ne._on_ready = lambda aec: ev.append(("ready", aec))
+    ne._on_native_failed = lambda r: ev.append(("failed", r))
     ne._transcribe = lambda pcm: "open the repo" if pcm else ""
     pcm = b"\x01\x02\x03\x04"
-    stream = b'{"type":"speech_start"}\n{"type":"utterance","bytes":4}\n' + pcm
+    stream = (b'{"type":"ready","aec":false}\n'
+              b'{"type":"speech_start"}\n{"type":"utterance","bytes":4}\n' + pcm)
     ne._proc = types.SimpleNamespace(stdout=io.BytesIO(stream))
     ne._read_loop()
+    assert ("ready", False) in ev and ne.aec_ok is False   # parses the AEC handshake flag
     assert ("speech_start",) in ev
     assert ("rec_stop",) in ev
     assert ("final", "open the repo") in ev
     assert ne.last_audio == pcm
+
+
+class _StubNative:
+    def __init__(self):
+        self._stopped = False
+        self.last_audio = b""
+        self.sample_rate = 16000
+        self.stop_result = True          # confirmed-reap by default
+    def stop(self):
+        self._stopped = True
+        return self.stop_result
+
+
+def _native_orch(monkeypatch):
+    """An orchestrator in the native 'starting' state with a stubbed native ears."""
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    from otto import audio
+    monkeypatch.setattr(audio, "classify_output_route", lambda: audio.ECHOING)   # speakers
+    orch = Orchestrator(load_settings(), EventBus())
+    orch._native_audio = True
+    orch._native_state = "starting"
+    orch.ears = _StubNative()
+    return orch
+
+
+def _run_fallback(orch, fn):
+    """Run fn() inside a running loop (so _on_native_failed can schedule its async fallback), then
+    await every task it spawned to completion (including the off-loop run_in_executor work)."""
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        fn()
+        pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    asyncio.run(run())
+
+
+def test_aec_ready_true_enables_fullduplex(monkeypatch):
+    orch = _native_orch(monkeypatch)
+    orch._on_aec_ready(True)
+    assert orch._native_state == "ready_aec"
+    assert orch.audio_mode == "full_duplex_aec" and orch._barge_in_active() is True
+
+
+def test_aec_ready_false_is_degraded_keeps_native(monkeypatch):
+    """A failed AEC setup (aec=false) must NOT enable full duplex, and must NOT fall back."""
+    orch = _native_orch(monkeypatch)
+    fellback = []
+    monkeypatch.setattr(orch, "_fallback_to_realtimestt", lambda r: fellback.append(r))
+    orch._on_aec_ready(False)
+    assert orch._native_state == "ready_noaec"
+    assert orch.audio_mode == "degraded" and orch._barge_in_active() is False
+    assert fellback == []                               # still the native recorder, no fallback
+
+
+def test_native_failed_is_distinct_from_mic_failure(monkeypatch):
+    """Handshake timeout / helper exit → native-failure path (fallback), NOT a mic 'deaf' alert."""
+    orch = _native_orch(monkeypatch)
+    order = []
+    monkeypatch.setattr(orch, "_on_stt_health", lambda s: order.append(("deaf", s)))
+    import otto.voice.stt as sttmod
+    class _FakeEars:
+        def __init__(self, *a, **k): pass
+        def start(self): order.append(("realtimestt_start",))
+    monkeypatch.setattr(sttmod, "Ears", _FakeEars)
+    _run_fallback(orch, lambda: orch._on_native_failed("timeout"))
+    assert orch._native_state == "failed"
+    assert isinstance(orch.ears, _FakeEars)                     # swapped to RealtimeSTT
+    assert ("realtimestt_start",) in order
+    assert all(tag != "deaf" for tag, *_ in order)              # NOT surfaced as mic failure
+
+
+def test_mic_failure_only_when_fallback_also_fails(monkeypatch):
+    orch = _native_orch(monkeypatch)
+    deaf = []
+    monkeypatch.setattr(orch, "_on_stt_health", lambda s: deaf.append(s))
+    import otto.voice.stt as sttmod
+    class _DeadEars:
+        def __init__(self, *a, **k): pass
+        def start(self): raise RuntimeError("no mic")
+    monkeypatch.setattr(sttmod, "Ears", _DeadEars)
+    _run_fallback(orch, lambda: orch._on_native_failed("helper_exit"))
+    assert deaf == ["deaf"]                                     # only now is a mic failure raised
+
+
+def test_fallback_stops_native_before_realtimestt_starts(monkeypatch):
+    """Single mic owner: the native helper is stopped (confirmed) BEFORE RealtimeSTT starts."""
+    orch = _native_orch(monkeypatch)
+    order = []
+    orch.ears.stop = lambda: (order.append("native_stop"), True)[1]   # confirmed reap
+    import otto.voice.stt as sttmod
+    class _SeqEars:
+        def __init__(self, *a, **k): pass
+        def start(self): order.append("realtimestt_start")
+    monkeypatch.setattr(sttmod, "Ears", _SeqEars)
+    _run_fallback(orch, lambda: orch._on_native_failed("helper_exit"))
+    assert order == ["native_stop", "realtimestt_start"]       # stop fully precedes start
+    assert isinstance(orch.ears, _SeqEars) and orch._native_audio is False
+
+
+def test_fallback_not_started_when_native_unconfirmed(monkeypatch):
+    """If the native helper can't be CONFIRMED stopped (process/thread not reaped), do NOT start a
+    second recorder — avoids two live mic owners. Surface a restart notice, not a mic 'deaf'."""
+    orch = _native_orch(monkeypatch)
+    orch.ears.stop_result = False            # stop() can't confirm the helper is dead
+    started = []
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): started.append("ctor")
+        def start(self): started.append("start")
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+    deaf = []
+    monkeypatch.setattr(orch, "_on_stt_health", lambda s: deaf.append(s))
+    _run_fallback(orch, lambda: orch._on_native_failed("helper_exit"))
+    assert started == []                     # NO second recorder was started
+    assert orch.ears is None
+    assert deaf == []                        # not a hardware mic failure — a distinct restart notice
+
+
+def test_fallback_runs_shutdown_off_loop(monkeypatch):
+    """The blocking native shutdown (terminate/kill/join) runs OFF the asyncio event loop."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    rec = {}
+    def _stop():
+        rec["thread"] = threading.current_thread().name
+        return True
+    orch.ears.stop = _stop
+    import otto.voice.stt as sttmod
+    class _E:
+        def __init__(self, *a, **k): pass
+        def start(self): pass
+    monkeypatch.setattr(sttmod, "Ears", _E)
+    main_thread = threading.current_thread().name
+    _run_fallback(orch, lambda: orch._on_native_failed("timeout"))
+    assert rec.get("thread") and rec["thread"] != main_thread   # ran in an executor thread
+
+
+def test_concurrent_native_failures_swap_once(monkeypatch):
+    orch = _native_orch(monkeypatch)
+    starts = []
+    import otto.voice.stt as sttmod
+    class _OneEars:
+        def __init__(self, *a, **k): pass
+        def start(self): starts.append(1)
+    monkeypatch.setattr(sttmod, "Ears", _OneEars)
+    _run_fallback(orch, lambda: (orch._on_native_failed("timeout"),
+                          orch._on_native_failed("helper_exit")))   # 2nd bails (swap claimed)
+    assert starts == [1]
+
+
+def test_native_stop_confirms_reap():
+    """NativeEars.stop() returns True only when the process is reaped AND reader threads exited."""
+    import types
+    import threading as _th
+    from otto.voice.native_ears import NativeEars
+
+    def _mk(poll_val, reader_alive):
+        ne = NativeEars.__new__(NativeEars)
+        ne._expected_stop = False
+        ne._stop = _th.Event()
+        ne._ready_timer = None
+        ne._proc = types.SimpleNamespace(
+            terminate=lambda: None, kill=lambda: None, stdin=None,
+            wait=lambda timeout=None: None, poll=lambda: poll_val)
+        ne._reader = (types.SimpleNamespace(is_alive=lambda: True, join=lambda timeout=None: None)
+                      if reader_alive else None)
+        ne._stderr_reader = None
+        return ne
+
+    assert _mk(0, False).stop() is True        # exited + no live threads → confirmed
+    assert _mk(None, False).stop() is False     # process never exited → not confirmed
+    assert _mk(0, True).stop() is False          # a reader thread still alive → not confirmed
+
+
+def test_speaker_matches_user_offloop_and_active(monkeypatch):
+    """Spoken-stop speaker check runs the match OFF the loop and honors speaker_active."""
+    import threading
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    monkeypatch.setattr(orch, "_utterance_audio", lambda: (b"x" * 100, 16000))
+    rec = {}
+    def _match(audio, sr):
+        rec["thread"] = threading.current_thread().name
+        return ("ankit", 0.90)
+    orch.speaker = types.SimpleNamespace(match=_match)
+    stt = orch.settings.voice.stt
+    stt.speaker_threshold = 0.55
+    main_thread = threading.current_thread().name
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        audio, sr = orch._utterance_audio()
+        stt.speaker_active = ["ankit"]
+        ok1 = await orch._speaker_matches_user(audio, sr)
+        stt.speaker_active = ["someone-else"]        # not the matched name → reject
+        ok2 = await orch._speaker_matches_user(audio, sr)
+        return ok1, ok2
+    ok1, ok2 = asyncio.run(run())
+    assert ok1 is True and ok2 is False
+    assert rec.get("thread") and rec["thread"] != main_thread   # match ran off the event loop
+
+
+def test_stop_verify_discarded_when_newer_utterance_arrives(monkeypatch):
+    """A later utterance arriving before Stop verification completes makes the stop stale: the
+    verify must use the SNAPSHOT audio (not mutable ears.last_audio) and NOT interrupt."""
+    import threading
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    match_audio = {}
+    gate = threading.Event()
+    def _match(audio, sr):
+        match_audio["seen"] = bytes(audio) if isinstance(audio, (bytes, bytearray)) else audio
+        gate.wait(1.0)                         # hold the match until a newer utterance lands
+        return ("ankit", 0.95)
+    orch.speaker = types.SimpleNamespace(match=_match)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap = (b"UTTER_A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
+        await asyncio.sleep(0)                 # let the verify start + enter the match
+        orch._utterance_gen += 1               # a NEWER utterance finalizes mid-verification
+        gate.set()
+        await task
+    asyncio.run(run())
+    assert match_audio.get("seen") == b"UTTER_A"   # verified the snapshot, not later audio
+    assert interrupts == []                        # stale → did NOT interrupt
+
+
+def test_stop_verify_discarded_when_playback_epoch_advances(monkeypatch):
+    """If any interrupt fires (epoch advances) before the Stop verify completes, it's discarded."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    orch.speaker = types.SimpleNamespace(match=lambda a, s: ("ankit", 0.95))
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap = (b"A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
+        orch._playback_epoch += 1              # an interrupt happened meanwhile → epoch advances
+        await task
+    asyncio.run(run())
+    assert interrupts == []                    # moot → did NOT interrupt
+
+
+def test_shutdown_during_fallback_starts_no_recorder(monkeypatch):
+    """If shutdown begins while a native fallback is stopping the helper, no recorder may start."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    def _slow_stop():
+        gate.wait(1.0)                         # hold the native shutdown so stop() can interleave
+        return True
+    orch.ears.stop = _slow_stop
+    started = []
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): started.append("ctor")
+        def start(self): started.append("start")
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")  # schedules the (slow) fallback task
+        await asyncio.sleep(0)                  # let it enter the off-loop native stop
+        gate.set()                              # let the native stop finish
+        await orch.stop()                       # shutdown cancels/awaits the fallback
+    asyncio.run(run())
+    assert started == []                        # fallback must NOT have started a recorder
+    assert orch._shutting_down is True and orch.ears is None
+
+
+def test_shutdown_awaits_blocked_native_stop(monkeypatch):
+    """stop() must AWAIT (shield, not cancel) the in-flight fallback: if the native stop is blocked,
+    shutdown does not return early — it waits until the helper is confirmed stopped."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    stopped = {"entered": False, "returned": False}
+    def _blocking_stop():
+        stopped["entered"] = True
+        gate.wait(2.0)                          # hold until the test releases it
+        stopped["returned"] = True
+        return True                             # confirmed reap
+    orch.ears.stop = _blocking_stop
+    started = []
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): started.append("ctor")
+        def start(self): started.append("start")
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")   # schedule fallback
+        for _ in range(200):                     # wait until the executor enters the blocked stop
+            if stopped["entered"]:
+                break
+            await asyncio.sleep(0.01)
+        assert stopped["entered"] and not stopped["returned"]
+        stop_task = orch._loop.create_task(orch.stop())
+        for _ in range(4):
+            await asyncio.sleep(0)               # let stop() set _shutting_down + reach the shield
+        assert orch._shutting_down is True
+        assert stop_task.done() is False         # shutdown is BLOCKED on the native stop, not early
+        assert not stopped["returned"]           # native stop still running
+        gate.set()                               # release the native stop
+        await stop_task                          # now shutdown can complete
+        assert stopped["returned"] is True       # confirmed stopped before shutdown returned
+    asyncio.run(run())
+    assert started == []                         # no recorder started despite the fallback running
+    assert orch.ears is None
+
+
+def test_shutdown_cancel_awaits_cleanup_then_propagates(monkeypatch):
+    """If stop() is cancelled while native shutdown is blocked, the mic is still reclaimed (the
+    shielded fallback is awaited to completion) BEFORE CancelledError propagates."""
+    import threading
+    orch = _native_orch(monkeypatch)
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+    gate = threading.Event()
+    stopped = {"entered": False, "returned": False}
+    def _blocking_stop():
+        stopped["entered"] = True
+        gate.wait(2.0)
+        stopped["returned"] = True
+        return True
+    orch.ears.stop = _blocking_stop
+    import otto.voice.stt as sttmod
+    class _NoEars:
+        def __init__(self, *a, **k): pass
+        def start(self): pass
+    monkeypatch.setattr(sttmod, "Ears", _NoEars)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        orch._on_native_failed("helper_exit")
+        for _ in range(200):
+            if stopped["entered"]:
+                break
+            await asyncio.sleep(0.01)
+        stop_task = orch._loop.create_task(orch.stop())
+        for _ in range(4):
+            await asyncio.sleep(0)               # let stop() reach the shield-await
+        stop_task.cancel()                       # cancel stop() mid native-shutdown
+        for _ in range(4):
+            await asyncio.sleep(0)               # deliver the cancellation
+        assert not stopped["returned"]           # cleanup NOT abandoned — still awaiting the helper
+        assert not stop_task.done()              # cancellation did NOT propagate early
+        gate.set()                               # release the native stop
+        cancelled = False
+        try:
+            await stop_task
+        except asyncio.CancelledError:
+            cancelled = True
+        assert cancelled                         # cancellation propagated AFTER cleanup
+        assert stopped["returned"] is True       # mic reclaimed before the cancel surfaced
+    asyncio.run(run())
+
+
+def test_voice_out_bumps_playback_epoch(monkeypatch):
+    """A fresh TTS turn (nothing currently playing) bumps the playback epoch; a continuation does not."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.voice_muted = False
+    orch.ears = None
+    playing = {"v": False}
+    orch.mouth = types.SimpleNamespace(is_playing=lambda: playing["v"], speak=lambda t: None)
+    e0 = orch._playback_epoch
+    orch._voice_out("hello")                     # fresh → bump
+    assert orch._playback_epoch == e0 + 1
+    playing["v"] = True
+    orch._voice_out("more of the same reply")    # continuation → no bump
+    assert orch._playback_epoch == e0 + 1
+
+
+def test_stop_verify_discarded_when_new_playback_starts(monkeypatch):
+    """A delayed verified Stop must not interrupt a LATER playback begun by another path."""
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.voice_muted = False
+    orch.ears = None
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)
+    interrupts = []
+    monkeypatch.setattr(orch, "interrupt_now", lambda reason="stop": interrupts.append(reason))
+    orch.speaker = types.SimpleNamespace(match=lambda a, s: ("ankit", 0.95))
+    orch.mouth = types.SimpleNamespace(is_playing=lambda: False, speak=lambda t: None)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        snap = (b"A", 16000, orch._utterance_gen, orch._playback_epoch)
+        task = orch._loop.create_task(orch._stop_if_speaker_matches("stop", *snap))
+        orch._voice_out("a new reply from another path")   # new playback turn → epoch advances
+        await task
+    asyncio.run(run())
+    assert interrupts == []                      # moot → did NOT interrupt the new playback
+
+
+def _speaking_orch(monkeypatch, mode):
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.audio_mode = mode
+    orch.mouth = types.SimpleNamespace(recently_active=lambda w=1.5: True, is_playing=lambda: True)
+    return orch
+
+
+def test_stop_decision_drops_in_aec_without_enrollment(monkeypatch):
+    """full_duplex_aec, Orrin speaking, no voiceprint → a spoken 'stop' is dropped (button-only)."""
+    orch = _speaking_orch(monkeypatch, "full_duplex_aec")
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: False)   # not enrolled
+    assert orch._stop_decision() == "drop"
+
+
+def test_stop_decision_verifies_when_enrolled(monkeypatch):
+    orch = _speaking_orch(monkeypatch, "full_duplex_aec")
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: True)    # enrolled → off-loop verify
+    assert orch._stop_decision() == "verify"
+
+
+def test_stop_decision_accepts_on_headset_and_in_gap(monkeypatch):
+    # headset while speaking, no enrollment → accept (no echo path)
+    orch = _speaking_orch(monkeypatch, "full_duplex_headset")
+    monkeypatch.setattr(orch, "_speaker_echo_guard", lambda: False)
+    assert orch._stop_decision() == "accept"
+    # any mode in a silence gap → accept
+    orch2 = _speaking_orch(monkeypatch, "full_duplex_aec")
+    orch2.mouth = None                                   # not speaking → _output_suppressing False
+    assert orch2._stop_decision() == "accept"
+
+
+def test_route_task_cancelled_on_shutdown(monkeypatch):
+    """Orchestrator.stop() cancels and awaits the background route-refresh task."""
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch._close_research_ws = lambda: asyncio.sleep(0)
+    orch._close_parallel_ws = lambda: asyncio.sleep(0)
+
+    async def run():
+        orch._loop = asyncio.get_running_loop()
+        async def _forever():
+            while True:
+                await asyncio.sleep(5)
+        orch._route_task = orch._loop.create_task(_forever())
+        await asyncio.sleep(0)       # let it start
+        task = orch._route_task
+        await orch.stop()
+        return task
+    task = asyncio.run(run())
+    assert task.cancelled() and orch._route_task is None
+
+
 # ---- Local system/screen actions + capabilities + latency -----------------
 def test_screen_actions_match(monkeypatch):
     monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
@@ -2157,7 +2677,7 @@ def test_sleep_and_wake_hands_free(monkeypatch):
         orch.settings.voice.stt.wakeword_backend = "phrase"
         orch.settings.voice.stt.wake_words = "otto"
         submitted = []
-        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        monkeypatch.setattr(orch, "submit_user_input", lambda t, voice_ack=None: submitted.append(t))
         # sleep-command recognition (with/without a leading wake word or greeting)
         assert orch._is_sleep_command("stop listening")
         assert orch._is_sleep_command("otto stop listening")
@@ -2192,7 +2712,7 @@ def test_half_duplex_suppresses_self_echo(monkeypatch):
         orch.settings.voice.stt.always_listen = True
         orch.mouth = _Mouth()
         submitted = []
-        monkeypatch.setattr(orch, "submit_user_input", lambda t: submitted.append(t))
+        monkeypatch.setattr(orch, "submit_user_input", lambda t, voice_ack=None: submitted.append(t))
         # speaking a line pushes the mute window out; input is dropped during it
         orch._voice_out("Here is a spoken reply that takes a moment to say out loud.")
         assert orch._output_suppressing() is True
@@ -2502,7 +3022,7 @@ def test_research_objective_rotation_and_roadmap_and_sleep(tmp_path):
 
     # research quiescence allows sleeping when the flag is on, unlike the (spoken) idle gate
     orch.state = "idle"; orch._sleeping = True; orch._awaiting_command = False
-    orch._follow_up_active = False; orch._pending_answer = None; orch._research_running = False
+    orch._follow_up_active = False; orch._pending_answers = {}; orch._research_running = False
     class _WS:  state = "idle"
     orch.focused = "p"; orch.workspaces = {"p": _WS()}   # focused_ws is a property over these
     orch.settings.voice.idle_research_while_asleep = True
@@ -2796,7 +3316,7 @@ def test_voice_command_dispatch_routing(monkeypatch):
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
 
         # refine off, dictation off → text goes to Claude unchanged
         orch.settings.voice.stt.refine = False
@@ -2870,14 +3390,15 @@ def test_pending_answer_bypasses_wake_word():
             def is_playing(self): return True
             def recently_active(self, w=1.5): return True
         orch.mouth = Speaking()
-        orch._pending_answer = orch._loop.create_future()
+        key = id(orch.focused_ws)
+        orch._pending_answers[key] = orch._loop.create_future()
         orch._on_voice_final("I'm about to create or change files. Should I go ahead?")
-        assert not orch._pending_answer.done()              # echo dropped
+        assert not orch._pending_answers[key].done()         # echo dropped
 
         # 2) the real answer once Orrin is quiet → resolves the pending answer, no wake word
         orch.mouth = None
         orch._on_voice_final("yes go ahead")
-        assert orch._pending_answer.done() and orch._pending_answer.result() == "yes go ahead"
+        assert orch._pending_answers[key].done() and orch._pending_answers[key].result() == "yes go ahead"
     asyncio.run(run())
 
 
@@ -2996,7 +3517,7 @@ def test_dispatch_drops_noise_and_gates_hands_free(monkeypatch):
         orch.settings.voice.stt.hands_free_verify = True
         orch.settings.voice.stt.refine = False
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
 
         # heuristic: obvious junk dropped, never reaches the brain
         orch._dispatch_voice_command("you", hands_free=True)   # heuristic filler → dropped
@@ -3081,7 +3602,7 @@ def test_speaker_gate_without_verify_does_not_drop_commands(monkeypatch):
             def match(self, audio, sr): return ("ankit", 0.9)
         orch.speaker = FakeSpeaker()
         sent = []
-        orch.submit_user_input = lambda t: sent.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: sent.append(t)
         # if the cloud verify were (wrongly) consulted it would reject and drop — it must NOT be.
         import otto.voice.noise as noise
         async def reject(text, model="haiku"): return False
@@ -3498,8 +4019,9 @@ def test_background_clause_runs_parallel_even_when_idle():
 
 def test_run_user_turn_skips_interactive_guards_in_background():
     """Regression: a background lane (the parallel 'meanwhile' workspace or a non-focused targeted
-    turn) must NOT run the spoken destructive confirm. It shares one `_pending_answer` slot with the
-    focused turn, so a confirm there would race it. The focused turn still gets the full guards."""
+    turn) must NOT run the spoken destructive confirm — it has no voice/text channel of its own to
+    be answered through, so a confirm there would hang or race the focused turn's. The focused turn
+    still gets the full guards."""
     async def run():
         orch = Orchestrator(load_settings(), EventBus())
         orch._loop = asyncio.get_running_loop()
@@ -3620,7 +4142,7 @@ def test_dispatch_followup_relaxes_gate_threshold():
         st.smart_gate = True; st.smart_gate_threshold = 0.55; st.follow_up_threshold = 0.30
         st.refine = False; orch._dictation = False
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
         orch._ack = lambda intent: None
         await orch._dispatch_async("ambient chatter", gate=True, use_laya=True, follow_up=False)
         assert submitted == []                          # stricter bar → dropped
@@ -3638,7 +4160,7 @@ def test_dispatch_local_verify_drops_garbled_stt():
         orch.settings.voice.stt.refine = False; orch._dictation = False
         orch._ack = lambda intent: None
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
         orch.smart_gate = _FakeGate(real=0.1)
         await orch._dispatch_async("the the uh xcode xcode", gate=True, local_verify=True)
         assert submitted == []
@@ -3796,7 +4318,7 @@ def test_speaker_gate_drops_unregistered_voice():
         orch.settings.voice.stt.speaker_active = []
         orch._ack = lambda intent: None
         submitted = []
-        orch.submit_user_input = lambda t: submitted.append(t)
+        orch.submit_user_input = lambda t, voice_ack=None: submitted.append(t)
 
         class _Ears: pass
         ears = _Ears(); ears.last_audio = (b"\x10\x00") * 8000; ears.sample_rate = 16000
@@ -4086,3 +4608,151 @@ def test_dashboard_smoke_optional():
     if r.returncode == 2:
         pytest.skip(f"dashboard smoke prerequisites missing: {r.stderr.strip()[:200]}")
     assert r.returncode == 0, (r.stdout + r.stderr)
+
+
+# ---- Conversational turn manager (acks / context / correction / concise / milestones) ----------
+def test_classify_task_by_intent():
+    from otto.voice.acks import classify_task, LOOKUP, DEBUG, CODE, LONG
+    assert classify_task("what's the time") == LOOKUP
+    assert classify_task("why is the build failing") == DEBUG
+    assert classify_task("refactor the auth function") == CODE
+    assert classify_task("trace where the token flows in the code") == CODE
+    assert classify_task("redesign the whole dashboard") == LONG
+    assert classify_task("audit everything for security") == LONG
+
+
+def test_ack_selector_varies_and_by_task():
+    import random
+    from otto.voice.acks import AckSelector, CODE, _PHRASES
+    sel = AckSelector(history=3, request_aware_rate=0.0, rng=random.Random(1))
+    picks = [sel.choose(CODE) for _ in range(8)]
+    assert all(p in _PHRASES[CODE] for p in picks)          # chosen from the right pool
+    for i in range(len(picks)):                             # no phrase repeats within the last 3
+        assert picks[i] not in picks[max(0, i - 3):i]
+
+
+def test_ack_selector_request_aware_echo():
+    import random
+    from otto.voice.acks import AckSelector
+    sel = AckSelector(request_aware_rate=1.0, rng=random.Random(0))
+    assert sel.choose("code", "trace the audio path") in (
+        "I'll trace where that flows.", "I'm following the data flow now.", "I'll trace that path.")
+    sel2 = AckSelector(request_aware_rate=1.0, rng=random.Random(0))
+    assert sel2.choose("code", "compare the two approaches") in (
+        "I'll compare the two approaches.", "I'll weigh the options.")
+
+
+def test_ack_phrases_are_concise():
+    from otto.voice.acks import _PHRASES, _REQUEST_AWARE
+    for pool in list(_PHRASES.values()) + [p for _, p in _REQUEST_AWARE]:
+        for phrase in pool:
+            assert len(phrase.split()) < 8, phrase           # voice-concise: under 8 words
+
+
+def test_conv_follow_up_context():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    cm.note_user("trace the audio path through the orchestrator")
+    assert cm.topic                                          # a topic was captured
+    assert cm.is_follow_up("and the second one?") is True
+    assert cm.is_follow_up("what about the mute logic") is True
+    assert cm.is_follow_up("open the calendar app") is False
+    # a bare follow-up gets the topic folded in; a self-contained one is untouched
+    assert "follow-up about" in cm.contextualize("and the second one?")
+    assert cm.contextualize("trace the audio path again") == "trace the audio path again"
+
+
+def test_conv_finished_speaking_and_correction():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    # delay until finished: an unfinished thought holds, the completion dispatches the whole turn
+    assert cm.offer("open the").kind == "hold"
+    d = cm.offer("auth module and run the tests.")
+    assert d.kind == "dispatch" and "open the auth module" in d.text
+    # self-correction: fold an "actually…" amend into a held thought
+    cm2 = ConversationManager()
+    assert cm2.offer("set a timer for ten minutes and").kind == "hold"   # trailing "and" → unfinished
+    d2 = cm2.offer("actually make it five.")
+    assert d2.kind == "dispatch" and "five" in d2.text and "ten minutes" in d2.text
+
+
+def test_conv_interruption():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    cm.offer("open the")                                     # something held
+    assert cm.holding is True
+    cm.interrupt()
+    assert cm.interrupted is True and cm.holding is False     # barge-in drops the held thought
+    cm.resume()
+    assert cm.interrupted is False
+
+
+def test_conv_fast_vs_long():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    assert cm.is_long("redesign the whole dashboard") is True
+    assert cm.is_long("what's the time") is False
+
+
+def test_conv_concise_voice_first():
+    from otto.voice.conversation import ConversationManager
+    long = "First sentence here. Second one follows. Third should be dropped. Fourth too."
+    assert ConversationManager.concise(long, max_sentences=2) == \
+        "First sentence here. Second one follows."
+    assert ConversationManager.concise("Short answer.") == "Short answer."
+    capped = ConversationManager.concise("x" * 300, max_sentences=5, max_chars=50)
+    assert len(capped) <= 52 and capped.endswith("…")
+
+
+def test_conv_milestone_real_not_filler():
+    from otto.voice.conversation import ConversationManager
+    cm = ConversationManager()
+    assert cm.milestone("Read", "otto/auth.py") == "Reading otto/auth.py"
+    assert cm.milestone("Bash", "pytest -q") == "Running pytest -q"
+    assert cm.milestone("TodoWrite", "updating list") is None    # bookkeeping → not a milestone
+    assert cm.milestone("Read", "") is None                       # no concrete target → no vague step
+    assert cm.is_filler_tool("TodoWrite") is True
+    assert cm.is_filler_tool("Read") is False
+
+
+def test_no_ack_on_instant_route_but_ack_on_engine(monkeypatch):
+    import asyncio
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch._loop = asyncio.new_event_loop()
+    orch.settings.voice.parallel_dispatch = False
+    acks = []
+    monkeypatch.setattr(orch, "_speak_ack", lambda intent="command", text="": acks.append(text))
+    for name in ("_maybe_chat_command", "_maybe_engine_command",
+                 "_maybe_memory_command", "_maybe_clone_command"):
+        monkeypatch.setattr(orch, name, lambda t: False)
+    monkeypatch.setattr(orch, "_autonomy_command", lambda t: None)
+    async def _noop(*a, **k):
+        return None
+    monkeypatch.setattr(orch, "_handle_turn", _noop)
+    try:
+        monkeypatch.setattr(orch, "_maybe_local_action", lambda t: True)   # instant → no ack
+        orch.submit_user_input("open safari", voice_ack="command")
+        monkeypatch.setattr(orch, "_maybe_local_action", lambda t: False)  # engine → ack
+        orch.submit_user_input("refactor the auth module", voice_ack="command")
+    finally:
+        pending = asyncio.all_tasks(orch._loop)
+        if pending:
+            orch._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        orch._loop.close()
+    assert acks == ["refactor the auth module"]
+
+
+def test_concise_cap_limits_spoken_reply(monkeypatch):
+    import types
+    monkeypatch.setattr("otto.orchestrator.save_config", lambda d: None)
+    orch = Orchestrator(load_settings(), EventBus())
+    orch.ears = None
+    orch.voice_muted = False
+    spoken = []
+    orch.mouth = types.SimpleNamespace(speak=lambda t: spoken.append(t), is_playing=lambda: False)
+    orch.settings.voice.tts.concise_voice = True
+    orch.settings.voice.tts.concise_chars = 40
+    orch.settings.voice.tts.max_spoken_chars = 600
+    orch._emit_speech("word " * 60)                          # a runaway reply
+    assert spoken and len(spoken[0]) <= 45 and spoken[0].endswith("…")
