@@ -271,32 +271,15 @@ class STTConfig(BaseModel):
     # their phrase (run `python -m otto.enroll_wake_word`). Points at the generated *_ref.json.
     eff_reference: str = ""
     eff_threshold: float = 0.70
-    # Smart gate: on the hands-free (always-listen) path, use a fast LOCAL model (laya, ~50ms
-    # CPU) to tell speech addressed to Orrin from ambient room/TV/side-talk — so always-listen
-    # only acts on what's meant for it. Off by default (needs the laya package + a one-time model
-    # download); when unavailable it transparently falls back to the keyword heuristics. Obvious
-    # commands ("open chrome") bypass it and stay instant. Drops utterances scoring below the
-    # threshold as ambient. Recommended with permission='guarded' since always-listen + bypass
-    # would let a rare false-positive run an action unconfirmed.
-    smart_gate: bool = False
-    smart_gate_threshold: float = 0.55
-    # During a follow-up window (right after Orrin replied) you're likely still talking to it, so
-    # the smart-gate uses this LOWER bar — it only drops clearly-ambient speech, keeping genuine
-    # conversational follow-ups. Outside the window the stricter smart_gate_threshold applies.
-    follow_up_threshold: float = 0.30
-    # Local command-verify: when the smart-gate is unavailable, use laya (not a cloud model) to
-    # reject grammatical-but-nonsensical STT hallucinations on the hands-free path. Offline, ~50ms.
-    # OFF by default: laya's ~2.2 GB model was dropping genuine conversational commands as "ambient"
-    # and is the biggest memory hog — so the laya gates (this + smart_gate) ship disabled, and laya
-    # is never loaded unless you explicitly turn one on. Filtering then rests on speaker verification
-    # (whose voice is this?) plus the cheap junk/noise heuristic.
-    local_command_verify: bool = False
-
-    @property
-    def laya_needed(self) -> bool:
-        """Any feature that requires laya to be loaded (so start() can bring it up). Both default
-        OFF, so laya (the ~2.2 GB model) stays unloaded unless explicitly enabled."""
-        return bool(self.smart_gate or self.local_command_verify)
+    # NOTE: the "smart gate" (laya) addressing/command-verify family of settings used to live here
+    # (smart_gate, smart_gate_threshold, follow_up_threshold, local_command_verify). They were a
+    # fast LOCAL model that scored whether hands-free speech was addressed to Orrin vs ambient
+    # room/TV/side-talk. laya (a ~2.2 GB model, the biggest memory hog) was removed because it also
+    # dropped genuine conversational commands as "ambient". The settings were kept as dead config
+    # for a while, which misled debugging sessions into enabling a filter that did nothing — so
+    # they're gone. Hands-free ambient filtering now rests on `speaker_verify` (whose voice is
+    # this?) plus `hands_free_verify` (the cloud "is this a real command?" check) below, with the
+    # cheap junk/noise heuristic in front.
 
     # Speaker verification ("whose voice is this?") — the one signal content can't give. Enroll one
     # or MORE voices (menu → "Enroll a voice", or `python -m otto.voice.enroll_speaker`); each
@@ -460,14 +443,13 @@ class VoiceConfig(BaseModel):
     # turn is silent (never spoken) and notifies on completion; the focused turn keeps speaking.
     # Set False to always queue (old behavior).
     parallel_dispatch: bool = True
-    # Auto-fresh context: before a focused command, use laya to check whether it CONTINUES the
-    # current chat's topic. If it's a clearly-unrelated new task, start a fresh chat first so a
-    # stale topic can't bleed into the answer (the disk-question-got-a-screensaver-answer bug).
-    # Durable memory (facts/summary) is re-injected, so only the transient conversation resets.
-    auto_fresh_context: bool = True
-    # Destructive-action guardrail: even under permission="bypass", use laya to flag a command
-    # that looks destructive/irreversible (delete/reset/force-push/drop) and ask you to confirm
-    # first — a cheap local safety net against a misheard command running unconfirmed.
+    # NOTE: `auto_fresh_context` used to live here — it asked laya whether a focused command
+    # continued the current chat's topic and, if not, started a fresh chat first. laya was removed
+    # (see STTConfig above), so that check had no backing model and was permanently inert; it was
+    # dropped rather than left as dead config that reads as if it works.
+    # Destructive-action guardrail: even under permission="bypass", flag a command that looks
+    # destructive/irreversible (delete/reset/force-push/drop) by a plain keyword match and ask you
+    # to confirm first — a cheap local safety net against a misheard command running unconfirmed.
     destructive_guard: bool = True
 
     # ── Autonomous work (the background "teammate", #71) ──────────────────────────────────────
