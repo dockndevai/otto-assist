@@ -17,6 +17,7 @@ Both go through the same ``_proc`` so ``stop()`` (barge-in) and ``is_playing()``
 
 from __future__ import annotations
 
+import hashlib
 import os
 import queue
 import re
@@ -25,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 from ..config import OTTO_HOME, Settings
 
@@ -89,8 +91,9 @@ class Mouth:
         self._lang = (getattr(settings.voice, "language", "en") or "en").lower()
         self._lang_voices = {k.lower(): v for k, v in
                              (getattr(settings.voice.tts, "lang_voices", {}) or {}).items()}
-        # macOS say / kokoro shared path
-        self._q: "queue.Queue[str | None]" = queue.Queue()
+        # macOS say / kokoro shared path. A queue item is either text to render+speak, or a
+        # ("wav", path) tuple to play a pre-rendered clip directly (cached acks) — never deleted.
+        self._q: "queue.Queue[str | tuple[str, str] | None]" = queue.Queue()
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
@@ -193,12 +196,75 @@ class Mouth:
         argv.append(text)
         return argv, None
 
+    # -- instant cached acks (#109) ---------------------------------------
+    def _acks_cache_dir(self) -> Path:
+        return OTTO_HOME / "cache" / "acks"
+
+    def _ack_cache_path(self, text: str, voice: str) -> Path:
+        """Stable per-(voice, speed, text) path for a pre-rendered ack WAV."""
+        key = hashlib.sha1(
+            f"{voice}\x00{self._kokoro_speed}\x00{text}".encode("utf-8")).hexdigest()[:16]
+        return self._acks_cache_dir() / f"{key}.wav"
+
+    def prime_acks(self, phrases: "list[str]") -> int:
+        """Pre-synthesize `phrases` to the ack WAV cache so they play instantly later. Only for the
+        kokoro engine (system `say` starts fast already); a no-op otherwise or when cache_acks is
+        off. Safe to call on a background thread; returns how many were newly synthesized."""
+        if not getattr(self.settings.voice.tts, "cache_acks", True):
+            return 0
+        if self._engine != "kokoro" or self._kokoro is None:
+            return 0
+        made = 0
+        try:
+            self._acks_cache_dir().mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return 0
+        for text in phrases:
+            t = (text or "").strip()
+            if not t or self._has_devanagari(t):     # Devanagari routes to `say`, never cached
+                continue
+            dest = self._ack_cache_path(t, self._kokoro_voice)
+            if dest.exists():
+                continue
+            wav = self._synth_kokoro(t)               # temp WAV (may be on a different filesystem)
+            if not wav:
+                continue
+            try:
+                import shutil
+                shutil.move(wav, str(dest))           # rename, or copy+remove across filesystems
+                made += 1
+            except OSError:
+                try:
+                    os.unlink(wav)
+                except OSError:
+                    pass
+        return made
+
+    def speak_cached(self, text: str) -> None:
+        """Speak a short ack from the pre-rendered cache when available (instant); otherwise fall
+        back to normal synth-on-demand. Use this for acknowledgements, not for model replies."""
+        if not text:
+            return
+        if (getattr(self.settings.voice.tts, "cache_acks", True)
+                and self._engine == "kokoro" and not self._has_devanagari(text)):
+            dest = self._ack_cache_path(text.strip(), self._kokoro_voice)
+            if dest.exists():
+                self._q.put(("wav", str(dest)))
+                return
+        self.speak(text)
+
+    # -- say / kokoro worker ----------------------------------------------
     def _speak_loop(self) -> None:
         while True:
-            text = self._q.get()
-            if text is None:
+            item = self._q.get()
+            if item is None:
                 return
-            argv, tmp = self._render_job(text)
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "wav":
+                argv, tmp = ["/usr/bin/afplay", item[1]], None   # cached clip — play, don't delete
+                text = item[1]
+            else:
+                text = item
+                argv, tmp = self._render_job(text)
             try:
                 with self._lock:
                     self._proc = subprocess.Popen(argv)

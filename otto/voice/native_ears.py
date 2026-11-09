@@ -90,6 +90,13 @@ class NativeEars:
         self._mlx = None
         self._mlx_model = ""
         self._mlx_lang: str | None = None
+        self._mlx_lock = threading.Lock()         # serialize interim vs final transcription
+        # Streaming partials (#109): transcribe interim snapshots on a dedicated worker so the read
+        # loop never blocks. Coalesce bursts — only the latest pending snapshot is transcribed.
+        self._streaming = bool(getattr(settings.voice.stt, "streaming_partials", True))
+        self._pending_interim: bytes | None = None
+        self._interim_evt = threading.Event()
+        self._interim_thread: threading.Thread | None = None
 
     @staticmethod
     def available() -> bool:
@@ -107,6 +114,10 @@ class NativeEars:
         self._reader.start()
         self._stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_reader.start()
+        if self._streaming and self._on_realtime is not None:
+            self._interim_thread = threading.Thread(
+                target=self._interim_loop, daemon=True, name="native-interim")
+            self._interim_thread.start()
         # Fail closed if the helper never reports AEC readiness (hung engine / no input device).
         self._ready_timer = threading.Timer(_READY_TIMEOUT, self._on_ready_timeout)
         self._ready_timer.daemon = True
@@ -120,6 +131,9 @@ class NativeEars:
         wait → kill → join); run it off the event loop."""
         self._expected_stop = True
         self._stop.set()
+        evt = getattr(self, "_interim_evt", None)
+        if evt is not None:
+            evt.set()                             # wake the interim worker so it can exit
         if self._ready_timer is not None:
             self._ready_timer.cancel()
         self._send({"cmd": "quit"})
@@ -143,7 +157,7 @@ class NativeEars:
                     pass
             reaped = (p.poll() is not None)   # confirm the process actually exited
         threads_done = True
-        for th in (self._reader, self._stderr_reader):
+        for th in (self._reader, self._stderr_reader, getattr(self, "_interim_thread", None)):
             if th is not None and th.is_alive():
                 try:
                     th.join(timeout=3.0)
@@ -155,6 +169,13 @@ class NativeEars:
 
     def set_mic(self, on: bool) -> None:
         self._send({"cmd": "unmute" if on else "mute"})
+
+    def set_end_silence(self, ms: int) -> None:
+        """Set the helper's end-of-turn pause (semantic endpointing, #109). The helper clamps it."""
+        try:
+            self._send({"cmd": "endsilence", "ms": int(ms)})
+        except (TypeError, ValueError):
+            pass
 
     # PTT isn't wired for the native path in v1 (it's VAD/always-listen); no-op stubs keep the
     # orchestrator's Ears-shaped calls safe.
@@ -229,14 +250,33 @@ class NativeEars:
         kw = {"path_or_hf_repo": self._mlx_model}
         if self._mlx_lang:
             kw["language"] = self._mlx_lang
-        text = (self._mlx.transcribe(audio, **kw).get("text") or "").strip()
-        try:
-            import mlx.core as mx
-            (getattr(mx, "clear_cache", None)
-             or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
-        except Exception:
-            pass
+        with self._mlx_lock:                      # serialize interim vs final (one MLX call at a time)
+            text = (self._mlx.transcribe(audio, **kw).get("text") or "").strip()
+            try:
+                import mlx.core as mx
+                (getattr(mx, "clear_cache", None)
+                 or getattr(getattr(mx, "metal", None), "clear_cache", lambda: None))()
+            except Exception:
+                pass
         return text
+
+    def _interim_loop(self) -> None:
+        """Transcribe the latest interim snapshot and fire on_realtime. Coalescing: if several
+        snapshots arrived while one was transcribing, only the most recent is used."""
+        while not self._stop.is_set():
+            self._interim_evt.wait()
+            self._interim_evt.clear()
+            if self._stop.is_set():
+                return
+            pcm, self._pending_interim = self._pending_interim, None
+            if not pcm:
+                continue
+            try:
+                text = self._transcribe(pcm)
+            except Exception:
+                text = ""
+            if text and not self._stop.is_set():
+                self._post(self._on_realtime, text)
 
     def _read_loop(self) -> None:
         f = self._proc.stdout if self._proc is not None else None
@@ -266,6 +306,11 @@ class NativeEars:
                 text = self._transcribe(pcm)
                 if text:
                     self._post(self._on_final, text)
+            elif t == "interim":
+                pcm = _readexact(f, int(msg.get("bytes", 0) or 0))
+                if self._streaming and self._on_realtime is not None and pcm:
+                    self._pending_interim = pcm     # hand off; worker coalesces + transcribes
+                    self._interim_evt.set()
             elif t == "partial" and self._on_realtime is not None:
                 self._post(self._on_realtime, msg.get("text", ""))
             elif t == "error":

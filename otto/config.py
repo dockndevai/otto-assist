@@ -192,6 +192,20 @@ class STTConfig(BaseModel):
     # dashboard still shows a "Listening…" state and your final transcript without it.
     realtime_partials: bool = False
     realtime_model: str = "base.en"
+    # Semantic endpointing (#109): decide the end-of-turn pause from the CONTENT of the live partial
+    # instead of a fixed silence — the local analogue of OpenAI's semantic VAD. A complete-looking
+    # thought commits fast (endpoint_min_ms); an unfinished one (trailing "and", a hold phrase, a
+    # mid-quantity "...for twenty") waits up to endpoint_max_ms so Orrin never cuts you off. Applies
+    # to the native (AEC) path, which can emit partials and take a dynamic end-silence. On by default
+    # there; falls back to the fixed silence_seconds window when partials aren't available.
+    semantic_endpointing: bool = True
+    endpoint_base_ms: int = 500      # neutral/ambiguous phrase
+    endpoint_min_ms: int = 250       # clearly complete thought → snappy commit
+    endpoint_max_ms: int = 900       # unfinished thought → stay patient
+    # Streaming STT partials on the native path: the orrin-audio helper emits interim PCM during
+    # speech and we transcribe the rolling buffer, so endpointing + intent can start before you
+    # stop. Needs a native helper build that emits interim frames; no-ops on an older helper.
+    streaming_partials: bool = True
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
     always_listen: bool = False
@@ -323,6 +337,12 @@ class TTSConfig(BaseModel):
     # extra clip, not per-sentence (which synthesized choppy). Off = single clip at end (old way).
     stream_sentences: bool = True
     stream_min_chars: int = 8         # don't split off a first "sentence" shorter than this
+    # Instant acks (#109): pre-synthesize the short acknowledgement bank (otto.voice.acks) to a WAV
+    # cache on startup so the ack plays within ~50ms of your turn ending instead of waiting on a
+    # fresh Kokoro synth (~200-400ms). Cached under OTTO_HOME/cache/acks, keyed by voice+phrase;
+    # falls back to synth-on-demand for any phrase not yet cached. Only applies to the kokoro engine
+    # (the macOS `say` voice starts fast already). Set False to always synthesize on demand.
+    cache_acks: bool = True
     # When a phone (authenticated remote client) is connected, don't also speak the reply
     # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
     # driving it remotely. The dashboard on the Mac itself does NOT count as remote.

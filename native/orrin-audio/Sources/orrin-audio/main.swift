@@ -19,9 +19,22 @@ import Foundation
 // ---- tunables ---------------------------------------------------------------
 let kSampleRate: Double = 16000
 let kStartRMS: Double = 600      // int16 RMS above this = speech
-let kEndSilenceMs: Int = 700     // trailing silence that ends an utterance
+let kEndSilenceDefaultMs: Int = 500  // trailing silence that ends an utterance (now dynamic, see below)
+let kEndSilenceMinMs: Int = 150  // clamp for Python-driven end-silence
+let kEndSilenceMaxMs: Int = 2000
 let kMinUtteranceMs: Int = 300   // drop blips shorter than this
 let kMaxUtteranceMs: Int = 15000 // hard cap so a continuous stream still ends
+let kInterimMs: Int = 400        // emit an interim PCM snapshot roughly this often while speaking
+
+// ---- dynamic end-silence (semantic endpointing, #109) -----------------------
+// Python feeds a content-aware target via {"cmd":"endsilence","ms":N}: a complete-looking partial
+// shortens it (snappy commit), an unfinished one lengthens it (never cut the speaker off). Clamped.
+let endSilenceLock = NSLock()
+var endSilenceMs = kEndSilenceDefaultMs
+func getEndSilence() -> Int { endSilenceLock.lock(); defer { endSilenceLock.unlock() }; return endSilenceMs }
+func setEndSilence(_ v: Int) {
+    endSilenceLock.lock(); endSilenceMs = max(kEndSilenceMinMs, min(kEndSilenceMaxMs, v)); endSilenceLock.unlock()
+}
 
 // ---- stdout framing (one writer at a time) ----------------------------------
 let outLock = NSLock()
@@ -40,6 +53,16 @@ func emitUtterance(_ pcm: Data) {
     }
 }
 
+// An in-progress snapshot of the current utterance, for streaming partials (#109). Same framing as
+// `utterance`, type "interim" — the parent transcribes the rolling buffer and never treats it as final.
+func emitInterim(_ pcm: Data) {
+    outLock.lock(); defer { outLock.unlock() }
+    if let h = ("{\"type\":\"interim\",\"bytes\":\(pcm.count)}\n").data(using: .utf8) {
+        stdoutHandle.write(h)
+        stdoutHandle.write(pcm)
+    }
+}
+
 func logErr(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8) ?? Data()) }
 
 // ---- shared mute flag -------------------------------------------------------
@@ -52,6 +75,8 @@ func setMuted(_ v: Bool) { muteLock.lock(); muted = v; muteLock.unlock() }
 var inSpeech = false
 var silenceMs = 0
 var utterance = Data()
+var lastInterimBytes = 0   // utterance length at the last interim emit (throttle interim snapshots)
+var sinceInterimMs = 0     // time since the last interim emit
 let frameMs = 20  // we process ~20ms converted frames
 
 func rms(_ ptr: UnsafePointer<Int16>, _ count: Int) -> Double {
@@ -66,17 +91,30 @@ func handleFrame(_ ptr: UnsafePointer<Int16>, _ count: Int) {
     let level = rms(ptr, count)
     let bytes = Data(bytes: ptr, count: count * 2)
     if level >= kStartRMS {
-        if !inSpeech { inSpeech = true; silenceMs = 0; utterance.removeAll(keepingCapacity: true); emit("{\"type\":\"speech_start\"}") }
+        if !inSpeech {
+            inSpeech = true; silenceMs = 0; sinceInterimMs = 0; lastInterimBytes = 0
+            utterance.removeAll(keepingCapacity: true)
+            emit("{\"type\":\"speech_start\"}")
+        }
         utterance.append(bytes)
         silenceMs = 0
+        // Streaming partials: every ~kInterimMs of fresh speech, hand the parent a snapshot to
+        // transcribe so endpointing + intent can start before the turn ends.
+        sinceInterimMs += frameMs
+        if sinceInterimMs >= kInterimMs && utterance.count > lastInterimBytes {
+            emitInterim(utterance)
+            lastInterimBytes = utterance.count
+            sinceInterimMs = 0
+        }
     } else if inSpeech {
         utterance.append(bytes)                 // keep a little trailing silence
         silenceMs += frameMs
         let lenMs = utterance.count / 2 * 1000 / Int(kSampleRate)
-        if silenceMs >= kEndSilenceMs || lenMs >= kMaxUtteranceMs {
+        if silenceMs >= getEndSilence() || lenMs >= kMaxUtteranceMs {
             if lenMs - silenceMs >= kMinUtteranceMs { emitUtterance(utterance) }
             inSpeech = false
             utterance.removeAll(keepingCapacity: true)
+            setEndSilence(kEndSilenceDefaultMs)   // reset to neutral for the next turn
         }
     }
 }
@@ -130,9 +168,20 @@ do {
 }
 
 // ---- stdin: mute/unmute commands -------------------------------------------
+func parseEndSilenceMs(_ line: String) -> Int? {
+    // {"cmd":"endsilence","ms":N} — tolerate whitespace; pull the integer after "ms".
+    guard let d = line.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+          let ms = obj["ms"] as? Int else { return nil }
+    return ms
+}
+
 let stdinThread = Thread {
     while let line = readLine(strippingNewline: true) {
-        if line.contains("unmute") { setMuted(false) }
+        if line.contains("endsilence") {
+            if let ms = parseEndSilenceMs(line) { setEndSilence(ms) }
+        }
+        else if line.contains("unmute") { setMuted(false) }
         else if line.contains("mute") { setMuted(true) }
         else if line.contains("quit") { exit(0) }
     }

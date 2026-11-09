@@ -14,6 +14,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -446,9 +447,12 @@ class Orchestrator:
         self.bus.status(state, text)
 
     # -- half-duplex voice output -----------------------------------------
-    def _voice_out(self, text: str) -> None:
+    def _voice_out(self, text: str, cached: bool = False) -> None:
         """Speak `text` (when voice is on) and push out the input-mute window by roughly how
-        long it takes to say it, plus a cooldown — so Otto never transcribes its own voice."""
+        long it takes to say it, plus a cooldown — so Otto never transcribes its own voice.
+
+        `cached` routes short acks through the pre-rendered WAV cache (`Mouth.speak_cached`) so the
+        ack plays within ~50ms instead of waiting on a fresh synth (#109)."""
         t = (text or "").strip()
         if not t or self.mouth is None or self.voice_muted:
             return
@@ -464,7 +468,10 @@ class Orchestrator:
                 self._playback_epoch += 1
         except Exception:
             pass
-        self.mouth.speak(t)
+        if cached and hasattr(self.mouth, "speak_cached"):
+            self.mouth.speak_cached(t)
+        else:
+            self.mouth.speak(t)
         # Remember what we just said so the mic re-hearing it (speaker echo) can be dropped even
         # after the timed mute window closes. Keep the last few, ~30s.
         now = time.monotonic()
@@ -508,7 +515,7 @@ class Orchestrator:
             phrase = self._conv().acknowledge(text, intent)
         except Exception:
             phrase = "On it."
-        self._voice_out(phrase)
+        self._voice_out(phrase, cached=True)
 
     # -- media ducking: pause the user's music/video while listening after the wake word ------
     def _media_playpause(self) -> None:
@@ -933,6 +940,18 @@ class Orchestrator:
             except Exception as e:  # missing extras / audio device
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
+            # Pre-render the ack bank to the instant-ack WAV cache off the hot path (#109), so the
+            # first "On it." plays without a synth stall. No-op unless the engine is kokoro.
+            if self.mouth is not None and getattr(self.settings.voice.tts, "cache_acks", True):
+                def _prime() -> None:
+                    try:
+                        from .voice.acks import all_phrases
+                        n = self.mouth.prime_acks(all_phrases())
+                        if n:
+                            print(f"[otto] primed {n} ack clips", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[otto] ack prime skipped: {e!r}", file=sys.stderr, flush=True)
+                threading.Thread(target=_prime, name="ack-prime", daemon=True).start()
 
         # Microphone. The recorder runs in a multiprocessing CHILD (a re-exec of the signed
         # binary) that TCC will NOT prompt for on its own — so the MAIN app must hold the grant
@@ -3653,16 +3672,42 @@ class Orchestrator:
         # transcription lag + margin, so Otto's own reply doesn't come back as a command.
         return self.settings.voice.stt.silence_seconds + 2.5
 
+    def _endpointer(self):
+        """Lazily build the semantic endpointer from config (the local analogue of semantic VAD)."""
+        ep = getattr(self, "_endpointer_obj", None)
+        if ep is None:
+            from .voice.endpointer import Endpointer
+            stt = self.settings.voice.stt
+            ep = Endpointer(
+                base_ms=int(getattr(stt, "endpoint_base_ms", 500)),
+                min_ms=int(getattr(stt, "endpoint_min_ms", 250)),
+                max_ms=int(getattr(stt, "endpoint_max_ms", 900)),
+            )
+            self._endpointer_obj = ep
+        return ep
+
     def _on_voice_partial(self, text: str) -> None:
-        """Live caption while you speak — stream partial words to the dashboard. Suppressed
-        while Otto is speaking (echo) or muted/asleep."""
+        """Live caption while you speak — stream partial words to the dashboard. Also drives
+        semantic endpointing (#109): the content of the live partial sets how long a pause should
+        end this turn, pushed to the native helper's VAD. Suppressed while Otto is speaking (echo)
+        or muted/asleep."""
         if self.mic_muted or self._sleeping:
             return
         if self._output_suppressing():
             return
         t = (text or "").strip()
-        if t:
-            self.bus.transcript("user", t, final=False)
+        if not t:
+            return
+        self.bus.transcript("user", t, final=False)
+        # Content-aware end-of-turn: push the target pause to the native helper so a finished
+        # thought commits fast and an unfinished one waits. Native path only (it takes the command).
+        if (self._native_audio and getattr(self.settings.voice.stt, "semantic_endpointing", True)
+                and hasattr(self.ears, "set_end_silence")):
+            try:
+                target, _reason = self._endpointer().target_silence_ms(t)
+                self.ears.set_end_silence(target)
+            except Exception:
+                pass
 
     def _on_speech_start(self) -> None:
         if self.mic_muted:

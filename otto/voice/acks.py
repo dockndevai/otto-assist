@@ -59,6 +59,19 @@ _CODE_RE = re.compile(
     r"repo|branch|commit|diff|test|pipeline|trace|flow|where .*(defined|called|flows?|lives?))\b", re.I)
 
 
+def all_phrases() -> list[str]:
+    """Every distinct ack phrase (generic per task type + request-aware), for pre-synthesis into the
+    instant-ack WAV cache (#109). Order-stable, de-duplicated."""
+    seen: dict[str, None] = {}
+    for phrases in _PHRASES.values():
+        for p in phrases:
+            seen.setdefault(p, None)
+    for _rx, phrases in _REQUEST_AWARE:
+        for p in phrases:
+            seen.setdefault(p, None)
+    return list(seen.keys())
+
+
 def classify_task(text: str, intent: str = "command") -> str:
     """Infer the task type used to pick ack wording, from the request text (+ the dispatch intent)."""
     t = text or ""
