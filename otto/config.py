@@ -210,8 +210,9 @@ class STTConfig(BaseModel):
     # Where the regex endpointer above GUESSES end-of-turn from the partial *text*, this runs a tiny
     # AUDIO model (Whisper-Tiny encoder + classifier, ~8 MB INT8 ONNX, BSD-2 — Pipecat Smart Turn v3)
     # on the speech-so-far and returns P(you've finished). It rides the onnxruntime already shipped
-    # for Silero VAD (no new heavy dep) and runs on the native interim worker in ~15-40ms on Apple
-    # Silicon, so it never blocks the read loop. "auto" = use the model when its file is present
+    # for Silero VAD and the Whisper feature preprocessing is done in numpy (no transformers / torch),
+    # running on the native interim worker in ~15-40ms on Apple Silicon so it never blocks the read
+    # loop. "auto" = use the model when its file is present
     # (fetch it with `python -m otto.voice.fetch_turn_model`), else fall back to the regex endpointer;
     # "off" = always regex; any other value = an explicit path to a .onnx file. Needs streaming
     # partials (it consumes the interim PCM); native (AEC) path only.

@@ -149,6 +149,30 @@ def test_resolve_model_path_explicit_existing(tmp_path):
     assert m.min_ms == s.voice.stt.endpoint_min_ms       # windows come from the endpoint_* config
 
 
+def test_smart_turn_fe_data_bundled_and_shapes():
+    import numpy as np
+
+    from otto.voice import turn_model as TM
+    assert TM._FE_DATA.exists(), "bundled Whisper FE arrays must ship with the package"
+    fe = np.load(TM._FE_DATA)
+    assert fe["mel_filters"].shape == (201, 80)     # Whisper-tiny mel filterbank
+    assert fe["window"].shape == (400,)             # hann window, n_fft=400
+
+
+def test_smart_turn_features_match_whisper_encoder_shape():
+    import numpy as np
+
+    from otto.voice import turn_model as TM
+    fe = np.load(TM._FE_DATA)
+    m = SmartTurnModel(TM._FE_DATA)                 # path unused by _features; load FE arrays by hand
+    m._np = np
+    m._mel = fe["mel_filters"].astype(np.float32)
+    m._window = fe["window"].astype(np.float64)
+    m._n_fft, m._hop = int(fe["n_fft"]), int(fe["hop_length"])
+    feats = m._features(np.zeros(2 * 16000, dtype=np.float32))
+    assert feats.shape == (80, 800)                 # 80 mels x 800 frames (8s) — the encoder input
+
+
 def test_smart_turn_model_bad_file_is_safe(tmp_path):
     f = tmp_path / "bad.onnx"
     f.write_bytes(b"not a real onnx model")
