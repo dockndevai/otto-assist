@@ -192,6 +192,36 @@ class STTConfig(BaseModel):
     # dashboard still shows a "Listening…" state and your final transcript without it.
     realtime_partials: bool = False
     realtime_model: str = "base.en"
+    # Semantic endpointing (#109): decide the end-of-turn pause from the CONTENT of the live partial
+    # instead of a fixed silence — the local analogue of OpenAI's semantic VAD. A complete-looking
+    # thought commits fast (endpoint_min_ms); an unfinished one (trailing "and", a hold phrase, a
+    # mid-quantity "...for twenty") waits up to endpoint_max_ms so Orrin never cuts you off. Applies
+    # to the native (AEC) path, which can emit partials and take a dynamic end-silence. On by default
+    # there; falls back to the fixed silence_seconds window when partials aren't available.
+    semantic_endpointing: bool = True
+    endpoint_base_ms: int = 500      # neutral/ambiguous phrase
+    endpoint_min_ms: int = 250       # clearly complete thought → snappy commit
+    endpoint_max_ms: int = 900       # unfinished thought → stay patient
+    # Streaming STT partials on the native path: the orrin-audio helper emits interim PCM during
+    # speech and we transcribe the rolling buffer, so endpointing + intent can start before you
+    # stop. Needs a native helper build that emits interim frames; no-ops on an older helper.
+    streaming_partials: bool = True
+    # Learned turn detection (Smart Turn v3) — the local equivalent of OpenAI's semantic_vad.
+    # Where the regex endpointer above GUESSES end-of-turn from the partial *text*, this runs a tiny
+    # AUDIO model (Whisper-Tiny encoder + classifier, ~8 MB INT8 ONNX, BSD-2 — Pipecat Smart Turn v3)
+    # on the speech-so-far and returns P(you've finished). It rides the onnxruntime already shipped
+    # for Silero VAD and the Whisper feature preprocessing is done in numpy (no transformers / torch),
+    # running on the native interim worker in ~15-40ms on Apple Silicon so it never blocks the read
+    # loop. "auto" = use the model when its file is present
+    # (fetch it with `python -m otto.voice.fetch_turn_model`), else fall back to the regex endpointer;
+    # "off" = always regex; any other value = an explicit path to a .onnx file. Needs streaming
+    # partials (it consumes the interim PCM); native (AEC) path only.
+    turn_model: str = "auto"
+    # P(complete) >= high → snap to endpoint_min_ms (commit fast); <= low → endpoint_max_ms (stay
+    # patient); in between → endpoint_base_ms. Tune by ear if it cuts you off or lags.
+    turn_model_high_prob: float = 0.65
+    turn_model_low_prob: float = 0.35
+    turn_model_dir: str = ""         # "" = OTTO_HOME/models/smart-turn
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
     always_listen: bool = False
@@ -244,6 +274,14 @@ class STTConfig(BaseModel):
     # On the built-in speakers it stays half-duplex (no echo loop). So plugging in headphones gives
     # clean mid-speech voice "stop" with zero config, and unplugging reverts to safe half-duplex.
     barge_in_auto: bool = True
+    # Instant barge-in (ChatGPT-style): cut Orrin off the moment you START speaking, without waiting
+    # to transcribe a "stop" word. The native helper watches for sustained real speech while Orrin is
+    # speaking (echo-cancelled, so it's YOU, not Orrin's own voice) and fires an interrupt in ~180ms.
+    # Full-duplex routes only (headset / confirmed AEC); needs a native helper build that emits the
+    # barge signal (no-ops on an older helper, which keeps the spoken-stop-word path). On by default.
+    barge_in_instant: bool = True
+    barge_in_min_ms: int = 180       # sustained speech this long during playback = a real barge-in
+    barge_in_rms: int = 900          # energy bar for barge speech (>= the helper's start RMS)
     # Wake-word backend (default "phrase": account-free software wake word, reliable). Note the
     # trade-off — "phrase" transcribes ALL audio continuously (heavier idle CPU). Account-free
     # gate alternatives exist but need per-machine tuning/verification before defaulting to them:
@@ -323,6 +361,12 @@ class TTSConfig(BaseModel):
     # extra clip, not per-sentence (which synthesized choppy). Off = single clip at end (old way).
     stream_sentences: bool = True
     stream_min_chars: int = 8         # don't split off a first "sentence" shorter than this
+    # Instant acks (#109): pre-synthesize the short acknowledgement bank (otto.voice.acks) to a WAV
+    # cache on startup so the ack plays within ~50ms of your turn ending instead of waiting on a
+    # fresh Kokoro synth (~200-400ms). Cached under OTTO_HOME/cache/acks, keyed by voice+phrase;
+    # falls back to synth-on-demand for any phrase not yet cached. Only applies to the kokoro engine
+    # (the macOS `say` voice starts fast already). Set False to always synthesize on demand.
+    cache_acks: bool = True
     # When a phone (authenticated remote client) is connected, don't also speak the reply
     # aloud on the Mac — the phone speaks it. Avoids Otto talking to an empty room when you're
     # driving it remotely. The dashboard on the Mac itself does NOT count as remote.
@@ -377,6 +421,14 @@ class VoiceConfig(BaseModel):
     turn_taking: bool = True
     hold_seconds: float = 3.0
     max_hold_seconds: float = 12.0
+    # Backchannels: when you pause mid-thought (the turn-taker HOLDs an unfinished fragment), Orrin
+    # occasionally drops a tiny "mm-hmm" / "go on" instead of staying silent — the listener cue
+    # ChatGPT Advanced Voice Mode makes. Never a full turn, never sent to the engine, and spoken only
+    # on full-duplex routes (headset / confirmed AEC) so the cue doesn't mute the mic and swallow the
+    # rest of your sentence. `prob` is how often a hold gets a cue; `min_interval` stops it repeating.
+    backchannel: bool = True
+    backchannel_prob: float = 0.5
+    backchannel_min_interval: float = 4.0
     # Local intent router: handle simple Mac actions (open/quit apps, timers/alarms/reminders,
     # media + volume, lock/sleep, screenshot, time/date) DIRECTLY on the machine — no Claude/Cursor
     # round-trip — for speed. Anything it doesn't recognize falls through to the engine unchanged.

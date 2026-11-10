@@ -14,6 +14,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -343,6 +344,9 @@ class Orchestrator:
         self._first_spoken = False   # first sentence already streamed out this turn (#64)
         self._auth_warn_ts = 0.0     # debounce the spoken "signed out of Claude" guidance
         self._speaking = False
+        self._speaking_off_handle = None   # timer that clears the native barge-in speaking window
+        self._backchannel_until = 0.0      # a brief "mm-hmm" cue is playing; keep hearing the user
+        self._last_backchannel_ts = 0.0    # rate-limit backchannels
         # Live state + controls (read/driven by the menu bar app).
         self.state = "starting"
         self.mic_muted = False
@@ -446,9 +450,12 @@ class Orchestrator:
         self.bus.status(state, text)
 
     # -- half-duplex voice output -----------------------------------------
-    def _voice_out(self, text: str) -> None:
+    def _voice_out(self, text: str, cached: bool = False) -> None:
         """Speak `text` (when voice is on) and push out the input-mute window by roughly how
-        long it takes to say it, plus a cooldown — so Otto never transcribes its own voice."""
+        long it takes to say it, plus a cooldown — so Otto never transcribes its own voice.
+
+        `cached` routes short acks through the pre-rendered WAV cache (`Mouth.speak_cached`) so the
+        ack plays within ~50ms instead of waiting on a fresh synth (#109)."""
         t = (text or "").strip()
         if not t or self.mouth is None or self.voice_muted:
             return
@@ -464,7 +471,11 @@ class Orchestrator:
                 self._playback_epoch += 1
         except Exception:
             pass
-        self.mouth.speak(t)
+        self._backchannel_until = 0.0     # a real reply supersedes any backchannel-listen window
+        if cached and hasattr(self.mouth, "speak_cached"):
+            self.mouth.speak_cached(t)
+        else:
+            self.mouth.speak(t)
         # Remember what we just said so the mic re-hearing it (speaker echo) can be dropped even
         # after the timed mute window closes. Keep the last few, ~30s.
         now = time.monotonic()
@@ -474,6 +485,9 @@ class Orchestrator:
         # ~14 chars/sec for macOS `say`, + a cooldown for the speaker/room tail after it stops.
         secs = max(1.0, len(t) / 14.0) + 2.5
         self._mute_input_until = max(self._mute_input_until, time.monotonic() + secs)
+        # Arm instant barge-in for the speaking window (native full-duplex): the helper watches for
+        # you cutting in and the mouth's is_playing() guard keeps a stray signal harmless.
+        self._arm_speaking_window(secs)
         # Echo handling. With barge-in ACTIVE we keep the mic LISTENING during speech so you can
         # say "stop" to cut in — the stop-word check runs before the echo filter, and everything
         # else (including Orrin's own echo) is dropped by _output_suppressing. With barge-in
@@ -508,7 +522,82 @@ class Orchestrator:
             phrase = self._conv().acknowledge(text, intent)
         except Exception:
             phrase = "On it."
-        self._voice_out(phrase)
+        self._voice_out(phrase, cached=True)
+
+    # -- instant barge-in + backchannels (ChatGPT-style turn feel) ---------
+    def _set_speaking(self, on: bool) -> None:
+        if self.ears is not None and hasattr(self.ears, "set_speaking"):
+            try:
+                self.ears.set_speaking(on)
+            except Exception:
+                pass
+
+    def _arm_speaking_window(self, secs: float) -> None:
+        """Mark Orrin as speaking for ~secs so the native helper arms instant barge-in, then clear
+        it. Full-duplex only (on half-duplex the mic is muted during speech, so no barge path)."""
+        if not (self._native_audio and self._barge_in_active()
+                and getattr(self.settings.voice.stt, "barge_in_instant", True)):
+            return
+        self._set_speaking(True)
+        if self._loop is not None:
+            h = self._speaking_off_handle
+            if h is not None:
+                try:
+                    h.cancel()
+                except Exception:
+                    pass
+            try:
+                self._speaking_off_handle = self._loop.call_later(
+                    max(0.5, secs), lambda: self._set_speaking(False))
+            except Exception:
+                pass
+
+    def _on_barge(self) -> None:
+        """Instant barge-in: the native helper saw sustained real speech (echo-cancelled, so it's
+        you) while Orrin was speaking. Cut playback NOW — no 'stop' word needed. Guarded to a
+        full-duplex route and to audio that's genuinely playing, so a stray signal is a no-op."""
+        if not getattr(self.settings.voice.stt, "barge_in_instant", True):
+            return
+        if not self._barge_in_active() or self.mouth is None:
+            return
+        try:
+            playing = self.mouth.is_playing()
+        except Exception:
+            playing = False
+        if not playing:
+            return
+        print("[otto] instant barge-in", file=sys.stderr, flush=True)
+        self.interrupt_now("barge")
+
+    def _maybe_backchannel(self) -> None:
+        """On a mid-thought HOLD, occasionally drop a tiny 'mm-hmm' cue instead of staying silent —
+        the listener signal ChatGPT voice makes. Never a full turn, never sent to the engine.
+        Full-duplex only, so the cue doesn't mute the mic and swallow the rest of your sentence."""
+        v = self.settings.voice
+        if not getattr(v, "backchannel", True) or self.mouth is None or self.voice_muted:
+            return
+        if not self._barge_in_active():
+            return
+        now = time.monotonic()
+        if now - self._last_backchannel_ts < float(getattr(v, "backchannel_min_interval", 4.0)):
+            return
+        if random.random() >= float(getattr(v, "backchannel_prob", 0.5)):
+            return
+        from .voice.acks import backchannels
+        self._last_backchannel_ts = now
+        phrase = random.choice(backchannels())
+        self.bus.transcript("assistant", phrase, final=True)
+        try:
+            if hasattr(self.mouth, "speak_cached"):
+                self.mouth.speak_cached(phrase)
+            else:
+                self.mouth.speak(phrase)
+        except Exception:
+            pass
+        # Keep hearing the user THROUGH the cue — don't extend the mute window; mark a short window
+        # so the echo guards don't drop the continuation (full-duplex route, so the mic doesn't
+        # meaningfully hear the cue anyway).
+        self._backchannel_until = now + 1.8
 
     # -- media ducking: pause the user's music/video while listening after the wake word ------
     def _media_playpause(self) -> None:
@@ -828,6 +917,8 @@ class Orchestrator:
         can't under-cover a Kokoro clip and let the tail echo through as a command (#56)."""
         if self.mouth is None:
             return False
+        if time.monotonic() < self._backchannel_until:
+            return False                          # a backchannel cue is not output to suppress — keep listening
         try:
             if self.mouth.recently_active(1.5):   # playing, or finished within 1.5s
                 return True
@@ -905,6 +996,8 @@ class Orchestrator:
         the speaker gate drop Orrin's own voice (fixes the 'it dropped me so I repeated' problem)."""
         if self.mouth is None:
             return False
+        if time.monotonic() < self._backchannel_until:
+            return False                          # keep hearing the user through a backchannel cue
         try:
             if self.mouth.recently_active(1.5):   # actively playing / just finished → mixed audio
                 return True
@@ -933,6 +1026,18 @@ class Orchestrator:
             except Exception as e:  # missing extras / audio device
                 self.mouth = None
                 self.bus.notify("Voice output off", str(e))
+            # Pre-render the ack bank to the instant-ack WAV cache off the hot path (#109), so the
+            # first "On it." plays without a synth stall. No-op unless the engine is kokoro.
+            if self.mouth is not None and getattr(self.settings.voice.tts, "cache_acks", True):
+                def _prime() -> None:
+                    try:
+                        from .voice.acks import all_phrases
+                        n = self.mouth.prime_acks(all_phrases())
+                        if n:
+                            print(f"[otto] primed {n} ack clips", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[otto] ack prime skipped: {e!r}", file=sys.stderr, flush=True)
+                threading.Thread(target=_prime, name="ack-prime", daemon=True).start()
 
         # Microphone. The recorder runs in a multiprocessing CHILD (a re-exec of the signed
         # binary) that TCC will NOT prompt for on its own — so the MAIN app must hold the grant
@@ -1810,6 +1915,8 @@ class Orchestrator:
                 self._aec_ok = None
                 kwargs["on_ready"] = self._on_aec_ready
                 kwargs["on_native_failed"] = self._on_native_failed
+                if getattr(self.settings.voice.stt, "barge_in_instant", True):
+                    kwargs["on_barge"] = self._on_barge   # instant barge-in (helper emits the signal)
             else:
                 self._native_audio = False
                 self._native_state = "off"
@@ -2844,6 +2951,14 @@ class Orchestrator:
             self.conversation.interrupt()   # mark the turn interrupted + drop the held thought
         self._speak_done = True
         self._speech_buf = ""
+        self._backchannel_until = 0.0
+        self._set_speaking(False)          # disarm instant barge-in — playback is being cut
+        if self._speaking_off_handle is not None:
+            try:
+                self._speaking_off_handle.cancel()
+            except Exception:
+                pass
+            self._speaking_off_handle = None
         self._cancel_briefing()            # a Stop during the startup greeting halts it too
         self._cancel_idle_research()
         if self.mouth is not None:
@@ -3355,6 +3470,7 @@ class Orchestrator:
                     self.bus.transcript("user", preview, final=False)   # show we're still listening
                 self._status("listening", "Listening…")
                 self._arm_turn_flush()
+                self._maybe_backchannel()   # occasionally "mm-hmm" instead of silent (full-duplex)
                 print(f"[otto] holding (unfinished): {preview!r}", file=sys.stderr, flush=True)
                 return
             self._cancel_turn_flush()
@@ -3653,16 +3769,45 @@ class Orchestrator:
         # transcription lag + margin, so Otto's own reply doesn't come back as a command.
         return self.settings.voice.stt.silence_seconds + 2.5
 
+    def _endpointer(self):
+        """Lazily build the semantic endpointer from config (the local analogue of semantic VAD)."""
+        ep = getattr(self, "_endpointer_obj", None)
+        if ep is None:
+            from .voice.endpointer import Endpointer
+            stt = self.settings.voice.stt
+            ep = Endpointer(
+                base_ms=int(getattr(stt, "endpoint_base_ms", 500)),
+                min_ms=int(getattr(stt, "endpoint_min_ms", 250)),
+                max_ms=int(getattr(stt, "endpoint_max_ms", 900)),
+            )
+            self._endpointer_obj = ep
+        return ep
+
     def _on_voice_partial(self, text: str) -> None:
-        """Live caption while you speak — stream partial words to the dashboard. Suppressed
-        while Otto is speaking (echo) or muted/asleep."""
+        """Live caption while you speak — stream partial words to the dashboard. Also drives
+        semantic endpointing (#109): the content of the live partial sets how long a pause should
+        end this turn, pushed to the native helper's VAD. Suppressed while Otto is speaking (echo)
+        or muted/asleep."""
         if self.mic_muted or self._sleeping:
             return
         if self._output_suppressing():
             return
         t = (text or "").strip()
-        if t:
-            self.bus.transcript("user", t, final=False)
+        if not t:
+            return
+        self.bus.transcript("user", t, final=False)
+        # Content-aware end-of-turn: push the target pause to the native helper so a finished
+        # thought commits fast and an unfinished one waits. Native path only (it takes the command).
+        # When the learned Smart Turn model is warm it owns end-silence from the AUDIO (on the ears'
+        # interim worker), so this regex endpointer yields — it stays the fallback until then.
+        if (self._native_audio and getattr(self.settings.voice.stt, "semantic_endpointing", True)
+                and hasattr(self.ears, "set_end_silence")
+                and not getattr(self.ears, "turn_model_active", False)):
+            try:
+                target, _reason = self._endpointer().target_silence_ms(t)
+                self.ears.set_end_silence(target)
+            except Exception:
+                pass
 
     def _on_speech_start(self) -> None:
         if self.mic_muted:

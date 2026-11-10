@@ -77,8 +77,9 @@ if os.path.exists(_orrin_audio):
 else:
     print("[orrin.spec] native audio helper not built — packaged app uses RealtimeSTT")
 
-# Our own package data: the dashboard web assets + menu-bar icons.
-datas += collect_data_files("otto", includes=["server/web/*", "assets/*"])
+# Our own package data: the dashboard web assets + menu-bar icons, and the Smart Turn feature
+# arrays (mel filterbank + window) so learned turn detection works with no transformers/torch.
+datas += collect_data_files("otto", includes=["server/web/*", "assets/*", "voice/*.npz"])
 
 # Local neural voice (optional): bundle Kokoro + its bundled espeak-ng so the packaged app can
 # speak with it — the model files themselves live in OTTO_HOME/models/kokoro (not shipped here).
