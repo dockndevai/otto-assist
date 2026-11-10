@@ -3701,8 +3701,11 @@ class Orchestrator:
         self.bus.transcript("user", t, final=False)
         # Content-aware end-of-turn: push the target pause to the native helper so a finished
         # thought commits fast and an unfinished one waits. Native path only (it takes the command).
+        # When the learned Smart Turn model is warm it owns end-silence from the AUDIO (on the ears'
+        # interim worker), so this regex endpointer yields — it stays the fallback until then.
         if (self._native_audio and getattr(self.settings.voice.stt, "semantic_endpointing", True)
-                and hasattr(self.ears, "set_end_silence")):
+                and hasattr(self.ears, "set_end_silence")
+                and not getattr(self.ears, "turn_model_active", False)):
             try:
                 target, _reason = self._endpointer().target_silence_ms(t)
                 self.ears.set_end_silence(target)

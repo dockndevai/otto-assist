@@ -97,6 +97,18 @@ class NativeEars:
         self._pending_interim: bytes | None = None
         self._interim_evt = threading.Event()
         self._interim_thread: threading.Thread | None = None
+        # Learned turn detection (Smart Turn v3): an audio model that judges end-of-turn from the
+        # interim PCM, the local equivalent of semantic VAD. Drives the helper's end-silence directly
+        # on the interim worker; the regex endpointer (orchestrator) is the fallback until it warms.
+        # Needs streaming (the interim frames are its only mid-turn audio). None → regex endpointer.
+        self._turn = None
+        self.turn_model_active = False
+        if self._streaming:
+            try:
+                from .turn_model import build_turn_model
+                self._turn = build_turn_model(settings)
+            except Exception:
+                self._turn = None
 
     @staticmethod
     def available() -> bool:
@@ -114,10 +126,12 @@ class NativeEars:
         self._reader.start()
         self._stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_reader.start()
-        if self._streaming and self._on_realtime is not None:
+        if self._streaming and (self._on_realtime is not None or self._turn is not None):
             self._interim_thread = threading.Thread(
                 target=self._interim_loop, daemon=True, name="native-interim")
             self._interim_thread.start()
+        if self._turn is not None:
+            threading.Thread(target=self._warm_turn, daemon=True, name="native-turn-warm").start()
         # Fail closed if the helper never reports AEC readiness (hung engine / no input device).
         self._ready_timer = threading.Timer(_READY_TIMEOUT, self._on_ready_timeout)
         self._ready_timer.daemon = True
@@ -260,9 +274,19 @@ class NativeEars:
                 pass
         return text
 
+    def _warm_turn(self) -> None:
+        """Load the Smart Turn model off the read/interim path, then let the interim worker use it.
+        On failure it stays inactive and the regex endpointer keeps driving end-of-turn."""
+        try:
+            if self._turn is not None and self._turn.load():
+                self.turn_model_active = True
+        except Exception:
+            self.turn_model_active = False
+
     def _interim_loop(self) -> None:
-        """Transcribe the latest interim snapshot and fire on_realtime. Coalescing: if several
-        snapshots arrived while one was transcribing, only the most recent is used."""
+        """Process the latest interim snapshot: (1) transcribe → on_realtime (early partials), and
+        (2) ask the Smart Turn model to judge end-of-turn → drive the helper's end-silence. Coalescing:
+        if several snapshots arrived while one was processing, only the most recent is used."""
         while not self._stop.is_set():
             self._interim_evt.wait()
             self._interim_evt.clear()
@@ -271,12 +295,20 @@ class NativeEars:
             pcm, self._pending_interim = self._pending_interim, None
             if not pcm:
                 continue
-            try:
-                text = self._transcribe(pcm)
-            except Exception:
-                text = ""
-            if text and not self._stop.is_set():
-                self._post(self._on_realtime, text)
+            if self._on_realtime is not None:
+                try:
+                    text = self._transcribe(pcm)
+                except Exception:
+                    text = ""
+                if text and not self._stop.is_set():
+                    self._post(self._on_realtime, text)
+            if self._turn is not None and self.turn_model_active and not self._stop.is_set():
+                try:
+                    res = self._turn.target_for(pcm)
+                except Exception:
+                    res = None
+                if res is not None:
+                    self.set_end_silence(res[0])
 
     def _read_loop(self) -> None:
         f = self._proc.stdout if self._proc is not None else None
@@ -308,8 +340,8 @@ class NativeEars:
                     self._post(self._on_final, text)
             elif t == "interim":
                 pcm = _readexact(f, int(msg.get("bytes", 0) or 0))
-                if self._streaming and self._on_realtime is not None and pcm:
-                    self._pending_interim = pcm     # hand off; worker coalesces + transcribes
+                if self._streaming and pcm and (self._on_realtime is not None or self._turn is not None):
+                    self._pending_interim = pcm     # hand off; worker transcribes + judges end-of-turn
                     self._interim_evt.set()
             elif t == "partial" and self._on_realtime is not None:
                 self._post(self._on_realtime, msg.get("text", ""))

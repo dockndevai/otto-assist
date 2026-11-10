@@ -206,6 +206,21 @@ class STTConfig(BaseModel):
     # speech and we transcribe the rolling buffer, so endpointing + intent can start before you
     # stop. Needs a native helper build that emits interim frames; no-ops on an older helper.
     streaming_partials: bool = True
+    # Learned turn detection (Smart Turn v3) — the local equivalent of OpenAI's semantic_vad.
+    # Where the regex endpointer above GUESSES end-of-turn from the partial *text*, this runs a tiny
+    # AUDIO model (Whisper-Tiny encoder + classifier, ~8 MB INT8 ONNX, BSD-2 — Pipecat Smart Turn v3)
+    # on the speech-so-far and returns P(you've finished). It rides the onnxruntime already shipped
+    # for Silero VAD (no new heavy dep) and runs on the native interim worker in ~15-40ms on Apple
+    # Silicon, so it never blocks the read loop. "auto" = use the model when its file is present
+    # (fetch it with `python -m otto.voice.fetch_turn_model`), else fall back to the regex endpointer;
+    # "off" = always regex; any other value = an explicit path to a .onnx file. Needs streaming
+    # partials (it consumes the interim PCM); native (AEC) path only.
+    turn_model: str = "auto"
+    # P(complete) >= high → snap to endpoint_min_ms (commit fast); <= low → endpoint_max_ms (stay
+    # patient); in between → endpoint_base_ms. Tune by ear if it cuts you off or lags.
+    turn_model_high_prob: float = 0.65
+    turn_model_low_prob: float = 0.35
+    turn_model_dir: str = ""         # "" = OTTO_HOME/models/smart-turn
     # Respond to everything you say, no wake word needed (just talk). Otto still ignores
     # its own voice; mute the mic (menu bar) when you don't want it listening.
     always_listen: bool = False

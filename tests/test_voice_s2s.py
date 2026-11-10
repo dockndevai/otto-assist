@@ -6,6 +6,12 @@ from otto.config import load_settings
 from otto.voice.acks import all_phrases
 from otto.voice.endpointer import Endpointer
 from otto.voice.tts import Mouth
+from otto.voice.turn_model import (
+    SmartTurnModel,
+    build_turn_model,
+    prob_to_end_silence,
+    resolve_model_path,
+)
 
 
 # ---- semantic endpointing -------------------------------------------------
@@ -108,3 +114,46 @@ def test_speak_cached_falls_back_to_speak_without_cache(monkeypatch):
     m._engine = "system"                            # `say` has no cache → must fall back to speak()
     m.speak_cached("On it.")
     assert m._q.get_nowait() == "On it."            # enqueued as plain text, not a ("wav", path)
+
+
+# ---- learned turn detection (Smart Turn v3) -------------------------------
+def test_prob_to_end_silence_thresholds():
+    kw = dict(min_ms=250, base_ms=500, max_ms=900, high=0.65, low=0.35)
+    assert prob_to_end_silence(0.9, **kw) == (250, "complete")     # confident finish → snappy
+    assert prob_to_end_silence(0.1, **kw) == (900, "unfinished")   # mid-thought → patient
+    assert prob_to_end_silence(0.5, **kw) == (500, "neutral")      # ambiguous → base
+    assert prob_to_end_silence(0.65, **kw)[1] == "complete"        # boundary is inclusive (>= high)
+    assert prob_to_end_silence(0.35, **kw)[1] == "unfinished"      # boundary is inclusive (<= low)
+    # Clamps out-of-range probabilities instead of misclassifying them.
+    assert prob_to_end_silence(5.0, **kw) == (250, "complete")
+    assert prob_to_end_silence(-1.0, **kw) == (900, "unfinished")
+
+
+def test_resolve_model_path_off_and_missing_fall_back_to_regex():
+    s = load_settings()
+    s.voice.stt.turn_model = "off"
+    assert resolve_model_path(s) is None                 # off → no model → regex endpointer
+    s.voice.stt.turn_model = "/no/such/model/file.onnx"  # explicit but missing
+    assert resolve_model_path(s) is None
+    assert build_turn_model(s) is None
+
+
+def test_resolve_model_path_explicit_existing(tmp_path):
+    s = load_settings()
+    f = tmp_path / "smart-turn-v3.onnx"
+    f.write_bytes(b"\x00")                               # resolve only checks existence
+    s.voice.stt.turn_model = str(f)
+    assert resolve_model_path(s) == f
+    m = build_turn_model(s)
+    assert isinstance(m, SmartTurnModel)
+    assert m.min_ms == s.voice.stt.endpoint_min_ms       # windows come from the endpoint_* config
+
+
+def test_smart_turn_model_bad_file_is_safe(tmp_path):
+    f = tmp_path / "bad.onnx"
+    f.write_bytes(b"not a real onnx model")
+    m = SmartTurnModel(f, min_ms=250, base_ms=500, max_ms=900)
+    assert m.load() is False                             # unloadable → disabled, no raise
+    assert m.ok is False
+    assert m.predict_prob(b"\x00\x00" * 8000) is None    # never raises into the audio path
+    assert m.target_for(b"\x00\x00" * 8000) is None
