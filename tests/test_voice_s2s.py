@@ -3,7 +3,7 @@
 - ack-cache phrase enumeration + instant-ack fallback (otto.voice.acks / tts.Mouth).
 """
 from otto.config import load_settings
-from otto.voice.acks import all_phrases
+from otto.voice.acks import all_phrases, backchannels
 from otto.voice.endpointer import Endpointer
 from otto.voice.tts import Mouth
 from otto.voice.turn_model import (
@@ -157,3 +157,19 @@ def test_smart_turn_model_bad_file_is_safe(tmp_path):
     assert m.ok is False
     assert m.predict_prob(b"\x00\x00" * 8000) is None    # never raises into the audio path
     assert m.target_for(b"\x00\x00" * 8000) is None
+
+
+# ---- backchannels ---------------------------------------------------------
+def test_backchannels_present_and_short():
+    bc = backchannels()
+    assert bc, "backchannel bank must not be empty"
+    assert "Mm-hmm." in bc
+    # Backchannels must be tiny so they don't step on the speaker (<= 3 words).
+    assert all(len(p.split()) <= 3 for p in bc)
+
+
+def test_backchannels_are_cached_with_the_ack_bank():
+    # They ride the instant-ack WAV cache, so all_phrases() must include them (deduped).
+    phrases = all_phrases()
+    assert set(backchannels()).issubset(set(phrases))
+    assert len(phrases) == len(set(phrases))

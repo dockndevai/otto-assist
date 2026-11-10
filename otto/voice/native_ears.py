@@ -64,13 +64,14 @@ class NativeEars:
                  on_speech_start: Callable | None = None, on_wake: Callable | None = None,
                  on_recording_stop: Callable | None = None, on_realtime: Callable | None = None,
                  on_health: Callable | None = None, on_ready: Callable | None = None,
-                 on_native_failed: Callable | None = None) -> None:
+                 on_native_failed: Callable | None = None, on_barge: Callable | None = None) -> None:
         self.settings = settings
         self._loop = loop
         self._on_final = on_final
         self._on_speech_start = on_speech_start
         self._on_recording_stop = on_recording_stop
         self._on_realtime = on_realtime
+        self._on_barge = on_barge                 # on_barge() — sustained speech while Orrin speaks
         self._on_health = on_health
         self._on_ready = on_ready                 # on_ready(aec: bool) — AEC handshake result
         self._on_native_failed = on_native_failed  # on_native_failed(reason: str) — helper trouble
@@ -132,6 +133,11 @@ class NativeEars:
             self._interim_thread.start()
         if self._turn is not None:
             threading.Thread(target=self._warm_turn, daemon=True, name="native-turn-warm").start()
+        # Push instant-barge thresholds from config so they're tunable without a helper rebuild.
+        if self._on_barge is not None:
+            stt = self.settings.voice.stt
+            self.set_barge_cfg(int(getattr(stt, "barge_in_min_ms", 180)),
+                               int(getattr(stt, "barge_in_rms", 900)))
         # Fail closed if the helper never reports AEC readiness (hung engine / no input device).
         self._ready_timer = threading.Timer(_READY_TIMEOUT, self._on_ready_timeout)
         self._ready_timer.daemon = True
@@ -188,6 +194,17 @@ class NativeEars:
         """Set the helper's end-of-turn pause (semantic endpointing, #109). The helper clamps it."""
         try:
             self._send({"cmd": "endsilence", "ms": int(ms)})
+        except (TypeError, ValueError):
+            pass
+
+    def set_speaking(self, on: bool) -> None:
+        """Tell the helper whether Orrin is speaking — it only fires a barge-in while True."""
+        self._send({"cmd": "speaking", "on": bool(on)})
+
+    def set_barge_cfg(self, min_ms: int, rms: int) -> None:
+        """Push the instant-barge thresholds (sustain ms + energy floor) to the helper. Clamped there."""
+        try:
+            self._send({"cmd": "bargecfg", "ms": int(min_ms), "rms": int(rms)})
         except (TypeError, ValueError):
             pass
 
@@ -343,6 +360,8 @@ class NativeEars:
                 if self._streaming and pcm and (self._on_realtime is not None or self._turn is not None):
                     self._pending_interim = pcm     # hand off; worker transcribes + judges end-of-turn
                     self._interim_evt.set()
+            elif t == "barge":
+                self._post(self._on_barge)
             elif t == "partial" and self._on_realtime is not None:
                 self._post(self._on_realtime, msg.get("text", ""))
             elif t == "error":

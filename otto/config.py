@@ -273,6 +273,14 @@ class STTConfig(BaseModel):
     # On the built-in speakers it stays half-duplex (no echo loop). So plugging in headphones gives
     # clean mid-speech voice "stop" with zero config, and unplugging reverts to safe half-duplex.
     barge_in_auto: bool = True
+    # Instant barge-in (ChatGPT-style): cut Orrin off the moment you START speaking, without waiting
+    # to transcribe a "stop" word. The native helper watches for sustained real speech while Orrin is
+    # speaking (echo-cancelled, so it's YOU, not Orrin's own voice) and fires an interrupt in ~180ms.
+    # Full-duplex routes only (headset / confirmed AEC); needs a native helper build that emits the
+    # barge signal (no-ops on an older helper, which keeps the spoken-stop-word path). On by default.
+    barge_in_instant: bool = True
+    barge_in_min_ms: int = 180       # sustained speech this long during playback = a real barge-in
+    barge_in_rms: int = 900          # energy bar for barge speech (>= the helper's start RMS)
     # Wake-word backend (default "phrase": account-free software wake word, reliable). Note the
     # trade-off — "phrase" transcribes ALL audio continuously (heavier idle CPU). Account-free
     # gate alternatives exist but need per-machine tuning/verification before defaulting to them:
@@ -412,6 +420,14 @@ class VoiceConfig(BaseModel):
     turn_taking: bool = True
     hold_seconds: float = 3.0
     max_hold_seconds: float = 12.0
+    # Backchannels: when you pause mid-thought (the turn-taker HOLDs an unfinished fragment), Orrin
+    # occasionally drops a tiny "mm-hmm" / "go on" instead of staying silent — the listener cue
+    # ChatGPT Advanced Voice Mode makes. Never a full turn, never sent to the engine, and spoken only
+    # on full-duplex routes (headset / confirmed AEC) so the cue doesn't mute the mic and swallow the
+    # rest of your sentence. `prob` is how often a hold gets a cue; `min_interval` stops it repeating.
+    backchannel: bool = True
+    backchannel_prob: float = 0.5
+    backchannel_min_interval: float = 4.0
     # Local intent router: handle simple Mac actions (open/quit apps, timers/alarms/reminders,
     # media + volume, lock/sleep, screenshot, time/date) DIRECTLY on the machine — no Claude/Cursor
     # round-trip — for speed. Anything it doesn't recognize falls through to the engine unchanged.

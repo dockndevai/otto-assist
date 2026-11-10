@@ -32,6 +32,18 @@ _PHRASES: dict[str, list[str]] = {
            "Getting into it now.", "Starting on that now."],
 }
 
+# Backchannels: the tiny "I'm with you, keep going" sounds a listener makes when you pause mid-
+# thought (ChatGPT Advanced Voice Mode does this). Spoken on a turn-taker HOLD instead of staying
+# silent — never a full turn, never sent to the engine. Kept ultra-short so they don't step on you.
+_BACKCHANNELS: list[str] = ["Mm-hmm.", "Mhm.", "Right.", "Okay.", "Go on.", "Sure.", "Yeah?"]
+
+
+def backchannels() -> list[str]:
+    """The backchannel phrase bank (pre-cached into the instant-ack WAVs so a 'mm-hmm' plays in
+    ~50ms)."""
+    return list(_BACKCHANNELS)
+
+
 # Request-aware echoes: a keyword in the request → a phrase that reflects it back. Used occasionally.
 _REQUEST_AWARE: list[tuple[re.Pattern, list[str]]] = [
     (re.compile(r"\b(trace|flow|path|pipeline|route)\b", re.I),
@@ -69,6 +81,8 @@ def all_phrases() -> list[str]:
     for _rx, phrases in _REQUEST_AWARE:
         for p in phrases:
             seen.setdefault(p, None)
+    for p in _BACKCHANNELS:
+        seen.setdefault(p, None)
     return list(seen.keys())
 
 
