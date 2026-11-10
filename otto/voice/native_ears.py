@@ -297,6 +297,8 @@ class NativeEars:
         try:
             if self._turn is not None and self._turn.load():
                 self.turn_model_active = True
+                print("[otto] smart-turn ready (learned turn detection active)",
+                      file=sys.stderr, flush=True)
         except Exception:
             self.turn_model_active = False
 
