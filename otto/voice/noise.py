@@ -28,6 +28,43 @@ def _norm(text: str) -> str:
     return re.sub(r"[^\w\s]", "", (text or "")).strip().lower()
 
 
+# Unicode script ranges that are a hallucination signal when they appear MIXED with Latin in one
+# short utterance. We don't reject clean single-script text (a user may legitimately speak all
+# Chinese or all Hindi, and romanized Hinglish is pure Latin) — only the multi-script word-salad
+# Whisper emits on noise ("大家 ilk kilograms", "Security 미국", "about tutaj…로pler").
+_NON_LATIN_SCRIPTS = (
+    (0x3040, 0x30FF),   # Hiragana + Katakana
+    (0x3400, 0x4DBF),   # CJK ext A
+    (0x4E00, 0x9FFF),   # CJK unified
+    (0xAC00, 0xD7AF),   # Hangul syllables
+    (0x1100, 0x11FF),   # Hangul Jamo
+    (0x0900, 0x097F),   # Devanagari
+    (0x0400, 0x04FF),   # Cyrillic
+    (0x0600, 0x06FF),   # Arabic
+    (0x0E00, 0x0E7F),   # Thai
+    (0x0590, 0x05FF),   # Hebrew
+)
+
+
+def _is_mixed_script_salad(text: str) -> bool:
+    """True when the text mixes Latin letters with a non-Latin script (or the Unicode replacement
+    char) — the signature of a Whisper hallucination on noise, not a real utterance. Clean
+    single-script text passes untouched, so legit non-English speech and romanized Hinglish are safe."""
+    has_latin = False
+    has_foreign = False
+    for ch in text or "":
+        o = ord(ch)
+        if ch == "�":                                   # replacement char → garbled decode
+            has_foreign = True
+            continue
+        if ("a" <= ch <= "z") or ("A" <= ch <= "Z"):
+            has_latin = True
+            continue
+        if any(lo <= o <= hi for lo, hi in _NON_LATIN_SCRIPTS):
+            has_foreign = True
+    return has_latin and has_foreign
+
+
 # Computer-directed action verbs. An utterance that (after stripping polite/filler lead-ins) STARTS
 # with one of these is a deliberate command — trust it and skip the flaky model gate, so real
 # chained follow-ups like "close the calculator" / "open chrome" are never dropped as ambient.
@@ -124,6 +161,9 @@ def is_noise(text: str) -> bool:
         return True
     n = _norm(t)
     if not n or len(n) <= 2:                      # empty / punctuation-only / "s." / "r."
+        return True
+    # Mixed-script word-salad ("大家 ilk kilograms", "Security 미국") — a hallucination tell.
+    if _is_mixed_script_salad(t):
         return True
     words = n.split()
     if n in _HALLUCINATION_PHRASES:
