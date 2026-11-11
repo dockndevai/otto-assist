@@ -211,6 +211,7 @@
       case "roadmap": if (!replaying) { roadmapText = ev.text || roadmapText; renderRoadmap(); savedPulse("roadmap updated"); } return;
       case "notify": toastNotify(ev.title, ev.body); return;
       case "preflight": renderPreflight(ev); return;
+      case "health": renderHealth(ev); return;
       case "mood": return; // reserved
       case "log": return;  // logs not surfaced in the ambient view
     }
@@ -336,6 +337,21 @@
       siReady.onclick = () => { const pane = PANE[failing[0].key]; if (pane) send({ type: "open_pane", pane }); else send({ type: "recheck" }); };
     } else {
       siReady.classList.remove("alert"); siReady.querySelector(".ico").textContent = "✓"; siReady.querySelector(".v").textContent = "ready"; siReady.onclick = null;
+    }
+  }
+
+  /* ---------------- steward health strip ---------------- */
+  function renderHealth(ev) {
+    const si = $("siHealth"); if (!si) return;
+    const mem = ev.free_mem_gb, disk = ev.disk_free_gb, rss = ev.orrin_rss_mb;
+    const fixed = ev.fixed || [], issues = ev.issue_keys || [];
+    si.querySelector(".v").textContent = `${disk}GB disk · ${mem}GB mem`;
+    si.title = `Orrin: ${rss}MB RSS · ${mem}GB memory free · ${disk}GB disk free`
+      + (fixed.length ? ` · just fixed: ${fixed.join(", ")}` : "");
+    si.classList.toggle("warn", issues.length > 0);
+    if (fixed.length) {
+      si.classList.remove("flash"); void si.offsetWidth; si.classList.add("flash");
+      setTimeout(() => si.classList.remove("flash"), 1300);
     }
   }
 
