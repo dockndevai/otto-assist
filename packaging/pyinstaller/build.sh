@@ -166,6 +166,16 @@ mkdir "$STAGE/.background"
 cp packaging/pyinstaller/dmg-background.png "$STAGE/.background/bg.png"
 
 rm -f "$RW" "$DMG"
+# Headless CI (no Finder, busy runner): skip the UDRW -> Finder-arrange -> convert round-trip and
+# build the compressed DMG directly from the staging folder in one shot. CI can't run the Finder
+# AppleScript anyway (so the arranged background was never produced there), and on macos-15 the
+# attach/convert race fails the whole release build with "hdiutil convert: Resource temporarily
+# unavailable". One-shot UDZO never attaches the image, so there is nothing to race.
+if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
+  echo "    CI/headless — creating compressed DMG directly (no Finder arrange)"
+  hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO -fs HFS+ "$DMG"
+  rm -rf "$STAGE"
+else
 # HFS+, not APFS: Finder's icon layout does not persist reliably on an APFS image.
 hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDRW -fs HFS+ "$RW"
 rm -rf "$STAGE"
@@ -213,6 +223,7 @@ for _attempt in 1 2 3 4 5; do
   if [ "$_attempt" = 5 ]; then echo "hdiutil convert failed after 5 attempts"; exit 1; fi
 done
 rm -f "$RW"
+fi
 
 if [ -n "${SIGN_ID:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
   echo "==> Notarizing DMG (this uploads to Apple and can take a few minutes)"
