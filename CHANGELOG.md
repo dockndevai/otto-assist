@@ -3,6 +3,28 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
+## v0.2.35 — 2026-11-11
+
+**ChatGPT-grade voice turn-taking — fully local (#109)**
+- **Learned end-of-turn detection (Smart Turn v3)** — a tiny on-device model (Whisper-Tiny encoder
+  + classifier, ~8 MB ONNX, BSD-2) reads your audio-so-far and returns P(you've finished speaking),
+  the real local analogue of OpenAI's semantic VAD — replacing the regex endpointer's guess. It runs
+  on the onnxruntime already shipped, with **no transformers/torch dependency**: the Whisper log-mel
+  preprocessing is done in numpy against a bundled mel filterbank + window (`smart_turn_fe.npz`,
+  verified byte-for-byte against `WhisperFeatureExtractor`), so it works in the packaged app. Fetch
+  with `python -m otto.voice.fetch_turn_model`; absent, it falls back to the regex endpointer.
+  Config `stt.turn_model` (auto|off|path) + `turn_model_high/low_prob`.
+- **Instant barge-in** — the native audio helper now cuts Orrin off mid-word the moment you start
+  talking over it (echo-cancelled, so it knows it's you), instead of waiting to transcribe a
+  stop-word. Config `stt.barge_in_instant` / `barge_in_min_ms` / `barge_in_rms`.
+- **Backchannels** — when you pause mid-thought, Orrin can drop a tiny cached "Mm-hmm." / "Right."
+  cue (full-duplex only, so it doesn't step on you) instead of dead air. Config `voice.backchannel`
+  / `backchannel_prob` / `backchannel_min_interval`.
+- **Semantic endpointing + streaming partials + instant acks** — commit fast on a complete-looking
+  phrase (~250 ms), stay patient on a trailing conjunction / hold phrase (~900 ms); interim
+  transcripts stream off a coalescing worker; the ack bank is pre-rendered to a WAV cache so the
+  first "On it." plays in ~50 ms (Kokoro).
+
 ## v0.2.8 — 2026-09-07
 
 **Local neural voice (Kokoro)**
