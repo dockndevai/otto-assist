@@ -3,7 +3,7 @@
 Feature-based notes per released tag. Orrin is the packaged product name; the code package
 is `otto-assist`.
 
-## v0.2.35 — 2026-11-11
+## v0.2.36 — 2026-11-11
 
 **ChatGPT-grade voice turn-taking — fully local (#109)**
 - **Learned end-of-turn detection (Smart Turn v3)** — a tiny on-device model (Whisper-Tiny encoder
