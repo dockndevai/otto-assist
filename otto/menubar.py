@@ -490,7 +490,6 @@ class OttoApp(rumps.App):
         await self._server.serve()
 
     # -- menu (main thread) ------------------------------------------------
-    @rumps.timer(1)
     def _wake_word(self) -> str:
         """The spoken wake word for UI hints — the configured trigger (last word of `wake_words`),
         capitalized; defaults to 'Otto'. Reflects that the wake word is user-configurable."""
@@ -500,6 +499,7 @@ class OttoApp(rumps.App):
         except Exception:
             return "Otto"
 
+    @rumps.timer(1)
     def _tick(self, _) -> None:
         try:
             label = _STATE_LABELS.get(self.orch.state, self.orch.state)
