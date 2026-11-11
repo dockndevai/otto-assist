@@ -3921,7 +3921,11 @@ class Orchestrator:
                   file=sys.stderr, flush=True)
             if echo_user:
                 self.bus.transcript("user", text, final=True, ws=tag)   # show it in this window
-            if focused:
+            # Research turns (idle research, roadmap synthesis) are silent background work — even
+            # when they run on the focused path, they must NOT drive the spoken status indicator or
+            # speak their reply. Roadmap uses the focused ws for context, which made `focused`/`live`
+            # True and leaked a "Thinking…/Speaking…" status that the research end-branch never reset.
+            if focused and not research:
                 self._status("thinking", "Thinking…")
                 self._speech_buf = ""
                 self._spoken_chars = 0
@@ -3980,7 +3984,7 @@ class Orchestrator:
                         # speak it; we surface a clear "sign in" message at end of turn instead.
                         if _is_auth_error(assistant_text):
                             auth_error = True
-                        elif live:
+                        elif live and not research:
                             self._feed_speech(chunk)              # ...but only speak the focused
                             self._status("speaking", "Speaking…")
                         ws.state = "speaking"
@@ -3989,7 +3993,7 @@ class Orchestrator:
                         # The tool call itself IS the visible work — show it in the window
                         # (that's the "chat window" feel). No spoken narration of tools.
                         self._announce_tool(ev["name"], ev.get("detail", ""), ws=tag)
-                        if live:
+                        if live and not research:
                             self._status("working", ev["name"])
                     elif ev["type"] == "result":
                         if ev.get("is_error"):
