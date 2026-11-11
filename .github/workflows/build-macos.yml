@@ -24,7 +24,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14    # Apple Silicon (arm64), matches the target machines
+    runs-on: macos-15    # Apple Silicon (arm64), matches the target machines.
+                         # macos-14 was retired 2026-11-02 ("configuration not supported" → job
+                         # cancelled at startup); macos-15 is the current arm64 hosted runner.
     timeout-minutes: 60
     env:
       SIGN_ID: ${{ secrets.MACOS_SIGN_ID }}
