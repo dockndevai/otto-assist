@@ -79,6 +79,7 @@ body{margin:0;color:var(--label);font-family:var(--font);overflow:hidden;
 .si.alert .v{opacity:1;max-width:120px}.si.alert .ico{opacity:1}
 .si.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 16%,transparent);cursor:pointer}
 .si.warn .v{opacity:1;max-width:120px}
+.si.flash{animation:sflash 1.2s ease-out}.si.flash .v{opacity:1;max-width:160px}
 
 /* native segmented control */
 .seg{display:flex;gap:0;padding:2px;border-radius:7px;background:var(--fill)}
