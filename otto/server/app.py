@@ -712,6 +712,11 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
         # Show the setup/health panel state (mic, Claude test run, …) to a fresh page.
         if orch.preflight_checks:
             orch._publish_preflight(done=orch.preflight_done)
+        # Show the last steward health scan immediately — otherwise a fresh/reloaded
+        # dashboard tab sits on the "—" placeholder for up to steward_interval (10 min
+        # by default) until the next periodic scan runs.
+        if orch._steward_health:
+            await websocket.send_json({"type": "health", **orch._steward_health})
         # Replay recent log lines so the Logs drawer isn't empty on a fresh page.
         for ev in list(log_buffer):
             await websocket.send_json(ev)
