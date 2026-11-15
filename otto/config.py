@@ -559,6 +559,10 @@ class MemoryConfig(BaseModel):
     # Fast/cheap model for the capture pass (an alias the user's Claude accepts). The capture
     # runs off the voice path, so latency here doesn't affect responsiveness.
     capture_model: str = "haiku"
+    # Injection guard: scan what auto-capture is about to remember (and what the preamble is about
+    # to inject) for instruction-override / exfiltration patterns — e.g. a line planted in an email
+    # or web page the brain read. Hits go to projects/<slug>/quarantine.jsonl instead of memory.
+    injection_guard: bool = True
     # Add the project's memory dir to Claude's readable dirs, so it can open a saved document
     # in full (beyond the short excerpt injected into the preamble) when it needs the detail.
     expose_to_claude: bool = True
@@ -580,6 +584,9 @@ class MemoryConfig(BaseModel):
     # open-tasks and preferences, on top of the flat-file memory. Powers "what are my open tasks",
     # "what did we decide about X", and the "continue where we left off" resume digest.
     store: bool = True
+    # Record one trace row per turn in the store (route, engine, time-to-first-word, total time,
+    # outcome, optional spoken rating). Local only; powers GET /api/traces. Needs `store`.
+    traces: bool = True
     # Inject a short "last time we… / open tasks / recent decisions" block on the first turn of a
     # session so Orrin picks up where you left off.
     resume_digest: bool = True

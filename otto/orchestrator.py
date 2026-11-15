@@ -8,6 +8,7 @@ Barge-in: any speech-start while speaking stops the mouth immediately.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import random
@@ -24,6 +25,7 @@ from .config import OTTO_HOME, Settings, save_config
 from .history import History
 from .memory import Memory
 from .server.events import EventBus
+from .traces import classify as classify_query, parse_feedback
 from .workspace import Workspace
 
 _log = logging.getLogger("otto")
@@ -289,6 +291,7 @@ class Orchestrator:
                 from .memory_commands import MemoryCommands
                 from .store import Store
                 self.store = Store(OTTO_HOME / "orrin.db")
+                self.memory.store = self.store    # full-text search over saved documents
                 self.memory_commands = MemoryCommands(self.store)
             except Exception as e:
                 print(f"[otto] store init failed: {e!r}", file=sys.stderr, flush=True)
@@ -2561,27 +2564,75 @@ class Orchestrator:
             if not await self.confirm(match.description):
                 self.bus.transcript("assistant", "Okay, I won't.", final=True)
                 self._voice_out("Okay, I won't.")
+                self._trace(self.focused, text, route="local", engine="local",
+                            bucket=match.category, outcome="declined")
                 return
+        t0 = time.monotonic()
+        outcome = "ok"
         try:
             reply = await match.executor()
         except Exception as e:
             print(f"[otto] local action {match.description!r} failed: {e!r}",
                   file=sys.stderr, flush=True)
             reply = f"Sorry — I couldn't {match.description}."
+            outcome = "error"
+        self._trace(self.focused, text, route="local", engine="local", bucket=match.category,
+                    total_ms=round((time.monotonic() - t0) * 1000.0, 1),
+                    reply_chars=len(reply or ""), outcome=outcome)
         self.bus.publish({"type": "local_action", "description": match.description,
                           "category": match.category, "engine": "local"})
         if reply:
             self.bus.transcript("assistant", reply, final=True)
             self._voice_out(reply)
 
+    def _trace(self, project: str, text: str, **fields) -> None:
+        """Record one turn trace in the store, off the event loop (a blocking sqlite write must not
+        stall TTS/barge-in). A no-op without a store or with memory.traces off; never raises."""
+        if self.store is None or not getattr(self.settings.memory, "traces", True):
+            return
+        try:
+            fields.setdefault("bucket", classify_query(text))
+            call = functools.partial(self.store.record_trace, project, query=text, **fields)
+            if self._loop is not None:
+                self._loop.run_in_executor(None, call)
+            else:
+                call()
+        except Exception:
+            pass
+
+    def _maybe_feedback(self, text: str) -> bool:
+        """"Good answer" / "thumbs down" / "that's wrong" — rate the previous engine answer in the
+        trace log. Returns True only for a pure rating (input consumed); a correction is recorded
+        but still goes on to the engine so it can fix the answer."""
+        if self.store is None or not getattr(self.settings.memory, "traces", True):
+            return False
+        fb = parse_feedback(text)
+        if fb is None:
+            return False
+        value, consume = fb
+        try:
+            rated = self.store.set_feedback(self.focused, value)
+        except Exception:
+            rated = None
+        if rated is None or not consume:
+            return False                  # nothing recent to rate, or a correction → engine
+        reply = "Thanks — noted." if value >= 0.5 else "Got it — noted."
+        self.bus.transcript("user", text, final=True)
+        self.bus.transcript("assistant", reply, final=True)
+        self._voice_out(reply)
+        return True
+
     def _maybe_memory_command(self, text: str) -> bool:
         """Local (no-engine) tasks/decisions/resume queries, answered from the SQLite store. The
         parsing + reply composition live in otto/memory_commands.py; here we only speak the result."""
         if self.memory_commands is None:
             return False
+        t0 = time.monotonic()
         reply = self.memory_commands.handle(text, self.focused)
         if reply is None:
             return False
+        self._trace(self.focused, text, route="memory", engine="local",
+                    total_ms=round((time.monotonic() - t0) * 1000.0, 1), reply_chars=len(reply))
         self.bus.transcript("user", text, final=True)
         self.bus.transcript("assistant", reply, final=True)
         self._voice_out(reply)
@@ -2838,6 +2889,9 @@ class Orchestrator:
             return
         # "use cursor / switch to aider / run this with claude" — change the focused project's engine.
         if self._maybe_engine_command(text):
+            return
+        # "good answer" / "thumbs down" — rate the previous answer in the trace log.
+        if self._maybe_feedback(text):
             return
         # Tasks / decisions / "continue where we left off" — answered locally from the store.
         if self._maybe_memory_command(text):
@@ -3973,10 +4027,15 @@ class Orchestrator:
                     send_text = text
             except Exception:
                 send_text = text
+            t_start = time.monotonic()      # trace timing: request sent → first words → done
+            t_first: float | None = None
+            n_tools = 0
             try:
                 async for ev in ws.brain.send(send_text):
                     live = p == self.focused and not background   # focus can change mid-turn
                     if ev["type"] == "delta":
+                        if t_first is None:
+                            t_first = time.monotonic()
                         chunk = ev["text"]
                         assistant_text += chunk
                         self.bus.assistant_delta(chunk, ws=tag)   # into this window
@@ -3989,6 +4048,7 @@ class Orchestrator:
                             self._status("speaking", "Speaking…")
                         ws.state = "speaking"
                     elif ev["type"] == "tool_use":
+                        n_tools += 1
                         ws.state = "working"
                         # The tool call itself IS the visible work — show it in the window
                         # (that's the "chat window" feel). No spoken narration of tools.
@@ -4040,6 +4100,15 @@ class Orchestrator:
                 reply = assistant_text.strip()
                 print(f"[otto] turn done ({ws.name}), reply len={len(reply)}"
                       f"{' [auth]' if auth_error else ''}", file=sys.stderr, flush=True)
+                t_end = time.monotonic()
+                self._trace(
+                    p, text, route="engine", engine=getattr(ws, "engine", "") or "",
+                    kind="research" if research else ("focused" if focused else "background"),
+                    ttft_ms=round((t_first - t_start) * 1000.0, 1) if t_first is not None else None,
+                    total_ms=round((t_end - t_start) * 1000.0, 1), tools=n_tools,
+                    reply_chars=len(reply), session_id=ws.session_id,
+                    outcome=("auth" if auth_error else "error" if errored
+                             else "ok" if reply else "empty"))
                 # Login lapsed: don't recite the raw SDK error. Drop the buffered error text and,
                 # for a focused user turn, give ONE clear (debounced) "sign in" message + a
                 # dashboard signal. Applies to background/research turns too (silently — no speak).

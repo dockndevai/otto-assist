@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import injection
 from .config import Settings
 
 _FENCE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
@@ -85,6 +86,10 @@ class Memory:
         # lock (so we never lose a turn's facts during an active session) but the queue is
         # bounded so a burst can't spawn unbounded model calls.
         self._capturing: dict[str, int] = {}
+        # Optional SQLite Store (otto/store.py). When the orchestrator attaches one, saved documents
+        # are also indexed there for BM25 full-text search; without it, keyword ranking is used.
+        self.store = None
+        self._docs_synced: set[str] = set()
         try:
             (self.root / "projects").mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -159,10 +164,10 @@ class Memory:
             return ""
         pdir = self.root / "projects" / project_slug(project_path)
         name = str(project_path).rstrip("/").split("/")[-1] or project_path
-        g = "\n".join(self._bullets(self._read(self.global_path)))
-        pj = "\n".join(self._bullets(self._read(pdir / "project.md")))
+        g = "\n".join(self._safe(self._bullets(self._read(self.global_path))))
+        pj = "\n".join(self._safe(self._bullets(self._read(pdir / "project.md"))))
         sm = self._read(pdir / "summary.md")
-        sm_lines = [ln for ln in sm.splitlines() if ln.strip().startswith("- ")]
+        sm_lines = self._safe([ln for ln in sm.splitlines() if ln.strip().startswith("- ")])
         sm_body = "\n".join(sm_lines[: self._cfg.max_summary_lines])
         notes = self._notes_section(project_path, query)
         if not (g or pj or sm_body or notes):
@@ -191,11 +196,65 @@ class Memory:
         if not docs:
             return ""
         hits = self.search_docs(project_path, query, k=2, max_chars=400) if query else []
+        if self._guard:                          # never inject an excerpt that reads like an attack
+            hits = [h for h in hits if injection.scan(h.get("excerpt", "")) != "high"]
         if hits:
             lines = [f"• {h['title']}: {h['excerpt']}" for h in hits]
             return "Relevant notes (from documents you saved):\n" + "\n".join(lines)
         titles = ", ".join(d["title"] for d in docs[:8])
         return f"Saved notes available (ask to use one): {titles}"
+
+    # -- injection guard / quarantine --------------------------------------
+    @property
+    def _guard(self) -> bool:
+        return bool(getattr(self._cfg, "injection_guard", True))
+
+    def _safe(self, lines: list[str]) -> list[str]:
+        """Drop remembered lines that read like an instruction-override attempt, so a poisoned
+        fact already on disk (or added by hand) is never re-injected into a turn."""
+        if not self._guard:
+            return lines
+        return [ln for ln in lines if injection.scan(ln) != "high"]
+
+    def quarantine_path(self, project_path: str) -> Path:
+        return self.project_dir(project_path) / "quarantine.jsonl"
+
+    def _quarantine(self, project_path: str, kind: str, text: str) -> None:
+        """Park suspicious content OUT of the injected memory, with the rules it tripped, so it's
+        reviewable (and restorable by hand) rather than silently lost."""
+        rec = {"ts": time.time(), "kind": kind, "text": (text or "")[:600],
+               "rules": [f"{sev}:{name}" for sev, name in injection.findings(text)]}
+        try:
+            self.append_jsonl_capped(self.quarantine_path(project_path), rec,
+                                     max_bytes=500_000, keep=500)
+        except Exception:
+            pass
+
+    def list_quarantine(self, project_path: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Most-recent-first quarantined items for a project."""
+        out: list[dict[str, Any]] = []
+        for ln in self._read(self.quarantine_path(project_path)).splitlines()[-limit:]:
+            try:
+                out.append(json.loads(ln))
+            except Exception:
+                continue
+        out.reverse()
+        return out
+
+    def _screen(self, project_path: str, kind: str, facts: list[str], *,
+                strict: bool = True) -> list[str]:
+        """Split candidate facts into keep / quarantine. `strict` (auto-capture) quarantines any
+        hit; non-strict (the user explicitly said "remember…") only a high-severity one."""
+        if not self._guard:
+            return facts
+        keep: list[str] = []
+        for f in facts:
+            sev = injection.scan(f)
+            if sev == "high" or (sev and strict):
+                self._quarantine(project_path, kind, f)
+            else:
+                keep.append(f)
+        return keep
 
     # -- writes ------------------------------------------------------------
     @staticmethod
@@ -597,6 +656,8 @@ class Memory:
         """Store a durable fact on demand (the user said 'remember that…'). Returns True if it
         was new. Shares the per-project lock with auto-capture so writes don't clobber."""
         async with self._lock(project_slug(project_path)):
+            if not self._screen(project_path, f"explicit_{scope}_fact", [fact], strict=False):
+                return False
             if scope == "user":
                 n = self._append_facts(self.global_path, "# About the user\n", [fact])
             else:
@@ -643,6 +704,11 @@ class Memory:
             entry["ts"] = time.time()
             entry["keywords"] = self._keywords(title + " " + content)
             self._atomic_write(docs / "index.json", json.dumps(index, indent=2))
+            if self.store is not None:
+                try:
+                    self.store.index_doc(project_path, entry["id"], title, content)
+                except Exception:
+                    pass
         return {k: entry[k] for k in ("id", "title", "file", "chars")}
 
     def search_docs(self, project_path: str, query: str, k: int = 2,
@@ -657,6 +723,9 @@ class Memory:
         qtokens = set(self._tokens(query))
         if not qtokens:
             return []
+        fts = self._search_docs_fts(project_path, index, sorted(qtokens), k, max_chars)
+        if fts is not None:
+            return fts
         scored: list[tuple[int, dict[str, Any]]] = []
         for e in index:
             kw = set(e.get("keywords") or []) | set(self._tokens(e.get("title", "")))
@@ -671,6 +740,42 @@ class Memory:
             out.append({"title": e.get("title", "note"),
                         "excerpt": self._excerpt(body, qtokens, max_chars)})
         return out
+
+    @staticmethod
+    def _doc_body(raw: str) -> str:
+        """A saved document's content without our '# title' / '<!-- meta -->' header lines."""
+        return "\n".join(ln for ln in raw.splitlines()
+                         if not ln.startswith("#") and not ln.startswith("<!--")).strip()
+
+    def _search_docs_fts(self, project_path: str, index: list[dict[str, Any]], terms: list[str],
+                         k: int, max_chars: int) -> list[dict[str, str]] | None:
+        """BM25-ranked document hits from the SQLite store (stemmed, so 'deploys' finds 'deploy').
+        Returns None when there's no usable store, so the caller falls back to keyword overlap."""
+        store = self.store
+        if store is None or not getattr(store, "fts", False):
+            return None
+        try:
+            slug = project_slug(project_path)
+            if slug not in self._docs_synced:          # index docs saved before the store existed
+                have = store.indexed_doc_ids(project_path)
+                docs = self._docs_dir(project_path)
+                for e in index:
+                    if e.get("id") and e["id"] not in have:
+                        store.index_doc(project_path, e["id"], e.get("title", "note"),
+                                        self._doc_body(self._read(docs / e.get("file", ""))))
+                self._docs_synced.add(slug)
+            by_id = {e.get("id"): e for e in index}
+            out: list[dict[str, str]] = []
+            for h in store.search_docs(project_path, terms, k):
+                e = by_id.get(h["doc_id"])
+                if e is None:                           # stale row for a doc no longer in the index
+                    continue
+                snip = re.sub(r"\s+", " ", h.get("snippet") or "").strip()
+                out.append({"title": e.get("title", "note"),
+                            "excerpt": snip[:max_chars] + ("…" if len(snip) > max_chars else "")})
+            return out
+        except Exception:
+            return None
 
     @staticmethod
     def _tokens(text: str) -> list[str]:
@@ -702,7 +807,7 @@ class Memory:
         Designed to run off the voice path as a background task: it never raises, and the
         model pass degrades to a heuristic summary if the extraction call fails.
         """
-        result = {"user_facts": 0, "project_facts": 0, "summarized": False}
+        result = {"user_facts": 0, "project_facts": 0, "summarized": False, "quarantined": 0}
         try:
             self.record_turn(project_path, user_text, reply, session_id)
         except Exception:
@@ -711,6 +816,13 @@ class Memory:
             return result
         if not reply.strip() or self._is_trivial(user_text, reply):
             return result                       # nothing durable in a greeting/ack — skip the call
+        if self._guard and injection.scan(reply) == "high":
+            # The reply carries an override/exfiltration pattern (typically quoted from an email,
+            # page or tool result). Don't hand it to the extractor at all — an injected extractor
+            # could launder it into an innocent-looking "fact". The raw turn is still logged above.
+            self._quarantine(project_path, "exchange", reply)
+            result["quarantined"] = 1
+            return result
         slug = project_slug(project_path)
         # Serialize (don't DROP) so back-to-back turns don't silently lose their durable facts;
         # only coalesce under an extreme backlog to keep model calls bounded.
@@ -724,6 +836,14 @@ class Memory:
                 uf = [str(x) for x in (data.get("user_facts") or []) if str(x).strip()]
                 pf = [str(x) for x in (data.get("project_facts") or []) if str(x).strip()]
                 summary = str(data.get("summary") or "").strip()
+                n_before = len(uf) + len(pf)
+                uf = self._screen(project_path, "user_fact", uf)
+                pf = self._screen(project_path, "project_fact", pf)
+                if summary and self._guard and injection.scan(summary):
+                    self._quarantine(project_path, "summary", summary)
+                    n_before += 1
+                    summary = "(summary withheld — flagged by the memory injection guard)"
+                result["quarantined"] = n_before - len(uf) - len(pf)
                 if uf:
                     result["user_facts"] = self._append_facts(
                         self.global_path, "# About the user\n", uf)

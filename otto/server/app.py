@@ -545,6 +545,33 @@ def create_app(orch: Orchestrator, bus: EventBus) -> FastAPI:
             items = []
         return JSONResponse({"items": items})
 
+    # -- traces: per-turn route / engine / latency / outcome / rating --------
+    @app.get("/api/traces")
+    async def get_traces(project: str = "", days: float = 30.0, limit: int = 50,
+                         all_projects: bool = False) -> JSONResponse:
+        """Where time goes and which engine does best per kind of request, from the local trace
+        log. `all_projects=true` spans every project; otherwise the given/current one."""
+        if orch.store is None:
+            return JSONResponse({"enabled": False, "total": 0, "routes": {}, "stats": [],
+                                 "best_engine": {}, "recent": []})
+        proj = None if all_projects else (project or orch.current_project)
+        loop = asyncio.get_running_loop()
+        stats = await loop.run_in_executor(None, orch.store.trace_stats, proj, days)
+        recent = await loop.run_in_executor(None, orch.store.recent_traces, proj, min(limit, 500))
+        return JSONResponse({"enabled": True, **stats, "recent": recent})
+
+    @app.post("/api/traces/feedback")
+    async def post_trace_feedback(payload: dict) -> JSONResponse:
+        """Rate the most recent answer in the current project: {"value": 1} good, {"value": 0} bad."""
+        if orch.store is None:
+            return JSONResponse({"ok": False, "error": "store disabled"}, status_code=409)
+        try:
+            value = float(payload.get("value"))
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "value must be 0..1"}, status_code=400)
+        rated = orch.store.set_feedback(payload.get("project") or orch.current_project, value)
+        return JSONResponse({"ok": rated is not None, "trace": rated})
+
     # -- deck: live state for the Home constellation (all real, no static data) --
     @app.get("/api/deck")
     async def get_deck() -> JSONResponse:
