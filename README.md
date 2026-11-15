@@ -344,6 +344,20 @@ Three things make it feel like memory, not just storage:
   later question matches them (keyword retrieval, no external service), and Claude can open a
   saved note **in full** on demand (its memory dir is added to its readable dirs).
 
+- **Guarded against planted instructions** — because Orrin reads emails, pages and tool results,
+  anything it is about to remember is scanned for instruction-override and secret-exfiltration
+  patterns first. Hits go to `projects/<slug>/quarantine.jsonl` (reviewable) instead of memory,
+  and a suspicious line already on disk is never re-injected. Turn off with
+  `memory.injection_guard: false`.
+- **Ranked full-text search** — past exchanges and saved documents are indexed in SQLite
+  (FTS5 / BM25, stemmed), so *"what did we decide about deploying"* finds "deploy" and
+  "deployment" and returns the best match rather than the most recent substring hit.
+- **Keeps a trace of every turn** — which route answered (on-device router, memory command, or
+  an engine), time to first word, total time, tool calls and how it ended, in the same local
+  SQLite file. Say *"good answer"* or *"thumbs down"* to rate the last reply. `GET /api/traces`
+  shows where time goes and which engine has done best per kind of request
+  (`memory.traces: false` turns it off).
+
 The dashboard replays each **project's own** conversation history — on load and when you switch
 projects — and the full turn-by-turn transcript of a chat stays owned by Claude Code itself
 (Orrin resumes the project's session); this store adds the curated, cross-session, cross-project
